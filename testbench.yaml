@@ -1,0 +1,21 @@
+laravel: '@testbench'
+
+providers:
+  - Mainstay\MainstayServiceProvider
+
+workbench:
+  start: '/admin'
+  install: true
+  health: false
+  discovers:
+    web: true
+    api: true
+    commands: false
+    components: false
+    factories: false
+    views: false
+  build:
+    - asset-publish
+  assets:
+    - mainstay-assets
+  sync: []

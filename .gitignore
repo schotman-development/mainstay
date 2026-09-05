@@ -1,0 +1,14 @@
+/vendor
+/workbench
+/.phpunit.cache
+node_modules/
+
+# Build output of the npm packages. packages/cms/dist is deliberately NOT here:
+# hosts install via composer and must never be asked to run a JS build.
+packages/ui/dist
+packages/editor/dist
+packages/ui/storybook-static
+
+.DS_Store
+.idea
+*.log

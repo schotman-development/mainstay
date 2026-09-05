@@ -1,0 +1,9 @@
+packages:
+  - packages/ui
+  - packages/editor
+  - packages/cms/resources/js
+
+# Storybook's Vite builder needs esbuild's platform binary, which arrives via
+# a postinstall script. pnpm blocks those unless named here.
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  php:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The dev toolchain floors at 8.4.1 (PHPUnit 13, Symfony 8), so the
+        # suite cannot run on 8.3. The runtime claim is checked separately below.
+        php: ['8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - uses: ramsey/composer-install@v3
+
+      - run: vendor/bin/pint --test
+
+      - run: vendor/bin/phpunit
+
+  runtime-floor:
+    name: PHP 8.3 runtime constraint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      # mainstay/cms claims php ^8.3, matching Laravel 13. Nothing else proves
+      # that claim, since the dev toolchain cannot install there.
+      - run: composer update --no-dev --working-dir=packages/cms
+
+  js:
+    name: JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      # A component workshop nobody builds rots. This catches a broken story
+      # or a theme that stopped compiling.
+      - run: pnpm --filter @mainstay/ui build-storybook
+
+      # packages/cms/dist is committed so that `composer require` needs no JS
+      # build. That only holds if it is never allowed to go stale.
+      - name: Admin bundle is up to date
+        run: git diff --exit-code -- packages/cms/dist
