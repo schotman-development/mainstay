@@ -25,18 +25,107 @@
 @source not "./**/*.test.ts";
 @source not "./**/*.test.tsx";
 
+/*
+ | Poppins, self-hosted rather than pulled in with @import url(...). Tailwind
+ | expands `@import "tailwindcss"` before this file is inlined, which would
+ | leave a remote @import mid-stylesheet -- illegal, and PostCSS drops it
+ | silently. @font-face carries no such ordering rule, so it survives into
+ | both Storybook and any consumer that imports this theme.
+ |
+ | The .woff2 files are vendored under src/fonts and referenced relatively,
+ | so they resolve from this file's own location in any consumer's bundler
+ | and ship with the package via the existing files: ["src"] entry. Poppins
+ | 4.004, under the SIL OFL alongside them in src/fonts/OFL.txt.
+ |
+ | Google also serves a devanagari subset, deliberately not vendored: it is
+ | ~40 KB across the three weights and its unicode-range never matches a
+ | Latin-script admin. The cost is that Hindi or Marathi entered in the
+ | editor falls back to a system font. To restore it, drop the three files
+ | in and append their @font-face blocks -- nothing else needs to change.
+ */
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(./fonts/poppins-400-latin-ext.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(./fonts/poppins-400-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(./fonts/poppins-500-latin-ext.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(./fonts/poppins-500-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(./fonts/poppins-600-latin-ext.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(./fonts/poppins-600-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @theme {
-  --color-canvas: oklch(0.985 0.002 260);
-  --color-surface: oklch(1 0 0);
-  --color-border: oklch(0.916 0.004 260);
-  --color-ink: oklch(0.23 0.012 260);
-  --color-muted: oklch(0.556 0.008 260);
-  --color-accent: oklch(0.55 0.18 264);
-  --color-accent-ink: oklch(0.99 0 0);
-  --color-danger: oklch(0.58 0.21 25);
+  /*
+   | Warm paper. The neutrals sit at hue 85 with very low chroma: enough to
+   | take the blue-white glare off, not enough to read as a cream theme.
+   | Nothing is pure white -- canvas tops out at 0.988 -- and the accent's
+   | chroma is cut from 0.18 to 0.11, which is where the blue stops buzzing
+   | against the background.
+   |
+   | Surface is darker than canvas, so panels recede into the page instead of
+   | floating above it. That inverts the usual light-mode elevation cue; the
+   | border token is doing the work of separating a panel from its background,
+   | so do not drop it from a surface without checking the result.
+   |
+   | Muted is 0.538 rather than a rounder 0.548 because it must clear 4.5:1
+   | against surface, the weakest pairing in the set; at 0.548 it lands on
+   | 4.45:1 and fails AA. Re-check with a contrast tool before nudging any
+   | lightness here.
+   */
+  --color-canvas: oklch(0.988 0.002 85);
+  --color-surface: oklch(0.967 0.004 85);
+  --color-border: oklch(0.9 0.005 85);
+  --color-ink: oklch(0.255 0.009 75);
+  --color-muted: oklch(0.538 0.009 80);
+  --color-accent: oklch(0.53 0.11 250);
+  --color-accent-ink: oklch(0.975 0.002 85);
+  --color-danger: oklch(0.56 0.16 25);
 
   --radius-control: 0.375rem;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: Poppins, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
