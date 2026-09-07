@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="mainstay-api" content="{{ url(config('mainstay.api.prefix')) }}">
+    <meta name="mainstay-admin" content="{{ route('mainstay.admin') }}">
     <title>Mainstay</title>
     <link rel="stylesheet" href="{{ asset('vendor/mainstay/mainstay.css') }}?v={{ \Mainstay\Mainstay::VERSION }}">
 </head>
