@@ -8,6 +8,23 @@
 
 @source ".";
 
+/*
+ | Stories are the workshop, not the library. Without this the utilities used
+ | only by *.stories.tsx are scanned into every consumer's stylesheet -- they
+ | were adding ~3 KB of dead CSS to the CMS admin bundle. Storybook re-adds
+ | the stories to its own scan in .storybook/preview.css.
+ */
+@source not "./**/*.stories.tsx";
+
+/*
+ | Tests are not part of the library either, and their prose is as dangerous as
+ | any other: the scanner has no parser, so an ordinary English word in a test
+ | name that also happens to name a utility compiles that utility into every
+ | consumer's stylesheet. One such word in a test title cost 1.2 KB here.
+ */
+@source not "./**/*.test.ts";
+@source not "./**/*.test.tsx";
+
 @theme {
   --color-canvas: oklch(0.985 0.002 260);
   --color-surface: oklch(1 0 0);

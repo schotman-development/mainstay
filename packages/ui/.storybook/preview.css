@@ -1,2 +1,5 @@
 @import 'tailwindcss';
 @import '../src/theme.css';
+
+/* theme.css excludes stories from its scan so they do not ship to consumers. */
+@source '../src/**/*.stories.tsx';
