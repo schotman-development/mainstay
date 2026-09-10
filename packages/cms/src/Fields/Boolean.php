@@ -19,14 +19,17 @@ class Boolean extends Field
 
     /* Every driver has its own idea of what it hands back for a boolean
        column -- 0, "0", b"\0" -- and none of them is `false`. */
-    public function cast(mixed $value): mixed
+    protected function from(mixed $value): mixed
     {
-        return $value === null ? null : (bool) $value;
+        return (bool) $value;
     }
 
-    public function serialize(mixed $value): mixed
+    /* A bool rather than an int, because Postgres rejects an integer written
+       to a boolean column outright rather than coercing it, and MySQL and
+       SQLite take the bool just as happily. */
+    protected function to(mixed $value): mixed
     {
-        return $value === null ? null : (int) (bool) $value;
+        return (bool) $value;
     }
 
     protected function json(): array

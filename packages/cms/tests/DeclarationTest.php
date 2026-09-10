@@ -13,6 +13,8 @@ use Mainstay\Fields\Text;
 use Mainstay\Fields\Textarea;
 use Mainstay\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Blanks;
+use Mainstay\Tests\Fixtures\ColorPicker;
 use Mainstay\Tests\Fixtures\NewsItem;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
@@ -96,7 +98,7 @@ class DeclarationTest extends TestCase
                 'publishedAt' => ['type' => ['string', 'null'], 'format' => 'date-time'],
                 'status' => ['type' => 'string', 'enum' => ['draft', 'review', 'live']],
             ],
-            'required' => ['title', 'readingMinutes', 'featured', 'status'],
+            'required' => ['title', 'summary', 'readingMinutes', 'featured', 'publishedAt', 'status'],
             'additionalProperties' => false,
         ], $this->mainstay->schema(Article::class));
     }
@@ -111,12 +113,12 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
-    public function it_lists_inherited_fields_before_the_ones_a_type_adds(): void
+    public function it_lists_inherited_and_trait_fields_before_the_ones_a_type_adds(): void
     {
         $this->assertSame(
-            ['title', 'source', 'seoDescription'],
+            ['title', 'seoDescription', 'source'],
             array_keys($this->mainstay->fields(NewsItem::class)),
-            'A base class declares first, so its fields read first, whatever order reflection answers in.',
+            'A base class and a trait declare first, so their fields read first, whatever order reflection answers in.',
         );
     }
 
@@ -154,10 +156,57 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
-    public function an_empty_date_is_absent_rather_than_today(): void
+    public function an_empty_box_is_absent_where_the_field_can_hold_nothing(): void
     {
-        $this->assertNull((new Date)->cast(''));
-        $this->assertNull((new Date)->serialize(''));
+        $fields = $this->mainstay->fields(Blanks::class);
+
+        /*
+         | Not just *today* for a date: 0 for an optional number and false for
+         | an optional boolean are the same silent value standing in for
+         | nothing. Where the property is not nullable the empty value is what
+         | it holds instead, since null is not a string and hydration would
+         | refuse it -- except a date and a select, neither of which has an
+         | empty value to hold. '' is not one of a select's options.
+         */
+        $expected = [
+            'keptText' => '',
+            'absentText' => null,
+            'keptProse' => '',
+            'absentProse' => null,
+            'keptNumber' => 0,
+            'absentNumber' => null,
+            'keptFlag' => false,
+            'absentFlag' => null,
+            'keptChoice' => null,
+            'absentChoice' => null,
+            'neverToday' => null,
+            'absentDate' => null,
+        ];
+
+        $this->assertSame($expected, array_map(fn (Field $field) => $field->cast(''), $fields));
+        $this->assertSame($expected, array_map(fn (Field $field) => $field->serialize(''), $fields));
+    }
+
+    #[Test]
+    public function a_date_of_whitespace_is_absent_rather_than_today(): void
+    {
+        $fields = $this->mainstay->fields(Blanks::class);
+
+        $this->assertNull($fields['neverToday']->cast('  '));
+        $this->assertNull($fields['neverToday']->serialize('  '));
+        $this->assertNull($fields['absentDate']->cast("\n"));
+    }
+
+    #[Test]
+    public function it_writes_out_the_type_the_column_holds(): void
+    {
+        $fields = $this->mainstay->fields(Article::class);
+
+        /* Serialize is not identity: a driver is no readier to take '7' for an
+           integer column than it was to hand one back. */
+        $this->assertSame(7, $fields['readingMinutes']->serialize('7'));
+        $this->assertSame('123', $fields['status']->serialize(123));
+        $this->assertTrue($fields['featured']->serialize('1'));
     }
 
     #[Test]
@@ -186,7 +235,8 @@ class DeclarationTest extends TestCase
         $this->assertSame('2026-09-10', (new Date)->serialize($date));
 
         $this->assertFalse($fields['featured']->cast('0'));
-        $this->assertSame(1, $fields['featured']->serialize(true));
+        $this->assertTrue($fields['featured']->serialize(true));
+        $this->assertFalse($fields['featured']->serialize('0'));
 
         $this->assertSame(7, $fields['readingMinutes']->cast('7'));
 
@@ -205,6 +255,10 @@ class DeclarationTest extends TestCase
 
         $this->assertSame('mainstay::fields.textarea', $fields['summary']->component());
         $this->assertSame('Reading Minutes', $fields['readingMinutes']->label());
+
+        /* A host cannot add views to `mainstay::`, so a field type it writes
+           itself would have no component it could ever supply. */
+        $this->assertSame('acme::fields.color-picker', (new ColorPicker)->component());
     }
 
     #[Test]

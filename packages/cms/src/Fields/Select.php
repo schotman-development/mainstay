@@ -43,9 +43,22 @@ class Select extends Field
        and the enum is a list of strings, so a value read back is one too. A
        property typed for anything else is a declaration disagreeing with the
        field it carries. */
-    public function cast(mixed $value): mixed
+    /* A select's empty value is not '' but nothing at all: '' is not in the
+       list, so falling back to it would manufacture a value this same object's
+       rules() and schema() both refuse. */
+    protected function blank(mixed $value): bool
     {
-        return $value === null ? null : (string) $value;
+        return parent::blank($value) || $value === '';
+    }
+
+    protected function from(mixed $value): mixed
+    {
+        return (string) $value;
+    }
+
+    protected function to(mixed $value): mixed
+    {
+        return (string) $value;
     }
 
     public function column(): ?array

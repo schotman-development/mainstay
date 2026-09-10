@@ -89,7 +89,14 @@ class Mainstay
             'type' => 'object',
             'title' => class_basename($type),
             'properties' => array_map(fn (Field $field) => $field->schema(), $fields),
-            'required' => array_keys(array_filter($fields, fn (Field $field) => $field->isRequired())),
+            /*
+             | Every key, because JSON Schema's `required` asks whether the key
+             | is present in the object, not whether an editor has to fill the
+             | box. Nullability already carries the second question, so
+             | filtering by isRequired() here states it twice and generates
+             | `summary?: string | null` for a key the payload always has.
+             */
+            'required' => array_keys($fields),
             'additionalProperties' => false,
         ];
     }
@@ -104,7 +111,9 @@ class Mainstay
          | base's title after everything the child adds -- an order the
          | declaration does not show anywhere, on a list phase 5 draws the form
          | from. A property a child redeclares keeps the base's position and
-         | takes the child's attribute.
+         | takes the child's attribute -- assignment by name overwrites in
+         | place, which is also why a trait's property, seen again on the class
+         | that uses it, keeps the slot the trait gave it.
          */
         foreach ($this->hierarchy($type) as $class) {
             foreach ($class->getProperties() as $property) {
@@ -141,13 +150,24 @@ class Mainstay
         return $fields;
     }
 
-    /** @return list<ReflectionClass> */
+    /*
+     | Root-first, and each class's traits ahead of the class itself: a trait is
+     | a horizontal base, so `use HasSeo` written at the top of a body should
+     | put its fields at the top of the form, the same way a parent's lead. PHP
+     | files trait properties after the ones the class declares itself, which is
+     | an order the declaration shows nowhere.
+     |
+     | One level of traits. A trait using a trait sorts by PHP's order until
+     | something actually declares fields that way.
+     |
+     | @return list<ReflectionClass>
+     */
     private function hierarchy(string $type): array
     {
         $classes = [];
 
         for ($class = new ReflectionClass($type); $class !== false; $class = $class->getParentClass()) {
-            array_unshift($classes, $class);
+            $classes = [...array_values($class->getTraits()), $class, ...$classes];
         }
 
         return $classes;

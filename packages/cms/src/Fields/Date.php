@@ -33,26 +33,32 @@ class Date extends Field
         return [...parent::rules(), 'date'];
     }
 
-    public function cast(mixed $value): mixed
+    /*
+     | A date has no empty value the way a string has "" and an integer has 0,
+     | so an empty box is absent whether the property is nullable or not.
+     |
+     | Whitespace as well as "", because CarbonImmutable::parse(" ") is *now*
+     | and would silently date an entry today. TrimStrings would have caught
+     | that on the way in from a form, but this is the field API and nothing
+     | promises a request ran first.
+     */
+    protected function blank(mixed $value): bool
     {
-        /* An empty box posts an empty string, and CarbonImmutable::parse('')
-           is *now* -- which would silently date an entry today. */
-        if ($value === null || $value === '') {
-            return null;
-        }
-
-        if ($value instanceof DateTimeInterface) {
-            return CarbonImmutable::instance($value);
-        }
-
-        return CarbonImmutable::parse($value);
+        return parent::blank($value) || (is_string($value) && trim($value) === '');
     }
 
-    public function serialize(mixed $value): mixed
+    protected function from(mixed $value): mixed
     {
-        /* Through cast() rather than beside it, so the empty box an editor
-           leaves alone is one absent date on the way out as well as in. */
-        return $this->cast($value)?->format($this->time ? 'Y-m-d H:i:s' : 'Y-m-d');
+        return $value instanceof DateTimeInterface
+            ? CarbonImmutable::instance($value)
+            : CarbonImmutable::parse($value);
+    }
+
+    /* Through from() rather than beside it, so a date written out is parsed
+       the same way one read in was. */
+    protected function to(mixed $value): mixed
+    {
+        return $this->from($value)->format($this->time ? 'Y-m-d H:i:s' : 'Y-m-d');
     }
 
     protected function json(): array

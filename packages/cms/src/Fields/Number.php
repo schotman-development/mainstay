@@ -37,9 +37,16 @@ class Number extends Field
         ]));
     }
 
-    public function cast(mixed $value): mixed
+    protected function from(mixed $value): mixed
     {
-        return $value === null ? null : ($this->isFloat() ? (float) $value : (int) $value);
+        return $this->isFloat() ? (float) $value : (int) $value;
+    }
+
+    /* Both directions, because a driver is no readier to take the string '7'
+       for an integer column than it was to hand one back. */
+    protected function to(mixed $value): mixed
+    {
+        return $this->from($value);
     }
 
     protected function json(): array

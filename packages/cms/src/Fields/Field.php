@@ -40,6 +40,14 @@ abstract class Field
 
     public readonly bool $nullable;
 
+    /*
+     | The view namespace component() draws from. A property rather than a
+     | literal because a host cannot add views to Mainstay's own: a field type
+     | is only registration-free if the half of it that draws lives somewhere
+     | the host can put it.
+     */
+    protected string $viewNamespace = 'mainstay';
+
     public function __construct(
         public readonly bool $required = false,
         public readonly bool $localized = false,
@@ -139,14 +147,49 @@ abstract class Field
         return $json;
     }
 
-    /* Database to PHP, and back. Identity for anything the driver already
-       hands back in the shape the property is typed for. */
+    /*
+     | Database to PHP, and back, with the empty box decided once here rather
+     | than by each field type's own idea of nothing -- 0, false, *today*.
+     |
+     | Subclasses convert real values in from() and to(); nothing blank() calls
+     | empty ever reaches them.
+     */
     public function cast(mixed $value): mixed
+    {
+        return $this->blank($value) ? null : $this->from($value);
+    }
+
+    public function serialize(mixed $value): mixed
+    {
+        return $this->blank($value) ? null : $this->to($value);
+    }
+
+    /*
+     | An empty box posts an empty string, and on a field that can hold nothing
+     | that is what it means: `?int $stock` left alone is absent, not zero.
+     |
+     | On a field that cannot -- `public string $title` -- it is the type's
+     | empty value instead, for the same reason schema() reads nullability off
+     | the property: null is not a string, and the property would refuse it at
+     | hydration.
+     |
+     | Protected, because not every type has an empty value to fall back on. A
+     | date has none, and a select's is not '' but nothing at all -- both widen
+     | this rather than smuggle the exception into their conversion.
+     */
+    protected function blank(mixed $value): bool
+    {
+        return $value === null || ($value === '' && $this->nullable);
+    }
+
+    /* Identity for anything the driver already hands back in the shape the
+       property is typed for. */
+    protected function from(mixed $value): mixed
     {
         return $value;
     }
 
-    public function serialize(mixed $value): mixed
+    protected function to(mixed $value): mixed
     {
         return $value;
     }
@@ -158,7 +201,7 @@ abstract class Field
      */
     public function component(): string
     {
-        return 'mainstay::fields.'.Str::kebab(class_basename(static::class));
+        return $this->viewNamespace.'::fields.'.Str::kebab(class_basename(static::class));
     }
 
     public function label(): string
