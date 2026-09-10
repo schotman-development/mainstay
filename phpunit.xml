@@ -10,11 +10,13 @@
     <testsuites>
         <testsuite name="Mainstay">
             <directory>packages/cms/tests</directory>
+            <directory>packages/ui/tests</directory>
         </testsuite>
     </testsuites>
     <source>
         <include>
             <directory>packages/cms/src</directory>
+            <directory>packages/ui/src</directory>
         </include>
     </source>
     <php>
