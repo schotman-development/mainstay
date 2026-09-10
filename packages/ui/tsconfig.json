@@ -1,8 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "plugins": [{ "name": "storybook-php/ts-plugin" }]
+  },
   "include": [
-    "src",
-    ".storybook",
-    "vite.config.ts"
+    "stories",
+    ".storybook"
   ]
 }

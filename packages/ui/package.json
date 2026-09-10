@@ -1,45 +1,30 @@
 {
   "name": "@mainstay/ui",
   "version": "0.1.0",
-  "description": "The Mainstay design system: tokens and React components for the CMS admin.",
+  "description": "The Mainstay design system: tokens and Blade components for the CMS admin.",
   "license": "MIT",
   "type": "module",
   "sideEffects": [
     "*.css"
   ],
   "files": [
-    "dist",
-    "src",
-    "!src/**/*.stories.*"
+    "resources"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./theme.css": "./src/theme.css"
+    "./behaviour": "./src/js/index.ts",
+    "./theme.css": "./resources/css/theme.css"
   },
   "scripts": {
-    "build": "vite build && tsc -p tsconfig.build.json",
-    "dev": "vite build --watch",
     "typecheck": "tsc --noEmit",
-    "storybook": "storybook dev --port 6106 --host 0.0.0.0 --no-open",
-    "build-storybook": "storybook build"
-  },
-  "peerDependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "storybook": "storybook-php start --port 6106 --host 0.0.0.0 --no-open",
+    "build-storybook": "storybook-php build"
   },
   "devDependencies": {
+    "@storybook/addon-a11y": "^10.6.0",
     "@storybook/addon-docs": "^10.6.0",
-    "@storybook/react-vite": "^10.6.0",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^6.1.1",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
     "storybook": "^10.6.0",
+    "storybook-php": "^0.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
