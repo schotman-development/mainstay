@@ -15,9 +15,11 @@ use Mainstay\Fields\Textarea;
  | The fixture phase 1 is checked against: one of every field type that ships,
  | declared the way a host would declare them.
  |
- | Every non-nullable property states `required` and every nullable one does
- | not, so the fixture reads the same under either answer to the open question
- | in Field::isRequired() -- the check is of the reflection, not of that.
+ | The argument and the property type agree wherever both speak, so the fixture
+ | checks the reflection rather than the presence rule. `featured` is the one
+ | non-nullable property whose attribute stays silent, because `required` on a
+ | boolean asks whether the box must be ticked and a featured flag does not
+ | have to be.
  */
 class Article extends Entry
 {
@@ -30,7 +32,7 @@ class Article extends Entry
     #[Number(min: 1, required: true)]
     public int $readingMinutes;
 
-    #[Boolean(required: true)]
+    #[Boolean]
     public bool $featured;
 
     #[Date(time: true)]

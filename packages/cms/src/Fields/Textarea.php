@@ -8,6 +8,11 @@ use Attribute;
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Textarea extends Field
 {
+    protected function empty(): mixed
+    {
+        return '';
+    }
+
     public function column(): ?array
     {
         return ['text'];

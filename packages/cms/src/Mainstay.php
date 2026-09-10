@@ -7,6 +7,7 @@ use Mainstay\Content\ContentType;
 use Mainstay\Fields\Field;
 use ReflectionAttribute;
 use ReflectionClass;
+use stdClass;
 
 class Mainstay
 {
@@ -44,6 +45,7 @@ class Mainstay
                 ));
             }
 
+            $type = $this->canonical($type);
             $handle = $type::handle();
 
             /*
@@ -76,6 +78,8 @@ class Mainstay
      */
     public function fields(string $type): array
     {
+        $type = $this->canonical($type);
+
         return $this->fields[$type] ??= $this->reflect($type);
     }
 
@@ -88,7 +92,10 @@ class Mainstay
         return [
             'type' => 'object',
             'title' => class_basename($type),
-            'properties' => array_map(fn (Field $field) => $field->schema(), $fields),
+            /* An empty PHP array encodes as `[]`, and JSON Schema wants an
+               object there -- ajv in strict mode and the .d.ts generator both
+               refuse the array. */
+            'properties' => array_map(fn (Field $field) => $field->schema(), $fields) ?: new stdClass,
             /*
              | Every key, because JSON Schema's `required` asks whether the key
              | is present in the object, not whether an editor has to fill the
@@ -99,6 +106,18 @@ class Mainstay
             'required' => array_keys($fields),
             'additionalProperties' => false,
         ];
+    }
+
+    /* `\App\Article` and `App\Article` are one class and two cache keys -- and
+       two field lists that could disagree, which is the one thing fields()
+       promises cannot happen. A type registers its handle from here for the
+       same reason. Case is left alone, and cannot usefully be otherwise: PHP's
+       class table is case-insensitive but PSR-4 is not, so `app\article` throws
+       until something has loaded the class under its real name and resolves
+       afterwards. Not a spelling to write. */
+    private function canonical(string $type): string
+    {
+        return (new ReflectionClass($type))->getName();
     }
 
     private function reflect(string $type): array

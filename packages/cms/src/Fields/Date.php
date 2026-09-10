@@ -16,7 +16,7 @@ class Date extends Field
      */
     public function __construct(
         public readonly bool $time = false,
-        bool $required = false,
+        ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
     ) {
@@ -31,20 +31,6 @@ class Date extends Field
     public function rules(): array
     {
         return [...parent::rules(), 'date'];
-    }
-
-    /*
-     | A date has no empty value the way a string has "" and an integer has 0,
-     | so an empty box is absent whether the property is nullable or not.
-     |
-     | Whitespace as well as "", because CarbonImmutable::parse(" ") is *now*
-     | and would silently date an entry today. TrimStrings would have caught
-     | that on the way in from a form, but this is the field API and nothing
-     | promises a request ran first.
-     */
-    protected function blank(mixed $value): bool
-    {
-        return parent::blank($value) || (is_string($value) && trim($value) === '');
     }
 
     protected function from(mixed $value): mixed

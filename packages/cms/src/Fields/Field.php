@@ -3,6 +3,7 @@
 namespace Mainstay\Fields;
 
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use ReflectionNamedType;
 use ReflectionProperty;
 
@@ -49,7 +50,7 @@ abstract class Field
     protected string $viewNamespace = 'mainstay';
 
     public function __construct(
-        public readonly bool $required = false,
+        public readonly ?bool $required = null,
         public readonly bool $localized = false,
         public readonly ?string $label = null,
     ) {}
@@ -61,6 +62,20 @@ abstract class Field
         $this->name = $property->getName();
         $this->phpType = $declared instanceof ReflectionNamedType ? $declared->getName() : 'mixed';
         $this->nullable = $declared === null || $declared->allowsNull();
+
+        /*
+         | The one declaration isRequired() cannot answer for: `required: false`
+         | on a property that has no null to be optional with. Refused here,
+         | where both halves are first in the same place, rather than left to
+         | surface as a TypeError at hydration.
+         */
+        if ($this->contradicts()) {
+            throw new InvalidArgumentException(sprintf(
+                '%s::$%s is declared optional but its type cannot hold null.',
+                $property->getDeclaringClass()->getName(),
+                $this->name,
+            ));
+        }
 
         return $this;
     }
@@ -76,43 +91,25 @@ abstract class Field
     abstract protected function json(): array;
 
     /*
-     | TODO(you): this is the one real decision in phase 1.
-     |
-     | Two sources of truth for "must have a value" are already in the
-     | declaration, and they do not have to agree:
-     |
-     |   #[Text(required: true)] public string $title      both say yes
-     |   #[Text] public ?string $subtitle                  both say no
-     |   #[Text] public string $status                     the type says yes,
-     |                                                     the attribute is
-     |                                                     silent
-     |   #[Text(required: false)] public string $title     they contradict
-     |
-     | Deriving it from the property type is declaration-first and cannot drift,
-     | since the class would not compile in disagreement with itself. But "not
-     | null" is not "not empty": an empty string satisfies `string` and is
-     | exactly what an editor submits when they leave a box alone. And a typed
-     | property that has never been assigned is uninitialized, a third state
-     | that is neither null nor a value.
-     |
-     | Taking the argument alone says precisely what the editor experiences, at
-     | the cost of letting a declaration contradict its own type -- and the
-     | contradiction surfaces as a TypeError at hydration, a long way from the
-     | line that caused it.
-     |
-     | Whatever this returns drives two things: the leading validation rule in
-     | rules() below, and the `required` array of the type's JSON Schema, which
-     | is what a consumer generates its TypeScript from. Answering "required
-     | when the argument says so, or when the type is not nullable" is the
-     | obvious middle, and it makes the fourth line above unreachable -- which
-     | may be right, or may be a contradiction worth throwing on instead.
-     |
-     | The stub takes the argument alone so the list and the schema are honest
-     | about only what was declared. Replace it.
+     | Required when the argument says so, or when the property has no null to
+     | be optional with. A silent attribute defers to the type, which is why the
+     | argument is nullable: `null` is "unstated", and `false` on a non-nullable
+     | property is a contradiction -- see contradicts(), which a type that
+     | redefines `required` redefines with it.
      */
     public function isRequired(): bool
     {
-        return $this->required;
+        return $this->required ?? ! $this->nullable;
+    }
+
+    /*
+     | Whether the declaration disagrees with itself. Its own question rather
+     | than an expression inline in bind(), because a type that redefines what
+     | `required` asks -- Boolean does -- redefines this with it.
+     */
+    protected function contradicts(): bool
+    {
+        return $this->required === false && ! $this->nullable;
     }
 
     /*
@@ -151,35 +148,63 @@ abstract class Field
      | Database to PHP, and back, with the empty box decided once here rather
      | than by each field type's own idea of nothing -- 0, false, *today*.
      |
-     | Subclasses convert real values in from() and to(); nothing blank() calls
-     | empty ever reaches them.
+     | from() sees only real values. to() sees one more: the empty value a
+     | non-nullable field falls back to, since that is what gets written.
      */
     public function cast(mixed $value): mixed
     {
-        return $this->blank($value) ? null : $this->from($value);
+        if (! $this->blank($value)) {
+            return $this->from($value);
+        }
+
+        return $this->nullable ? null : $this->empty();
     }
 
     public function serialize(mixed $value): mixed
     {
-        return $this->blank($value) ? null : $this->to($value);
+        if (! $this->blank($value)) {
+            return $this->to($value);
+        }
+
+        return $this->nullable ? null : $this->to($this->empty());
     }
 
     /*
-     | An empty box posts an empty string, and on a field that can hold nothing
-     | that is what it means: `?int $stock` left alone is absent, not zero.
-     |
-     | On a field that cannot -- `public string $title` -- it is the type's
-     | empty value instead, for the same reason schema() reads nullability off
-     | the property: null is not a string, and the property would refuse it at
-     | hydration.
-     |
-     | Protected, because not every type has an empty value to fall back on. A
-     | date has none, and a select's is not '' but nothing at all -- both widen
-     | this rather than smuggle the exception into their conversion.
+     | Nothing at all: a null column, an empty box, a box holding only spaces.
+     | Whether that becomes null is cast()'s question, not this one -- a type
+     | that trimmed here and a type that did not was the old split, and it made
+     | `'  '` an absent date but a zero stock.
      */
     protected function blank(mixed $value): bool
     {
-        return $value === null || ($value === '' && $this->nullable);
+        return $value === null || (is_string($value) && trim($value) === '');
+    }
+
+    /*
+     | What a field that cannot hold null holds instead: a value of its own that
+     | means nothing. Text, Textarea, Number and Boolean each have one -- '',
+     | '', 0 and false are values those fields are willing to store. A date has
+     | none, and a select's options are a closed list that does not contain
+     | "none of them", so either would have to invent one.
+     |
+     | Not "what the property type can hold": keptText and keptChoice are both
+     | `public string` and only one of them has an answer. Not "what the field's
+     | own rules accept" either -- keptText stores the '' its own `required`
+     | rejects.
+     |
+     | The read path reaches here on an ordinary NULL column, so throwing is not
+     | reserved for a bypassed validator -- `#[Number] public int` gets its 0
+     | through a validator that passed, and a non-nullable date declared over a
+     | nullable column gets this instead of a TypeError two frames later, which
+     | is the same news delivered where the declaration is named.
+     */
+    protected function empty(): mixed
+    {
+        throw new InvalidArgumentException(sprintf(
+            '%s is empty, and %s has no empty value. Declare the property nullable.',
+            $this->name,
+            class_basename(static::class),
+        ));
     }
 
     /* Identity for anything the driver already hands back in the shape the

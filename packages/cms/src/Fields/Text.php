@@ -15,11 +15,16 @@ class Text extends Field
      */
     public function __construct(
         public readonly int $max = 255,
-        bool $required = false,
+        ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
     ) {
         parent::__construct($required, $localized, $label);
+    }
+
+    protected function empty(): mixed
+    {
+        return '';
     }
 
     public function column(): ?array

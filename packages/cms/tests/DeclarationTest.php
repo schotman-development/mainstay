@@ -19,6 +19,8 @@ use Mainstay\Tests\Fixtures\NewsItem;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use ReflectionProperty;
+use stdClass;
 
 /*
  | No database and no application: reflection is the whole of phase 1, so the
@@ -139,6 +141,118 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function it_reads_presence_from_the_argument_then_the_property_type(): void
+    {
+        $fields = $this->mainstay->fields(Blanks::class);
+
+        /* Silent attribute, non-nullable property: the type answers. */
+        $this->assertTrue($fields['keptText']->isRequired());
+        $this->assertSame(['required', 'string', 'max:255'], $fields['keptText']->rules());
+
+        /* Silent attribute, nullable property: so is the field. */
+        $this->assertFalse($fields['absentText']->isRequired());
+        $this->assertSame(['nullable', 'string', 'max:255'], $fields['absentText']->rules());
+
+        /* The argument still wins where it is stated. */
+        $this->assertTrue((new Text(required: true))->bind(
+            new ReflectionProperty(Blanks::class, 'absentText')
+        )->isRequired());
+    }
+
+    #[Test]
+    public function it_refuses_an_optional_field_its_type_cannot_hold_nothing_in(): void
+    {
+        $this->expectExceptionMessage('cannot hold null');
+
+        $this->mainstay->fields(Fixtures\Broken\Contradicted::class);
+    }
+
+    #[Test]
+    public function a_backed_enum_is_a_selects_options(): void
+    {
+        $select = (new Select(options: Fixtures\Priority::class))->bind(
+            new ReflectionProperty(Blanks::class, 'absentChoice'),
+        );
+
+        /* The array form cannot say this: [0 => 'Low', 1 => 'Highly Urgent']
+           is the same array as ['Low', 'Highly Urgent'], so the keys are gone
+           before the attribute sees them. */
+        $this->assertSame([0 => 'Low', 1 => 'Highly Urgent'], $select->options());
+        $this->assertSame(['0', '1'], $select->values());
+        $this->assertSame(['nullable', 'in:"0","1"'], $select->rules());
+    }
+
+    #[Test]
+    public function a_required_boolean_asks_to_be_true_rather_than_present(): void
+    {
+        $bound = fn (Boolean $field) => $field->bind(new ReflectionProperty(Blanks::class, 'keptFlag'));
+
+        /* `required` fails on the absent key an unchecked box posts, so the
+           plain declaration has to stay satisfiable with it left alone. */
+        $this->assertSame(['nullable', 'boolean'], $bound(new Boolean)->rules());
+        $this->assertSame(['accepted'], $bound(new Boolean(required: true))->rules());
+    }
+
+    #[Test]
+    public function a_type_with_no_fields_still_has_an_object_for_properties(): void
+    {
+        $schema = $this->mainstay->schema(Fixtures\Bare::class);
+
+        /* [] encodes as a JSON array, which is not a schema. */
+        $this->assertEquals(new stdClass, $schema['properties']);
+        $this->assertSame('{"properties":{}}', json_encode(['properties' => $schema['properties']]));
+    }
+
+    #[Test]
+    public function it_reflects_a_class_once_however_its_name_is_spelled(): void
+    {
+        $this->assertSame(
+            $this->mainstay->fields(Article::class),
+            $this->mainstay->fields('\\'.Article::class),
+            'One class is one field list, or the schema and the form can disagree about it.',
+        );
+
+        $this->assertSame('Article', $this->mainstay->schema('\\'.Article::class)['title']);
+    }
+
+    #[Test]
+    public function it_refuses_a_select_over_a_property_that_does_not_hold_strings(): void
+    {
+        $this->expectExceptionMessage('a select stores strings');
+
+        (new Select(options: Fixtures\Priority::class))->bind(
+            new ReflectionProperty(Blanks::class, 'absentNumber'),
+        );
+    }
+
+    #[Test]
+    public function a_union_is_not_a_string_either(): void
+    {
+        /* $phpType is 'mixed' for every union as well as for no type at all,
+           so a guard reading it lets `int|float` through and hands it '7'. */
+        $this->expectExceptionMessage('a select stores strings');
+
+        (new Select(options: ['a', 'b']))->bind(
+            new ReflectionProperty(Fixtures\Broken\Widened::class, 'choice'),
+        );
+    }
+
+    #[Test]
+    public function an_optional_boolean_is_not_a_contradiction(): void
+    {
+        /* The guard reads nullability, but Boolean redefines what `required`
+           asks, so `required: false` on `public bool` is the ordinary way to
+           write a checkbox that defaults off rather than a declaration at odds
+           with its own type. */
+        $field = (new Boolean(required: false))->bind(
+            new ReflectionProperty(Blanks::class, 'keptFlag'),
+        );
+
+        $this->assertFalse($field->isRequired());
+        $this->assertSame(['nullable', 'boolean'], $field->rules());
+    }
+
+    #[Test]
     public function it_refuses_a_select_with_no_options(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -149,10 +263,13 @@ class DeclarationTest extends TestCase
     #[Test]
     public function an_option_containing_a_comma_stays_one_option(): void
     {
-        $this->assertSame(
-            ['nullable', 'in:"a,b","c"'],
-            (new Select(['a,b', 'c']))->rules(),
+        /* Bound, because presence now reads the property's nullability -- an
+           unbound field has no more answer for that than for its own name. */
+        $select = (new Select(['a,b', 'c']))->bind(
+            new ReflectionProperty(Blanks::class, 'absentChoice'),
         );
+
+        $this->assertSame(['nullable', 'in:"a,b","c"'], $select->rules());
     }
 
     #[Test]
@@ -165,8 +282,8 @@ class DeclarationTest extends TestCase
          | an optional boolean are the same silent value standing in for
          | nothing. Where the property is not nullable the empty value is what
          | it holds instead, since null is not a string and hydration would
-         | refuse it -- except a date and a select, neither of which has an
-         | empty value to hold. '' is not one of a select's options.
+         | refuse it -- except a date and a select, neither of which has a value
+         | of its own that means nothing.
          */
         $expected = [
             'keptText' => '',
@@ -177,24 +294,55 @@ class DeclarationTest extends TestCase
             'absentNumber' => null,
             'keptFlag' => false,
             'absentFlag' => null,
-            'keptChoice' => null,
             'absentChoice' => null,
-            'neverToday' => null,
             'absentDate' => null,
         ];
 
-        $this->assertSame($expected, array_map(fn (Field $field) => $field->cast(''), $fields));
-        $this->assertSame($expected, array_map(fn (Field $field) => $field->serialize(''), $fields));
+        /* Keyed off $expected rather than intersected with it, so reordering
+           Blanks fails on the behaviour under test and not on the order. */
+        $answers = fn (string $method) => array_map(
+            fn (string $name) => $fields[$name]->{$method}(''),
+            array_combine(array_keys($expected), array_keys($expected)),
+        );
+
+        $this->assertSame($expected, $answers('cast'));
+        $this->assertSame($expected, $answers('serialize'));
     }
 
     #[Test]
-    public function a_date_of_whitespace_is_absent_rather_than_today(): void
+    public function it_refuses_an_empty_box_the_field_has_no_value_for(): void
     {
         $fields = $this->mainstay->fields(Blanks::class);
 
-        $this->assertNull($fields['neverToday']->cast('  '));
-        $this->assertNull($fields['neverToday']->serialize('  '));
+        /* Not null, which the property would refuse at hydration, and not a
+           value invented for the occasion: a select's options are a closed list
+           and none of them means "none of them". */
+        $this->expectExceptionMessage('has no empty value');
+
+        $fields['keptChoice']->cast('');
+    }
+
+    #[Test]
+    public function a_non_nullable_date_has_no_empty_value_either(): void
+    {
+        $this->expectExceptionMessage('has no empty value');
+
+        $this->mainstay->fields(Blanks::class)['neverToday']->cast('  ');
+    }
+
+    #[Test]
+    public function whitespace_is_nothing_for_every_type_not_only_a_date(): void
+    {
+        $fields = $this->mainstay->fields(Blanks::class);
+
         $this->assertNull($fields['absentDate']->cast("\n"));
+
+        /* 0 for an optional number, and a space written into a select's
+           column as though it were a choice, were the same silent stand-in for
+           nothing that only Date used to guard against. */
+        $this->assertNull($fields['absentNumber']->cast('  '));
+        $this->assertNull($fields['absentChoice']->serialize(' '));
+        $this->assertNull($fields['absentText']->cast("\t"));
     }
 
     #[Test]
@@ -218,7 +366,7 @@ class DeclarationTest extends TestCase
             'title' => ['required', 'string', 'max:120'],
             'summary' => ['nullable', 'string'],
             'readingMinutes' => ['required', 'integer', 'min:1'],
-            'featured' => ['required', 'boolean'],
+            'featured' => ['nullable', 'boolean'],
             'publishedAt' => ['nullable', 'date'],
             'status' => ['required', 'in:"draft","review","live"'],
         ], $rules);
@@ -242,10 +390,14 @@ class DeclarationTest extends TestCase
 
         $this->assertSame('draft', $fields['status']->cast('draft'));
 
-        foreach ($fields as $field) {
-            $this->assertNull($field->cast(null));
-            $this->assertNull($field->serialize(null));
-        }
+        /* A null column reaching a property that cannot hold null is the same
+           empty box, and gets the same answer -- not null, which is what used
+           to come back for every field whatever its type. */
+        $this->assertNull($fields['summary']->cast(null));
+        $this->assertNull($fields['publishedAt']->cast(null));
+        $this->assertSame('', $fields['title']->cast(null));
+        $this->assertSame(0, $fields['readingMinutes']->cast(null));
+        $this->assertFalse($fields['featured']->cast(null));
     }
 
     #[Test]
@@ -259,6 +411,18 @@ class DeclarationTest extends TestCase
         /* A host cannot add views to `mainstay::`, so a field type it writes
            itself would have no component it could ever supply. */
         $this->assertSame('acme::fields.color-picker', (new ColorPicker)->component());
+    }
+
+    #[Test]
+    public function one_class_registers_once_however_its_name_is_spelled(): void
+    {
+        $this->mainstay->types([Article::class, '\\'.Article::class]);
+
+        $this->assertSame(
+            ['article' => Article::class],
+            $this->mainstay->registered(),
+            'A spelling is not a second type, and the handle it claims is not a collision.',
+        );
     }
 
     #[Test]

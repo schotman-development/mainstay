@@ -15,11 +15,16 @@ class Number extends Field
     public function __construct(
         public readonly int|float|null $min = null,
         public readonly int|float|null $max = null,
-        bool $required = false,
+        ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
     ) {
         parent::__construct($required, $localized, $label);
+    }
+
+    protected function empty(): mixed
+    {
+        return $this->isFloat() ? 0.0 : 0;
     }
 
     public function column(): ?array

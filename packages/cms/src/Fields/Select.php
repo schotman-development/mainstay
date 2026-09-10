@@ -3,7 +3,11 @@
 namespace Mainstay\Fields;
 
 use Attribute;
+use BackedEnum;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
+use ReflectionNamedType;
+use ReflectionProperty;
 
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Select extends Field
@@ -15,8 +19,8 @@ class Select extends Field
      | same list.
      */
     public function __construct(
-        public readonly array $options = [],
-        bool $required = false,
+        public readonly array|string $options = [],
+        ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
     ) {
@@ -24,11 +28,31 @@ class Select extends Field
             throw new InvalidArgumentException('A select field needs options: nothing satisfies an empty one.');
         }
 
+        if (is_string($options) && ! is_subclass_of($options, BackedEnum::class)) {
+            throw new InvalidArgumentException("{$options} is not a backed enum, so it has no options to offer.");
+        }
+
         parent::__construct($required, $localized, $label);
     }
 
+    /*
+     | `value => label`, or a list where each option is its own label.
+     |
+     | ponytail: `[0 => 'Off', 1 => 'On']` and `['Off', 'On']` are the same
+     | array once PHP has built it, so the list reading wins and the keys are
+     | gone. A backed enum is the way to say "stored value, and a label that is
+     | not it" when the values are numeric.
+     */
     public function options(): array
     {
+        if (is_string($this->options)) {
+            return array_reduce(
+                ($this->options)::cases(),
+                fn (array $options, BackedEnum $case) => $options + [$case->value => Str::headline($case->name)],
+                [],
+            );
+        }
+
         return array_is_list($this->options)
             ? array_combine($this->options, $this->options)
             : $this->options;
@@ -39,16 +63,34 @@ class Select extends Field
         return array_map(strval(...), array_keys($this->options()));
     }
 
-    /* A select stores strings: the column is a varchar, the schema says string
-       and the enum is a list of strings, so a value read back is one too. A
-       property typed for anything else is a declaration disagreeing with the
-       field it carries. */
-    /* A select's empty value is not '' but nothing at all: '' is not in the
-       list, so falling back to it would manufacture a value this same object's
-       rules() and schema() both refuse. */
-    protected function blank(mixed $value): bool
+    /*
+     | A select stores strings: the column is a varchar, the schema says string
+     | and the enum is a list of strings, so a value read back is one too. The
+     | class comment has claimed that since the type was written; here it is
+     | enforced, because `#[Select(options: Priority::class)] public ?Priority`
+     | is the declaration a backed enum invites and cast() hands it a string.
+     */
+    public function bind(ReflectionProperty $property): static
     {
-        return parent::blank($value) || $value === '';
+        /* Before parent::bind(), so a property that is both wrongly typed and
+           wrongly optional hears about the type first -- it is the half that
+           explains the other.
+
+           The declared type rather than $phpType, which is 'mixed' for an
+           untyped property and for every union alike, so `int|float` would pass
+           a check on that and then take a string. */
+        $declared = $property->getType();
+
+        if ($declared !== null && ! ($declared instanceof ReflectionNamedType && in_array($declared->getName(), ['string', 'mixed'], true))) {
+            throw new InvalidArgumentException(sprintf(
+                '%s::$%s is typed %s, and a select stores strings. A backed enum names the options, it does not type the property.',
+                $property->getDeclaringClass()->getName(),
+                $property->getName(),
+                (string) $declared,
+            ));
+        }
+
+        return parent::bind($property);
     }
 
     protected function from(mixed $value): mixed
