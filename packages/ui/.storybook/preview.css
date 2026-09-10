@@ -1,5 +1,6 @@
 @import 'tailwindcss';
-@import '../src/theme.css';
+@import '../resources/css/theme.css';
 
-/* theme.css excludes stories from its scan so they do not ship to consumers. */
-@source '../src/**/*.stories.tsx';
+/* The workshop's own utilities: theme.css scans the components, and the
+   decorators and story fixtures beside them are not part of the library. */
+@source '../stories';
