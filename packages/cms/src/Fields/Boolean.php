@@ -45,19 +45,40 @@ class Boolean extends Field
         return false;
     }
 
-    /* Every driver has its own idea of what it hands back for a boolean
-       column -- 0, "0", b"\0" -- and none of them is `false`. */
+    /*
+     | Every driver has its own idea of what it hands back for a boolean column
+     | -- 0, "0", "f", b"\0" -- and none of them is `false`. A plain cast reads
+     | the truthy ones as true, so a Postgres connection handing back strings
+     | reports every stored false as true.
+     |
+     | A list of the falses rather than a list of the trues: an encoding nobody
+     | here anticipated should read as true and be visible, not read as false
+     | and look like data.
+     */
     protected function from(mixed $value): mixed
     {
+        if (is_string($value)) {
+            return ! in_array(strtolower(trim($value)), ['', '0', 'f', 'false', 'off', 'no'], true);
+        }
+
         return (bool) $value;
     }
 
-    /* A bool rather than an int, because Postgres rejects an integer written
-       to a boolean column outright rather than coercing it, and MySQL and
-       SQLite take the bool just as happily. */
+    /* Through from(), because a form posts the same strings a driver hands
+       back. A bool rather than an int, because Postgres rejects an integer
+       written to a boolean column outright rather than coercing it, and MySQL
+       and SQLite take the bool just as happily. */
     protected function to(mixed $value): mixed
     {
-        return (bool) $value;
+        return $this->from($value);
+    }
+
+    /* The base trims with PHP's default charlist, which includes "\0" -- the
+       byte a MySQL bit column hands back for false. Blank means an empty box
+       here; a stored false is a value, and from() is what reads it. */
+    protected function blank(mixed $value): bool
+    {
+        return $value === null || (is_string($value) && trim($value, " \t\n\r\x0B") === '');
     }
 
     protected function json(): array

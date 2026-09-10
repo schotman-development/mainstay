@@ -117,6 +117,14 @@ class Mainstay
        afterwards. Not a spelling to write. */
     private function canonical(string $type): string
     {
+        /* fields() and schema() are the two entry points a host reaches with a
+           class name it typed, so a typo answers here in the same currency
+           types() pays in -- and not as the ReflectionException that no caller
+           guarding registration is catching for. */
+        if (! class_exists($type)) {
+            throw new InvalidArgumentException("{$type} is not a class Mainstay can reflect.");
+        }
+
         return (new ReflectionClass($type))->getName();
     }
 
@@ -136,7 +144,7 @@ class Mainstay
          */
         foreach ($this->hierarchy($type) as $class) {
             foreach ($class->getProperties() as $property) {
-                if ($property->isStatic() || $property->getDeclaringClass()->getName() !== $class->getName()) {
+                if ($property->getDeclaringClass()->getName() !== $class->getName()) {
                     continue;
                 }
 
@@ -148,16 +156,24 @@ class Mainstay
                     continue;
                 }
 
-                /* Both of these are a declaration that reads as if it works.
-                   Silently taking the first attribute, or silently skipping a
-                   field because it is not public, is a field an editor never
-                   sees and nothing anywhere reports. */
+                /* All three of these are a declaration that reads as if it
+                   works. Silently taking the first attribute, or silently
+                   skipping a field because it is not public or not an
+                   instance property, is a field an editor never sees and
+                   nothing anywhere reports. */
                 if (count($attributes) > 1) {
                     throw new InvalidArgumentException("{$type}::\${$property->getName()} has more than one field attribute on it.");
                 }
 
                 if (! $property->isPublic()) {
                     throw new InvalidArgumentException("{$type}::\${$property->getName()} carries a field attribute but is not public.");
+                }
+
+                /* A field is a value an entry holds, and a static property is
+                   one the class holds -- there is no row for it to be a
+                   column of. */
+                if ($property->isStatic()) {
+                    throw new InvalidArgumentException("{$type}::\${$property->getName()} carries a field attribute but is static.");
                 }
 
                 $field = $attributes[0]->newInstance()->bind($property);

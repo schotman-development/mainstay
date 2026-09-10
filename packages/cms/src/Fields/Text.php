@@ -14,10 +14,10 @@ class Text extends Field
      | disagree.
      */
     public function __construct(
-        public readonly int $max = 255,
         ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
+        public readonly int $max = 255,
     ) {
         parent::__construct($required, $localized, $label);
     }

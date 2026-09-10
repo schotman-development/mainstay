@@ -141,6 +141,28 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function it_refuses_a_field_attribute_on_a_static_property(): void
+    {
+        /* A field is a value an entry holds. Skipping this one in silence was
+           the same missing box the two guards above are here to prevent. */
+        $this->expectExceptionMessage('is static');
+
+        $this->mainstay->fields(Fixtures\Broken\Shared::class);
+    }
+
+    #[Test]
+    public function it_names_a_class_it_cannot_reflect(): void
+    {
+        /* fields() and schema() take a class name a host typed, so a typo
+           answers the way types() answers one rather than as a
+           ReflectionException nothing downstream is catching for. */
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('App\Typo');
+
+        $this->mainstay->fields('App\Typo');
+    }
+
+    #[Test]
     public function it_reads_presence_from_the_argument_then_the_property_type(): void
     {
         $fields = $this->mainstay->fields(Blanks::class);
@@ -238,6 +260,110 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function it_refuses_a_number_over_a_property_that_holds_neither(): void
+    {
+        /* The column plan and the property have to agree, or the declaration
+           reads as if it works and raises a TypeError at hydration. */
+        $this->expectExceptionMessage('a number stores an int or a float');
+
+        $this->mainstay->fields(Fixtures\Broken\Mistyped::class);
+    }
+
+    #[Test]
+    public function it_refuses_a_date_over_a_property_that_does_not_hold_one(): void
+    {
+        /* The guard Select and Number carry. from() hands back a
+           CarbonImmutable whatever the property is typed for. */
+        $this->expectExceptionMessage('a date hydrates into');
+
+        $this->mainstay->fields(Fixtures\Broken\Mistimed::class);
+    }
+
+    #[Test]
+    public function a_union_has_to_hold_a_date_in_every_arm(): void
+    {
+        /* Worse than the select's union, which at least raises a TypeError:
+           Carbon has a __toString, so `string|int` takes the date as a string
+           and stores it as one with nothing reporting anything. */
+        $this->expectExceptionMessage('Every part of the type has to hold one');
+
+        (new Date)->bind(new ReflectionProperty(Fixtures\Broken\Widened::class, 'whenever'));
+    }
+
+    #[Test]
+    public function an_intersection_has_to_hold_a_date_in_every_arm_too(): void
+    {
+        /* Assignability rather than the union's strictness: a value has to
+           satisfy every arm of an intersection to be stored in one. */
+        $this->expectExceptionMessage('a date hydrates into');
+
+        (new Date)->bind(new ReflectionProperty(Fixtures\Broken\Widened::class, 'neither'));
+    }
+
+    #[Test]
+    public function a_union_of_intersections_is_a_declaration_and_not_a_crash(): void
+    {
+        /* The one shape the guard used to reach the end of without a name --
+           and it did not pass through, it raised the engine TypeError the
+           guard exists to replace. */
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('a date hydrates into');
+
+        (new Date)->bind(new ReflectionProperty(Fixtures\Broken\Widened::class, 'nested'));
+    }
+
+    #[Test]
+    public function a_date_takes_any_property_a_carbon_can_be_assigned_to(): void
+    {
+        /* The question is not whether the type is a date, it is whether the
+           CarbonImmutable from() returns fits in it. */
+        foreach (['neverToday', 'absentDate'] as $property) {
+            $this->assertInstanceOf(
+                Date::class,
+                (new Date)->bind(new ReflectionProperty(Blanks::class, $property)),
+            );
+        }
+
+        /* Which is why these are refused: a CarbonImmutable is not a DateTime
+           and is not a Carbon, so neither property could hold what cast()
+           hands it. */
+        foreach (['aDateTime', 'aMutableCarbon'] as $property) {
+            try {
+                (new Date)->bind(new ReflectionProperty(Fixtures\Broken\Widened::class, $property));
+                $this->fail("{$property} cannot hold a CarbonImmutable and should have been refused.");
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString('a date hydrates into', $e->getMessage());
+            }
+        }
+    }
+
+    #[Test]
+    public function the_first_argument_of_every_field_type_is_presence(): void
+    {
+        /* Written the other way round, `#[Text(true)]` is a varchar(1) with a
+           one-character limit and `#[Boolean(true)]` is a required flag, and
+           the declaration does not show which of the two it is. */
+        $declarations = [
+            [new Text(true), 'absentText'],
+            [new Textarea(true), 'absentProse'],
+            [new Boolean(true), 'absentFlag'],
+            [new Number(true), 'absentNumber'],
+            [new Date(true), 'absentDate'],
+            [new Select(true, options: ['a', 'b']), 'absentChoice'],
+        ];
+
+        foreach ($declarations as [$field, $property]) {
+            $this->assertTrue(
+                $field->bind(new ReflectionProperty(Blanks::class, $property))->isRequired(),
+                $field::class.' reads its first argument as required.',
+            );
+        }
+
+        $this->assertSame(255, (new Text(true))->max, 'The type\'s own arguments come after, so none of them is what was set.');
+        $this->assertFalse((new Date(true))->time);
+    }
+
+    #[Test]
     public function an_optional_boolean_is_not_a_contradiction(): void
     {
         /* The guard reads nullability, but Boolean redefines what `required`
@@ -265,7 +391,7 @@ class DeclarationTest extends TestCase
     {
         /* Bound, because presence now reads the property's nullability -- an
            unbound field has no more answer for that than for its own name. */
-        $select = (new Select(['a,b', 'c']))->bind(
+        $select = (new Select(options: ['a,b', 'c']))->bind(
             new ReflectionProperty(Blanks::class, 'absentChoice'),
         );
 
@@ -398,6 +524,69 @@ class DeclarationTest extends TestCase
         $this->assertSame('', $fields['title']->cast(null));
         $this->assertSame(0, $fields['readingMinutes']->cast(null));
         $this->assertFalse($fields['featured']->cast(null));
+    }
+
+    #[Test]
+    public function a_timestamp_is_written_out_in_utc(): void
+    {
+        $fields = $this->mainstay->fields(Article::class);
+
+        /* The column has no zone to keep an offset in, so discarding it stores
+           a different instant from the one that was sent -- and two clients in
+           different zones posting the same moment store two different rows. */
+        $this->assertSame('2026-09-10 06:30:00', $fields['publishedAt']->serialize('2026-09-10T08:30:00+02:00'));
+
+        /* A date has no instant to convert. Shifting it by an offset moves the
+           day, which is the reason only the `time` branch normalises. */
+        $this->assertSame('2026-09-10', (new Date)->serialize('2026-09-10T00:30:00+02:00'));
+    }
+
+    #[Test]
+    public function a_timestamp_round_trips_whatever_zone_the_process_is_in(): void
+    {
+        $field = $this->mainstay->fields(Article::class)['publishedAt'];
+        $zone = date_default_timezone_get();
+
+        /*
+         | Reading a naive string in the process default and writing it out in
+         | UTC is a value that drifts by the offset between them every time it
+         | passes through the field. It is nothing at all under Laravel's
+         | default `app.timezone`, which is why only a host that changed it
+         | would ever see it -- everywhere, and silently.
+         */
+        try {
+            foreach (['UTC', 'Europe/Amsterdam', 'America/New_York'] as $timezone) {
+                date_default_timezone_set($timezone);
+
+                $this->assertSame('2026-09-10 06:30:00', $field->serialize('2026-09-10 06:30:00'), "A column value is UTC in {$timezone} too.");
+                $this->assertSame('2026-09-10 06:30:00', $field->serialize($field->cast('2026-09-10 06:30:00')));
+                $this->assertSame('2026-09-10 06:30:00', $field->serialize('2026-09-10T08:30:00+02:00'), "A stated offset is converted in {$timezone} too.");
+            }
+        } finally {
+            date_default_timezone_set($zone);
+        }
+    }
+
+    #[Test]
+    public function a_boolean_reads_every_false_a_driver_spells(): void
+    {
+        $fields = $this->mainstay->fields(Blanks::class);
+
+        /* A Postgres connection handing back strings reports 'f', and a plain
+           cast reads it as true -- every stored false read back inverted. */
+        foreach (['f', 'false', 'FALSE', '0', 'off', 'no'] as $false) {
+            $this->assertFalse($fields['keptFlag']->cast($false), "{$false} is a stored false.");
+            $this->assertFalse($fields['keptFlag']->serialize($false), "{$false} is written back as false.");
+        }
+
+        $this->assertTrue($fields['keptFlag']->cast('t'));
+        $this->assertTrue($fields['keptFlag']->cast('1'));
+
+        /* The byte a MySQL bit column hands back. The base blank() trims it as
+           whitespace, which made this an absent value on a nullable field
+           rather than the false it was stored as. */
+        $this->assertFalse($fields['absentFlag']->cast("\0"));
+        $this->assertNull($fields['absentFlag']->cast(''), 'An empty box is still nothing.');
     }
 
     #[Test]

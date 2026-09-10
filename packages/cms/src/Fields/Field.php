@@ -49,6 +49,14 @@ abstract class Field
      */
     protected string $viewNamespace = 'mainstay';
 
+    /*
+     | These three lead every field type's constructor, and a type's own
+     | arguments come after them, so the first positional argument means
+     | `required` whatever the attribute is. Written the other way round --
+     | which is the way it reads, since `#[Text(120)]` is the interesting
+     | argument first -- `#[Text(true)]` is a varchar(1) and `#[Boolean(true)]`
+     | is a required flag, and neither says which one it is.
+     */
     public function __construct(
         public readonly ?bool $required = null,
         public readonly bool $localized = false,

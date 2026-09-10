@@ -19,10 +19,10 @@ class Select extends Field
      | same list.
      */
     public function __construct(
-        public readonly array|string $options = [],
         ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
+        public readonly array|string $options = [],
     ) {
         if ($options === []) {
             throw new InvalidArgumentException('A select field needs options: nothing satisfies an empty one.');
