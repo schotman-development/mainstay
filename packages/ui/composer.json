@@ -1,0 +1,25 @@
+{
+    "name": "mainstay/ui",
+    "description": "The Mainstay design system: tokens and Blade components for the CMS admin.",
+    "keywords": ["laravel", "blade", "design-system"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "illuminate/support": "^13.0",
+        "illuminate/view": "^13.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Mainstay\\Ui\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Mainstay\\Ui\\UiServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

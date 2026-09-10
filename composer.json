@@ -8,6 +8,7 @@
     },
     "require-dev": {
         "mainstay/cms": "@dev",
+        "mainstay/ui": "@dev",
         "orchestra/testbench": "^11.0",
         "laravel/pint": "^1.18"
     },
@@ -18,11 +19,20 @@
             "options": {
                 "symlink": true
             }
+        },
+        {
+            "type": "path",
+            "url": "packages/ui",
+            "options": {
+                "symlink": true
+            }
         }
     ],
     "autoload-dev": {
         "psr-4": {
             "Mainstay\\Tests\\": "packages/cms/tests/",
+            "Mainstay\\Ui\\Tests\\": "packages/ui/tests/",
+            "Mainstay\\Ui\\Demo\\": "packages/ui/stories/php/",
             "Workbench\\App\\": "workbench/app/",
             "Workbench\\Database\\Factories\\": "workbench/database/factories/",
             "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
