@@ -4,26 +4,16 @@
  |
  | @source is relative to this file, so any consumer that imports the theme
  | gets the component classes scanned without configuring paths themselves.
+ |
+ | It points at the components alone. The workshop -- stories, their Blade
+ | fixtures, the preview decorator -- sits outside resources/ precisely so that
+ | none of it needs excluding here: utilities used only by a story used to be
+ | scanned into every consumer's stylesheet, and the exclusions that stopped
+ | that were a rule to remember rather than a fact about the layout.
+ | .storybook/preview.css adds the stories back for Storybook's own build.
  */
 
-@source ".";
-
-/*
- | Stories are the workshop, not the library. Without this the utilities used
- | only by *.stories.tsx are scanned into every consumer's stylesheet -- they
- | were adding ~3 KB of dead CSS to the CMS admin bundle. Storybook re-adds
- | the stories to its own scan in .storybook/preview.css.
- */
-@source not "./**/*.stories.tsx";
-
-/*
- | Tests are not part of the library either, and their prose is as dangerous as
- | any other: the scanner has no parser, so an ordinary English word in a test
- | name that also happens to name a utility compiles that utility into every
- | consumer's stylesheet. One such word in a test title cost 1.2 KB here.
- */
-@source not "./**/*.test.ts";
-@source not "./**/*.test.tsx";
+@source "../views";
 
 /*
  | Poppins, self-hosted rather than pulled in with @import url(...). Tailwind
@@ -32,10 +22,10 @@
  | silently. @font-face carries no such ordering rule, so it survives into
  | both Storybook and any consumer that imports this theme.
  |
- | The .woff2 files are vendored under src/fonts and referenced relatively,
+ | The .woff2 files are vendored beside this file and referenced relatively,
  | so they resolve from this file's own location in any consumer's bundler
- | and ship with the package via the existing files: ["src"] entry. Poppins
- | 4.004, under the SIL OFL alongside them in src/fonts/OFL.txt.
+ | and ship with the package via the existing files: ["resources"] entry. Poppins
+ | 4.004, under the SIL OFL alongside them in fonts/OFL.txt.
  |
  | Google also serves a devanagari subset, deliberately not vendored: it is
  | ~40 KB across the three weights and its unicode-range never matches a
