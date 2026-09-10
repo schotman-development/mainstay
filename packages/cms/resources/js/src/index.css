@@ -1,3 +1,8 @@
 @import 'tailwindcss';
 @import '@mainstay/ui/theme.css';
 @import '@mainstay/editor/style.css';
+
+/* The admin's own screens. theme.css brings the design system's components with
+   it, but the Blade that arranges them lives in the CMS package, outside
+   anything Tailwind would find on its own from here. */
+@source '../../views';
