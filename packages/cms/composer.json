@@ -1,11 +1,12 @@
 {
     "name": "mainstay/cms",
-    "description": "A headless CMS for Laravel: content modelled in PHP, edited in a React admin, served to static sites over HTTP.",
+    "description": "A headless CMS for Laravel: content modelled in PHP, edited in a Blade admin, served to static sites over HTTP.",
     "keywords": ["laravel", "cms", "headless", "content"],
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "illuminate/support": "^13.0"
+        "illuminate/support": "^13.0",
+        "mainstay/ui": "@dev"
     },
     "autoload": {
         "psr-4": {

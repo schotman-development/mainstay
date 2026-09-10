@@ -19,7 +19,8 @@ class ServiceProviderTest extends TestCase
     {
         $this->get('/admin')
             ->assertOk()
-            ->assertSee('id="mainstay"', escape: false);
+            ->assertSee('id="mainstay-editor"', escape: false)
+            ->assertSee('aria-label="Sections"', escape: false);
     }
 
     #[Test]
