@@ -6,11 +6,7 @@ use Attribute;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use InvalidArgumentException;
-use ReflectionIntersectionType;
-use ReflectionNamedType;
 use ReflectionProperty;
-use ReflectionType;
-use ReflectionUnionType;
 
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Date extends Field
@@ -59,11 +55,15 @@ class Date extends Field
          | The cost is refusing a `CarbonImmutable|string` that would have
          | worked. That is a loud refusal naming the property, against a silent
          | acceptance surfacing two frames away.
+         |
+         | Its own loop rather than stores(): what a date can hydrate into is an
+         | assignability question rather than a list of names, and the message
+         | has a tail only a composite type gets.
          */
         $names = $this->names($declared);
 
         foreach ($names as $name) {
-            if ($this->holdsADate($name)) {
+            if ($this->holdsADate($name, count($names) > 1)) {
                 continue;
             }
 
@@ -100,6 +100,15 @@ class Date extends Field
      | then is silent and everywhere. A string that does carry an offset keeps
      | it, and so does a DateTimeInterface: both stated a zone, and to()
      | converts rather than discards.
+     |
+     | Which puts one rule on the caller: hand a column value over as the
+     | string it is. `new DateTime('2026-09-10 06:30:00')` inherits the process
+     | default -- the ambient zone this branch refuses to read a string in --
+     | and is then converted out of it, so wrapping a naive string on the way
+     | in shifts the instant. It cannot be guarded here: an object built that
+     | way and a CarbonImmutable::now() are the same object, a timezone_type 3
+     | named for the ambient zone, and now() is the instant it says it is.
+     | Refusing them together would refuse the common one to catch the mistake.
      |
      | ponytail: an editor typing a naive time into the admin therefore types
      | UTC. The form sends an offset when the editor's zone matters, which is
@@ -145,33 +154,20 @@ class Date extends Field
         return ['type' => 'string', 'format' => $this->time ? 'date-time' : 'date'];
     }
 
-    /* Flattened rather than matched arm by arm, so a union, an intersection
-       and the union-of-intersections PHP allows all answer the same way, and
-       none of them is a shape this reaches the end of without a name.
-
-       @return list<string> */
-    private function names(?ReflectionType $type): array
-    {
-        return match (true) {
-            $type instanceof ReflectionNamedType => [$type->getName()],
-            $type instanceof ReflectionUnionType,
-            $type instanceof ReflectionIntersectionType => array_merge(
-                ...array_map($this->names(...), $type->getTypes()),
-            ),
-            /* No type at all, which holds anything. */
-            default => [],
-        };
-    }
-
     /* Backwards on purpose: the question is not whether the declared type is a
        date, it is whether the CarbonImmutable from() returns can be assigned
        to it. Which is why `DateTime` and `Carbon` are refused -- neither is
        something a CarbonImmutable is -- and why a subclass of CarbonImmutable
-       is too. `mixed` and `object` hold one and name no class to ask about;
-       `null` is a union's own way of writing what `?` writes. */
-    private function holdsADate(string $type): bool
+       is too. `mixed` and `object` hold one and name no class to ask about.
+
+       `null` only beside other arms: `?CarbonImmutable` reflects as a plain
+       CarbonImmutable that allows null, so the name turns up in a union of
+       three or in `(A&B)|null` -- or as `public null $when`, which holds no
+       date and every other check would have refused. */
+    private function holdsADate(string $type, bool $composite): bool
     {
-        return in_array($type, ['mixed', 'object', 'null'], true)
+        return in_array($type, ['mixed', 'object'], true)
+            || ($type === 'null' && $composite)
             || is_a(CarbonImmutable::class, $type, true);
     }
 }

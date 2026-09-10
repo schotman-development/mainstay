@@ -3,10 +3,25 @@
 namespace Mainstay\Fields;
 
 use Attribute;
+use ReflectionProperty;
 
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Boolean extends Field
 {
+    /*
+     | The one guard whose absence nothing ever reports. from() hands back a
+     | bool, and `#[Boolean] public string $flag` takes it under coercive
+     | assignment as the string "1" -- a plan for a boolean column, a schema
+     | saying boolean, and a property holding text, with no TypeError anywhere
+     | to say so.
+     */
+    public function bind(ReflectionProperty $property): static
+    {
+        $this->stores($property, ['bool'], 'a boolean stores true or false');
+
+        return parent::bind($property);
+    }
+
     protected function empty(): mixed
     {
         return false;

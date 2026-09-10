@@ -3,6 +3,7 @@
 namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
+use DateTime;
 use InvalidArgumentException;
 use Mainstay\Fields\Boolean;
 use Mainstay\Fields\Date;
@@ -270,6 +271,59 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function a_number_has_to_hold_one_in_every_arm(): void
+    {
+        /* Reading the declared type as a single name let every union past a
+           guard written to admit `int|float`, and cast() then coerced 7.5 into
+           whichever arm PHP reached for -- true for a bool, '7.5' for a
+           string. */
+        $this->expectExceptionMessage('a number stores an int or a float');
+
+        (new Number)->bind(new ReflectionProperty(Fixtures\Broken\Widened::class, 'sku'));
+    }
+
+    #[Test]
+    public function null_is_an_arm_of_a_union_and_not_a_type_a_field_stores(): void
+    {
+        /* `?int` and `int|null` both reflect as a plain `int` that allows
+           null, so the name only ever arrives beside other arms. Allowed on
+           its own, `public null $stock` binds and then raises the TypeError
+           the guard exists to replace. */
+        $this->expectExceptionMessage('a number stores an int or a float');
+
+        (new Number)->bind(new ReflectionProperty(Fixtures\Broken\Miscast::class, 'nothing'));
+    }
+
+    #[Test]
+    public function it_refuses_a_boolean_over_a_property_that_does_not_hold_one(): void
+    {
+        /* The only one of these that reports nothing on its own: from() hands
+           back a bool and coercive assignment stores the string "1", so the
+           column plan, the schema and the property all disagree in silence. */
+        $this->expectExceptionMessage('a boolean stores true or false');
+
+        (new Boolean)->bind(new ReflectionProperty(Fixtures\Broken\Miscast::class, 'flag'));
+    }
+
+    #[Test]
+    public function it_refuses_a_text_field_over_a_property_that_does_not_hold_strings(): void
+    {
+        /* Both of them, because a textarea is not a text field's subclass and
+           would otherwise carry the guard only one of them has. */
+        $this->expectExceptionMessage('a text field stores strings');
+
+        (new Text)->bind(new ReflectionProperty(Fixtures\Broken\Miscast::class, 'count'));
+    }
+
+    #[Test]
+    public function a_textarea_does_not_hold_an_array_either(): void
+    {
+        $this->expectExceptionMessage('a textarea field stores strings');
+
+        (new Textarea)->bind(new ReflectionProperty(Fixtures\Broken\Miscast::class, 'tags'));
+    }
+
+    #[Test]
     public function it_refuses_a_date_over_a_property_that_does_not_hold_one(): void
     {
         /* The guard Select and Number carry. from() hands back a
@@ -384,6 +438,17 @@ class DeclarationTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         new Select;
+    }
+
+    #[Test]
+    public function an_enum_with_no_cases_is_a_select_with_no_options(): void
+    {
+        /* It passed both constructor checks and produced the rule `in:`, which
+           Laravel reads as the single option null and compares strictly
+           against -- a field no value can ever satisfy. */
+        $this->expectExceptionMessage('A select field needs options');
+
+        new Select(options: Fixtures\Nothing::class);
     }
 
     #[Test]
@@ -568,6 +633,43 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function an_object_is_converted_out_of_the_zone_it_carries(): void
+    {
+        $field = $this->mainstay->fields(Article::class)['publishedAt'];
+        $zone = date_default_timezone_get();
+
+        try {
+            date_default_timezone_set('Europe/Amsterdam');
+
+            /* A string with no zone is the column's own value, and the column
+               is UTC. */
+            $this->assertSame('2026-09-10 06:30:00', $field->serialize('2026-09-10 06:30:00'));
+
+            /* An object stated a zone, so it is converted rather than read.
+               Which is the only reading that stores a local instant as the
+               instant it is. */
+            $this->assertSame(
+                '2026-09-10 04:30:00',
+                $field->serialize(CarbonImmutable::parse('2026-09-10 06:30:00', 'Europe/Amsterdam')),
+            );
+
+            /*
+             | And the cost of that, pinned rather than guarded: a naive string
+             | wrapped in a DateTime inherits the process default and is shifted
+             | by it -- the same 04:30, from a value that meant 06:30 UTC.
+             |
+             | Nothing distinguishes the two objects. Both are a timezone_type 3
+             | named for the ambient zone, so a guard that refused this one would
+             | refuse CarbonImmutable::now() with it. The rule is the caller's:
+             | hand a column value over as the string it is.
+             */
+            $this->assertSame('2026-09-10 04:30:00', $field->serialize(new DateTime('2026-09-10 06:30:00')));
+        } finally {
+            date_default_timezone_set($zone);
+        }
+    }
+
+    #[Test]
     public function a_boolean_reads_every_false_a_driver_spells(): void
     {
         $fields = $this->mainstay->fields(Blanks::class);
@@ -632,6 +734,16 @@ class DeclarationTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         $this->mainstay->types([Text::class]);
+    }
+
+    #[Test]
+    public function it_names_an_abstract_type_as_abstract(): void
+    {
+        /* A base class does extend Entry, so the other branch's message tells
+           its author to do the thing they already did. */
+        $this->expectExceptionMessage('is abstract');
+
+        $this->mainstay->types([Fixtures\BaseArticle::class]);
     }
 
     #[Test]

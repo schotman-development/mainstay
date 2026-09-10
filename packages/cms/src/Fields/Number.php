@@ -3,8 +3,6 @@
 namespace Mainstay\Fields;
 
 use Attribute;
-use InvalidArgumentException;
-use ReflectionNamedType;
 use ReflectionProperty;
 
 /*
@@ -31,22 +29,15 @@ class Number extends Field
      | cannot hold -- so the declaration reads as if it works and fails at
      | hydration, two frames from anything naming the attribute.
      |
-     | The declared type rather than $phpType, which is 'mixed' for a union as
-     | well as for no type at all: those are the cases isFloat()'s guess was
-     | written for and they stay its business.
+     | Every arm, not the declared type as a whole: reading a single name let
+     | `string|array` past a guard written to admit `int|float`, and the cast
+     | then coerced 7.5 into whichever arm PHP reached for. What isFloat()
+     | guesses at is which of int and float a union means, not whether it is
+     | one.
      */
     public function bind(ReflectionProperty $property): static
     {
-        $declared = $property->getType();
-
-        if ($declared instanceof ReflectionNamedType && ! in_array($declared->getName(), ['int', 'float', 'mixed'], true)) {
-            throw new InvalidArgumentException(sprintf(
-                '%s::$%s is typed %s, and a number stores an int or a float.',
-                $property->getDeclaringClass()->getName(),
-                $property->getName(),
-                (string) $declared,
-            ));
-        }
+        $this->stores($property, ['int', 'float'], 'a number stores an int or a float');
 
         return parent::bind($property);
     }

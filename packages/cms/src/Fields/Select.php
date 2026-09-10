@@ -6,7 +6,6 @@ use Attribute;
 use BackedEnum;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use ReflectionNamedType;
 use ReflectionProperty;
 
 #[Attribute(Attribute::TARGET_PROPERTY)]
@@ -24,12 +23,18 @@ class Select extends Field
         ?string $label = null,
         public readonly array|string $options = [],
     ) {
-        if ($options === []) {
-            throw new InvalidArgumentException('A select field needs options: nothing satisfies an empty one.');
-        }
-
         if (is_string($options) && ! is_subclass_of($options, BackedEnum::class)) {
             throw new InvalidArgumentException("{$options} is not a backed enum, so it has no options to offer.");
+        }
+
+        /* Through options() rather than against `[]`, because an enum with no
+           cases is the same empty list written somewhere this constructor
+           cannot see. It passed both checks and produced the rule `in:`, which
+           Laravel reads as the single option null and then compares strictly
+           against -- a field no value can ever satisfy, which is the invariant
+           this message asserts. */
+        if ($this->options() === []) {
+            throw new InvalidArgumentException('A select field needs options: nothing satisfies an empty one.');
         }
 
         parent::__construct($required, $localized, $label);
@@ -74,21 +79,12 @@ class Select extends Field
     {
         /* Before parent::bind(), so a property that is both wrongly typed and
            wrongly optional hears about the type first -- it is the half that
-           explains the other.
-
-           The declared type rather than $phpType, which is 'mixed' for an
-           untyped property and for every union alike, so `int|float` would pass
-           a check on that and then take a string. */
-        $declared = $property->getType();
-
-        if ($declared !== null && ! ($declared instanceof ReflectionNamedType && in_array($declared->getName(), ['string', 'mixed'], true))) {
-            throw new InvalidArgumentException(sprintf(
-                '%s::$%s is typed %s, and a select stores strings. A backed enum names the options, it does not type the property.',
-                $property->getDeclaringClass()->getName(),
-                $property->getName(),
-                (string) $declared,
-            ));
-        }
+           explains the other. */
+        $this->stores(
+            $property,
+            ['string'],
+            'a select stores strings. A backed enum names the options, it does not type the property',
+        );
 
         return parent::bind($property);
     }

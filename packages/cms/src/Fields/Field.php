@@ -4,8 +4,11 @@ namespace Mainstay\Fields;
 
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use ReflectionIntersectionType;
 use ReflectionNamedType;
 use ReflectionProperty;
+use ReflectionType;
+use ReflectionUnionType;
 
 /*
  | The field type contract, and the attribute a declaration is written with, in
@@ -86,6 +89,63 @@ abstract class Field
         }
 
         return $this;
+    }
+
+    /*
+     | Refuse a property this field cannot hydrate into. Every field type whose
+     | from() hands back something narrower than the value it was given needs
+     | this, and needs it in bind(): a mistyped declaration otherwise reads as
+     | if it works and then either raises a TypeError two frames into hydration
+     | with nothing in it naming the attribute, or -- where the cast coerces --
+     | reports nothing at all and stores the wrong thing.
+     |
+     | Every name in the declaration has to be one of $names, which is stricter
+     | than PHP for a union: PHP stores a value that matches any single arm, so
+     | the loose reading accepts `string|int` and lets the coercion pick the
+     | arm. See Date::bind() for why the loose reading cannot be written
+     | correctly at all.
+     |
+     | `mixed` and an untyped property hold anything. `null` is allowed as an
+     | arm and not as a type: `?int` and `int|null` both reflect as a plain
+     | `int` that allows null, so the name only ever turns up beside others --
+     | `int|float|null`, `(A&B)|null` -- or as `public null $x`, which is a
+     | property nothing this field casts to can be stored in.
+     */
+    protected function stores(ReflectionProperty $property, array $names, string $because): void
+    {
+        $declared = $this->names($property->getType());
+
+        foreach ($declared as $name) {
+            if (in_array($name, [...$names, 'mixed'], true) || ($name === 'null' && count($declared) > 1)) {
+                continue;
+            }
+
+            throw new InvalidArgumentException(sprintf(
+                '%s::$%s is typed %s, and %s.',
+                $property->getDeclaringClass()->getName(),
+                $property->getName(),
+                (string) $property->getType(),
+                $because,
+            ));
+        }
+    }
+
+    /* Flattened rather than matched arm by arm, so a union, an intersection
+       and the union-of-intersections PHP allows all answer the same way, and
+       none of them is a shape this reaches the end of without a name.
+
+       @return list<string> */
+    protected function names(?ReflectionType $type): array
+    {
+        return match (true) {
+            $type instanceof ReflectionNamedType => [$type->getName()],
+            $type instanceof ReflectionUnionType,
+            $type instanceof ReflectionIntersectionType => array_merge(
+                ...array_map($this->names(...), $type->getTypes()),
+            ),
+            /* No type at all, which holds anything. */
+            default => [],
+        };
     }
 
     /*

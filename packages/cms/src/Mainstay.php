@@ -38,11 +38,18 @@ class Mainstay
     public function types(array $types): void
     {
         foreach ($types as $type) {
-            if (! is_string($type) || ! is_subclass_of($type, ContentType::class) || (new ReflectionClass($type))->isAbstract()) {
+            if (! is_string($type) || ! is_subclass_of($type, ContentType::class)) {
                 throw new InvalidArgumentException(sprintf(
                     '%s is not a Mainstay content type. Extend Entry, GlobalSet or Taxonomy.',
                     is_string($type) ? $type : get_debug_type($type),
                 ));
+            }
+
+            /* Its own branch, because it is its own mistake: a base class does
+               extend Entry, and telling its author to do that is an answer to
+               a question they did not ask. */
+            if ((new ReflectionClass($type))->isAbstract()) {
+                throw new InvalidArgumentException("{$type} is abstract, so there is no content to register. Register the types that extend it.");
             }
 
             $type = $this->canonical($type);

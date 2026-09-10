@@ -5,12 +5,19 @@ namespace Mainstay\Tests\Fixtures\Broken;
 use Carbon\Carbon;
 use Mainstay\Content\Entry;
 use Mainstay\Fields\Date;
+use Mainstay\Fields\Number;
 use Mainstay\Fields\Select;
 
 class Widened extends Entry
 {
     #[Select(options: ['a', 'b'])]
     public int|float $choice;
+
+    /* A guard reading the declared type as a single name admits every union,
+       not just the `int|float` it was written for -- and 7.5 then coerces into
+       whichever arm PHP reaches for. */
+    #[Number]
+    public string|array $sku;
 
     /* Not a TypeError even without a guard: Carbon has a __toString, so this
        one holds the date as a string and reports nothing. */
