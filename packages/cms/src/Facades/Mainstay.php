@@ -6,6 +6,10 @@ use Illuminate\Support\Facades\Facade;
 
 /**
  * @method static string version()
+ * @method static void types(array $types)
+ * @method static array registered()
+ * @method static array fields(string $type)
+ * @method static array schema(string $type)
  *
  * @see \Mainstay\Mainstay
  */

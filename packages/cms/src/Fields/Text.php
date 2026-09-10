@@ -1,0 +1,39 @@
+<?php
+
+namespace Mainstay\Fields;
+
+use Attribute;
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+class Text extends Field
+{
+    /*
+     | The length is the column's as well as the rule's. A varchar has to be
+     | some width, and taking it from the field is the only version where the
+     | limit an editor is held to and the limit the database enforces cannot
+     | disagree.
+     */
+    public function __construct(
+        public readonly int $max = 255,
+        bool $required = false,
+        bool $localized = false,
+        ?string $label = null,
+    ) {
+        parent::__construct($required, $localized, $label);
+    }
+
+    public function column(): ?array
+    {
+        return ['string', $this->max];
+    }
+
+    public function rules(): array
+    {
+        return [...parent::rules(), 'string', "max:{$this->max}"];
+    }
+
+    protected function json(): array
+    {
+        return ['type' => 'string', 'maxLength' => $this->max];
+    }
+}
