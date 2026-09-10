@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "edbffce0d14ad2cea675f609d733bcc5",
+    "content-hash": "41aa285729afbc3ae09743f6aa2fb06a",
     "packages": [],
     "packages-dev": [
         {
@@ -2452,10 +2452,11 @@
             "dist": {
                 "type": "path",
                 "url": "packages/cms",
-                "reference": "2ccd14c194ce87be0f45db23750b8457a88d9ad4"
+                "reference": "3708a92bcc528b6da9054962d1bd183c61fb0cdc"
             },
             "require": {
                 "illuminate/support": "^13.0",
+                "mainstay/ui": "@dev",
                 "php": "^8.3"
             },
             "type": "library",
@@ -2482,6 +2483,46 @@
                 "cms",
                 "content",
                 "headless",
+                "laravel"
+            ],
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "mainstay/ui",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "packages/ui",
+                "reference": "65a7dfe72a3136c13e461e994302363e4aca9b1e"
+            },
+            "require": {
+                "illuminate/support": "^13.0",
+                "illuminate/view": "^13.0",
+                "php": "^8.3"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Mainstay\\Ui\\UiServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Mainstay\\Ui\\": "src/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "description": "The Mainstay design system: tokens and Blade components for the CMS admin.",
+            "keywords": [
+                "blade",
+                "design-system",
                 "laravel"
             ],
             "transport-options": {
@@ -9102,7 +9143,8 @@
     "aliases": [],
     "minimum-stability": "dev",
     "stability-flags": {
-        "mainstay/cms": 20
+        "mainstay/cms": 20,
+        "mainstay/ui": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,
