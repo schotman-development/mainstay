@@ -8,6 +8,12 @@
         "illuminate/support": "^13.0",
         "mainstay/ui": "@dev"
     },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../ui"
+        }
+    ],
     "autoload": {
         "psr-4": {
             "Mainstay\\": "src/"
