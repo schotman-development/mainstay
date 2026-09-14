@@ -4,6 +4,9 @@ namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
 use DateTime;
+use Illuminate\Translation\ArrayLoader;
+use Illuminate\Translation\Translator;
+use Illuminate\Validation\Factory;
 use InvalidArgumentException;
 use Mainstay\Fields\Boolean;
 use Mainstay\Fields\Date;
@@ -131,6 +134,32 @@ class DeclarationTest extends TestCase
         $this->expectExceptionMessage('is not public');
 
         $this->mainstay->fields(Fixtures\Broken\Hidden::class);
+    }
+
+    #[Test]
+    public function a_child_reopens_a_property_its_base_declared_protected(): void
+    {
+        /* PHP allows the widening, and every guard here read the base's own
+           declaration first -- so the declaration that fixes the base's was
+           refused for the mistake it fixes. `heading` leaves the attribute to
+           the base and widens nothing else, which is the same property seen
+           twice rather than a second field. */
+        $fields = $this->mainstay->fields(Fixtures\Note::class);
+
+        $this->assertSame(['body', 'heading'], array_keys($fields));
+        $this->assertInstanceOf(Textarea::class, $fields['body']);
+        $this->assertInstanceOf(Text::class, $fields['heading']);
+    }
+
+    #[Test]
+    public function it_refuses_a_field_on_a_private_property_a_child_shadows(): void
+    {
+        /* The child's property of the same name is a second slot, not the
+           base's widened. Binding the field to it by name would write the
+           column from a property the attribute was never on. */
+        $this->expectExceptionMessage('is not public');
+
+        $this->mainstay->fields(Fixtures\Broken\Filed::class);
     }
 
     #[Test]
@@ -461,6 +490,53 @@ class DeclarationTest extends TestCase
         );
 
         $this->assertSame(['nullable', 'in:"a,b","c"'], $select->rules());
+    }
+
+    #[Test]
+    public function it_refuses_an_option_that_reads_back_as_something_else(): void
+    {
+        /* `a\` quotes as `"a\"`, where the backslash escapes the quote meant
+           to close it: the option runs on into the ones after it and the rule
+           accepts none of them. */
+        $this->expectExceptionMessage('backslash against a quote');
+
+        new Select(options: ['a\\', 'b']);
+    }
+
+    #[Test]
+    public function an_option_carrying_a_backslash_is_kept(): void
+    {
+        /* Only a backslash against a quote is unwritable. A class name and a
+           Windows path survive the split intact, and refusing them was
+           refusing options for a bug they do not have. */
+        $select = (new Select(options: ['App\\Models\\Post', 'C:\\Users']))->bind(
+            new ReflectionProperty(Blanks::class, 'absentChoice'),
+        );
+
+        $this->assertSame(['nullable', 'in:"App\\Models\\Post","C:\\Users"'], $select->rules());
+    }
+
+    #[Test]
+    public function an_option_the_guard_keeps_is_one_the_validator_accepts(): void
+    {
+        /* The rule string is half the claim: it is pinned above against a
+           written-out expectation, and what the guard actually reasons about
+           is Laravel reading that string back. A factory rather than an
+           application, since phase 1 still boots nothing. */
+        $options = ['App\\Models\\Post', 'a,b', 'a"b'];
+
+        $select = (new Select(options: $options))->bind(
+            new ReflectionProperty(Blanks::class, 'absentChoice'),
+        );
+
+        $validator = new Factory(new Translator(new ArrayLoader, 'en'));
+
+        foreach ($options as $option) {
+            $this->assertTrue(
+                $validator->make(['choice' => $option], ['choice' => $select->rules()])->passes(),
+                "The rule refuses {$option}, which is one of the options it was built from.",
+            );
+        }
     }
 
     #[Test]

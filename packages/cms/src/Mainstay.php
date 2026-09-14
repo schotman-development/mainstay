@@ -138,6 +138,7 @@ class Mainstay
     private function reflect(string $type): array
     {
         $fields = [];
+        $reflection = new ReflectionClass($type);
 
         /*
          | Base classes first. getProperties() answers with a class's own
@@ -170,6 +171,25 @@ class Mainstay
                    nothing anywhere reports. */
                 if (count($attributes) > 1) {
                     throw new InvalidArgumentException("{$type}::\${$property->getName()} has more than one field attribute on it.");
+                }
+
+                /*
+                 | The declaration an entry actually holds. A class is read on
+                 | its own here, so a base's `protected string $title` is the
+                 | one these guards saw even where the child redeclares it
+                 | public -- PHP allows the widening, and the field was refused
+                 | for the mistake it fixes. The attribute stays the one this
+                 | loop found, which is the child's where the child wrote one.
+                 |
+                 | A private declaration is left alone: a child's property of
+                 | the same name is a second slot rather than the same one
+                 | widened, and the field is on the slot nothing outside the
+                 | base can write. Resolving by name would bind it to the
+                 | other one, which is a silent wrong column where the guard
+                 | below is a refusal naming the property.
+                 */
+                if (! $property->isPrivate() && $reflection->hasProperty($property->getName())) {
+                    $property = $reflection->getProperty($property->getName());
                 }
 
                 if (! $property->isPublic()) {

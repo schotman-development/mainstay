@@ -17,7 +17,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Three things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Four things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -28,6 +28,9 @@ rather than edited into the log, which is append-only by construction.
 - **`config/mainstay.php` mounts the API with no guard.** The API decision names this a
   placeholder. It stays wrong until phase 11; nothing should be built on the assumption that an API
   route is reachable.
+- **`GlobalSet` is a base class, not an attribute.** The globals entry says "the attribute is
+  `#[GlobalSet]`". Phase 1 builds the three shapes as base classes a type extends, so there is no
+  attribute of that name to write and nothing reads one.
 - **`Navigation::sections()` lists a "Content types" screen.** Types are classes and there is no UI
   for authoring them. That item can only ever be a read-only inspector, and the navigation is
   generated from the registry in phase 5 regardless.

@@ -37,6 +37,22 @@ class Select extends Field
             throw new InvalidArgumentException('A select field needs options: nothing satisfies an empty one.');
         }
 
+        /* A backslash against a quote escapes it. Laravel splits the
+           parameters with `str_getcsv(escape: '\\')`, so `a\` quoted as `"a\"`
+           never closes, swallows the options written after it, and leaves a
+           list none of them satisfies -- the same field-nothing-satisfies this
+           class refuses above, arriving through the quoting instead.
+
+           Asked by writing each option out and reading it back, because the
+           parser is the only authority on which spellings survive: a backslash
+           is otherwise fine, and `App\Models\Post` and `C:\Users` are options
+           worth keeping. */
+        foreach ($this->values() as $value) {
+            if (str_getcsv($this->quote($value), escape: '\\') !== [$value]) {
+                throw new InvalidArgumentException("A select option cannot carry a backslash against a quote: \"{$value}\" reads back as something else, and nothing satisfies it.");
+            }
+        }
+
         parent::__construct($required, $localized, $label);
     }
 
@@ -108,13 +124,21 @@ class Select extends Field
      | No `string` rule beside the `in:` -- the list is already the whole of
      | what is allowed. Values are quoted the way Laravel's own Rule::in quotes
      | them, because an unquoted option containing a comma reads as two options
-     | and accepts halves of itself.
+     | and accepts halves of itself. A quote is doubled and survives, and so
+     | does a backslash: the one spelling that cannot be written is a backslash
+     | against a quote, which the constructor refuses.
      */
     public function rules(): array
     {
-        $quoted = array_map(fn (string $value) => '"'.str_replace('"', '""', $value).'"', $this->values());
+        return [...parent::rules(), 'in:'.implode(',', array_map($this->quote(...), $this->values()))];
+    }
 
-        return [...parent::rules(), 'in:'.implode(',', $quoted)];
+    /* One spelling of the encoding, because the constructor's guard asks
+       whether this survives the split and would answer for a different string
+       than the rule ships. */
+    private function quote(string $value): string
+    {
+        return '"'.str_replace('"', '""', $value).'"';
     }
 
     protected function json(): array
