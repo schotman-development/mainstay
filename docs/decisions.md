@@ -220,6 +220,10 @@ Consequences:
 
 - Editors can create URLs the developer did not anticipate, which is the point, but it also means a
   typo in a slug is a live 404 rather than a build error.
+- A slug that resolves to a URI another entry already holds is a validation error on the field, not a
+  silent `-2` suffix. WordPress appends and Craft appends, and both leave the editor looking at a URL
+  they did not choose and did not notice. Refusing the save is the only version the editor can act
+  on. Restoring from the trash is the deliberate exception, for the reason given in that entry.
 - The catch-all must be registered after everything else, so ordering becomes a documented
   requirement rather than an implementation detail.
 - Patterns interpolate fields, so changing a field that appears in a route changes URLs. Redirects
@@ -439,8 +443,10 @@ type to pretend it is a singleton. Taxonomies are terms that group entries, have
 list what points at them.
 
 Globals reuse everything: the same field attributes, the same draft row, the same revisions table.
-They differ only in having no `#[Route]`, no slug, and a table holding exactly one row. Note that the
-attribute cannot be called `Global`, since that is a reserved word in PHP — `Singleton` or similar.
+They differ only in having no `#[Route]`, no slug, and a table holding exactly one row. The
+attribute is `#[GlobalSet]`, the term Statamic and Craft both use. `Global` is a reserved word in
+PHP and cannot name a class at all; `Singleton` would describe the row count rather than the role,
+and would mean container lifetime in a package that already binds singletons.
 
 Taxonomies get their routing free, because term pages resolve through the same URI lookup table that
 serves entries. What they do not get free is the relation.
@@ -506,7 +512,7 @@ Consequences:
 
 The admin was a React single-page application, pre-built into `packages/cms/dist` so a host never runs
 a JavaScript build. It becomes Blade instead, with ProseMirror kept as an island for rich text and
-Alpine for the parts that hold client state.
+the design system's own behaviour layer for the parts that hold client state.
 
 The reason React lost on the website — Node on the host's server — never applied here, because the
 committed bundle already removed it. What decided it is extensibility. Custom field types need a UI,
@@ -521,15 +527,16 @@ content, and the lists, forms, navigation and media browser around it inherit no
 
 This is not "Blade is simpler". Blade removes an extensibility problem and adds friction to the
 stateful part of the admin — adding, removing and reordering blocks without losing typed-in form
-state, the media picker, unsaved-changes handling. Those are easier in React and now need Alpine.
+state, the media picker, unsaved-changes handling. Those are easier in React and are written by hand
+here instead — see the entry on the admin's client state below.
 
 Consequences:
 
 - Roughly twenty presentational components in `packages/ui` — Button, Input, StatusChip, Thumbnail,
   MenuItem, Sidebar — need porting to Blade. They are markup and styling, so the port is mechanical
   and the design is what was valuable. Logic with tests, like `rankCommands`, ports either way.
-- Blocks are managed as an Alpine-held JSON array and posted whole on submit, rather than round
-  tripping to the server per keystroke.
+- Blocks are posted whole on submit as JSON in a hidden input, rather than round tripping to the
+  server per keystroke.
 - There is still a committed bundle, but a much smaller one: the editor island and a stylesheet
   rather than an entire application.
 - Two paradigms in one repository is no longer the situation. Blade renders both the site and the
@@ -556,6 +563,280 @@ The risk worth naming: `storybook-php` is a single-maintainer community addon si
 of the component workflow. The fallback is Storybook's official HTML renderer with stories fetching
 markup from a local route — more wiring, no exotic dependency. Storybook is dev-only either way, so
 none of this reaches a host.
+
+## Authorization is WordPress's model, built rather than installed
+
+*2026-09-10*
+
+Authentication was already settled: Mainstay ships its own users table and its own guard. Authorization
+was only implied — the query layer decision says access control is opted out of explicitly, without
+anything saying what is being opted out of.
+
+It is WordPress's model. Capabilities are strings, roles are named bundles of them, and a user holds
+one role plus per-user overrides for the exception. Content types declare a capability type and the
+set — `edit_pages`, `edit_others_pages`, `publish_pages`, `delete_published_pages` — is derived from
+that declaration rather than registered by hand. A check against a specific entry resolves through
+ownership and publication status into a primitive capability, which is what `map_meta_cap` does in
+WordPress and what makes the model worth copying rather than a flat list of permissions.
+
+Laravel supplies the enforcement. A Gate ability that takes a model is already a meta capability and
+a policy is already `map_meta_cap`, so `Gate::before` resolves primitive capabilities from the role
+and one policy per shape — entry, global, term, media — does the ownership mapping.
+
+No permissions package. `spatie/laravel-permission` is the obvious candidate and the argument against
+it is not that it is poor:
+
+- It publishes `config/permission.php` into the host application, and its own installation
+  instructions say that an existing file must be renamed or removed first. Mainstay is installed into
+  applications, some of which already use it for their own site members. `guard_name` separates the
+  rows; nothing separates the config file that names the models, the tables, and whether teams exist.
+- Its permissions are database rows. Mainstay's capabilities are a function of the declared content
+  types, so storing them means seeding them and then proving they still agree with the classes — the
+  drift problem the schema-sync decision already spends a check on, bought a second time.
+- Comparable projects agree. Statamic ships its own roles and permissions, Nova authorises through
+  policies alone, and Filament ships nothing — the community wraps spatie in a plugin that the *host*
+  installs. Applications depend on a permissions package; panels and frameworks do not.
+
+Consequences:
+
+- Capabilities are never stored. `mainstay_roles` holds a name and a JSON array of capability strings,
+  because roles are the part an administrator edits; the vocabulary they draw from is computed.
+- A content type that adds a capability adds it everywhere the moment it deploys, and a role naming a
+  capability that no longer exists is inert rather than broken.
+- One role per user, plus per-user grants and denials. Multiple roles would need a union rule and a
+  conflict rule, and WordPress demonstrates that overrides cover the cases that motivate it.
+- Everything runs through `Gate`, so a host writing a policy for a Mainstay model works the way
+  Laravel documents, with no Mainstay-specific authorization API to learn.
+- If runtime-defined permissions or team scoping ever become real requirements, that is the point to
+  revisit this. The contract is one method with roles behind it, so the storage is replaceable.
+
+## The content API is authenticated, and public by declaration
+
+*2026-09-10*
+
+`config/mainstay.php` mounts the API on the `api` middleware group with no guard, which was a
+skeleton's placeholder rather than a decision. The API is authenticated, and public access is opted
+into per content type with an attribute, the same way routes and templates are declared.
+
+The reason not to open it wholesale is not that published content is secret — the public website
+serves the same content as HTML, so a public read over published entries exposes nothing new. The
+lines that matter are published against draft, and field against field. An entry has an internal note
+on it and an unpublished successor sitting in the draft table, and `depth` will follow a relation out
+of a public entry into one that is not.
+
+So `#[PublicRead]` on the type and `#[Private]` on the field. A public request reads the entry row and
+never the draft table, with relation resolution subject to the same rule at every depth.
+
+Consumers that are not the public — a static build in CI, an editor's preview — authenticate with a
+token that Mainstay issues and stores hashed, beside the users table it already owns. Sanctum would
+work, and publishes its own migrations into the host, which is the objection raised against a
+permissions package and is no weaker here.
+
+Machine consumers are a deliberate case rather than an accident. A language model reading a site
+through the API needs its shape described, not merely served, and the JSON Schema derived from the
+declared classes for the static front end's `.d.ts` is that description already — so it is served
+from a discovery endpoint rather than generated a second time.
+
+Consequences:
+
+- Making a type public is a code change and a deploy, not a toggle in the admin. That is the same
+  trade every other structural decision here makes.
+- `#[Private]` has to be honoured by the query layer rather than by the controller, or the local
+  caller and the HTTP caller diverge — the exact thing the one-query-layer decision exists to stop.
+- Preview cannot travel a public path at all, because it reads drafts. It stays a signed URL behind
+  Mainstay's guard.
+- Rate limiting stays the host's, through the middleware already named in config.
+
+## Localization is per field, following Payload
+
+*2026-09-10*
+
+English first, with other languages expected later. The shape still has to be chosen now, because it
+touches the per-type table, the URI lookup's key, the draft join and the revision snapshot — four
+decisions that are already made.
+
+Two shapes were considered. A row per locale, with entries sharing a translation group, which is what
+Craft and Statamic do. Or Payload's, where localization is declared per field and a field that does
+not opt in holds one value shared across every locale.
+
+Payload's, for one reason the other cannot answer. When every locale is its own row, every field is
+duplicated — including the ones that must never diverge, like a price, an author relation or a
+featured flag. Nothing in the schema can say "this field is not translated", so alignment becomes a
+convention, and conventions drift quietly and separately per locale. Field-level localization states
+it in the declaration.
+
+Storage follows Payload's relational adapter, which puts localized columns in a sibling table per
+collection — `posts_locales`, keyed by parent and locale — and leaves everything else on the main
+table. That falls out of reflection already being written: one column plan becomes two.
+
+So `#[Text(localized: true)]`, and config carrying `locales`, a required default, and a fallback flag.
+With a single locale configured the admin renders no switcher and none of this is visible.
+
+Consequences:
+
+- Publish state is per locale, so `published_at` is a localized column rather than an entry-level one.
+  Payload hit this as well: with drafts and localization both on, its `_status` stops being a string
+  and becomes a map keyed by locale. Sharing a row across locales is right for fields and wrong for
+  workflow, and this is where that bill arrives.
+- Every locale needs its own slug, so the URI lookup keys on `(locale, uri)` and its unique index
+  spans both.
+- The schema diff plans two tables per content type, and every localized read is a join. That is what
+  the distinction costs, and it lands on the schema-sync work directly.
+- Fallback is config: an untranslated field serves the default locale's value or serves nothing. An
+  untranslated *entry* is the sharper case — a locale with no row is a 404 under one reading and a
+  fallback page under another. Also config, defaulting to the fallback.
+- A revision snapshots the entry as read in one locale, so restoring is per locale too.
+
+## The admin's client state is vanilla TypeScript
+
+*2026-09-10*
+
+The Blade decision said Alpine would hold the admin's client state, and its blocks consequence said
+the block array would live in it. Alpine was never installed, and it is not going to be. The
+behaviour layer already in `packages/ui/src/js` — eight modules behind one idempotent `mount()` — is
+the whole answer.
+
+Alpine was reached for on the strength of one screen: adding, removing and reordering blocks while
+what an editor has typed into the other blocks survives the move. The premise underneath that was
+imported from React — that changing a list means re-rendering it, so the array has to be the source
+of truth and the inputs have to be bound to it.
+
+Moving the nodes instead of re-rendering them removes the premise. `insertBefore` on a live node is a
+move rather than a copy, so the inputs, the focus and any ProseMirror instance inside the block come
+through untouched, because nothing was destroyed. DOM order is then the block order, so there is no
+parallel array to keep in sync and no `blocks[3][heading]` renumbering — the two things that made the
+screen look expensive. Adding clones a `<template>` per block type, removing is `.remove()`, and drag
+reordering is the platform's own `draggable` attribute and drag events.
+
+Consequences:
+
+- Blocks serialize into a hidden input by walking `[data-block]` in DOM order on submit. That input
+  is inside the form, so `FormData` sees it and `dirty-form.ts` covers blocks with no change at all —
+  which the Alpine version would have broken, by holding the array somewhere `FormData` cannot reach.
+- Client state has one home, so no rule is needed about which screen uses which system.
+- `mount()` stays the single entry point and stays idempotent, which is what lets Storybook re-run it
+  after every story render. A second framework would have needed its own answer there, or the
+  workshop would stop exercising half the behaviour that ships.
+- Nothing new reaches `packages/cms/dist`. The committed bundle stays the editor island, the
+  behaviour layer and a stylesheet.
+- If a screen ever genuinely needs reactive bindings, this is the entry to revisit. Nothing has yet:
+  the command centre, list selection, the tag input and unsaved-changes are all written without them.
+
+## Multi-site is one installation with a site column, not one install per site
+
+*2026-09-10*
+
+Most projects are one site. Some are not, and retrofitting that distinction is a migration of every
+table in the system, so the column exists from the first migration and holds the same value forever
+in the common case.
+
+A site is not a locale, and refusing that conflation explicitly is half the decision. WordPress
+multisite invites it — a "site" per language is the standard abuse — and it produces two content sets
+that must be kept in step by hand. A site is a distinct set of content reached at its own hostname. A
+locale is a translation of one piece of content. A company site and its Dutch version are one site
+with two locales; a company site and a separate campaign site are two sites, each offering whichever
+locales it wants. The localization decision above is unaffected by this one.
+
+A `sites` table holds a handle, a name and a hostname, seeded with one row on install. `site_id`
+lands on the URI lookup table and on every per-type table. Globals stop being a table with exactly
+one row and become a table with one row per site, which is what "site settings" wanted to mean
+anyway. Media is shared across the installation — a second copy of the same logo is not a feature.
+
+The catch-all maps the request's host to a site, then queries the lookup on `(site_id, locale, uri)`,
+whose unique index spans all three. With one site the host match is skipped entirely, so a local
+domain, a staging domain and production do not need three rows to disagree about.
+
+Consequences:
+
+- The single-site cost is one seeded row and a column that never varies. A global scope applies the
+  current site, so a query written in a template reads identically either way.
+- The admin renders no site switcher until a second site exists, the same way a single configured
+  locale renders none.
+- Every content type exists on every site. Nothing declares site membership, because nothing needs it
+  yet — that is an attribute to add when a real project wants a type on one site only.
+- An entry belongs to exactly one site. Sharing one entry across several needs a pivot and an answer
+  for which site owns its URL, and no requirement asks for it.
+- Roles and capabilities stay installation-wide. Per-site editors mean a `site_id` on the role
+  assignment and a capability check that takes a site, which extends the authorization decision
+  rather than contradicting it.
+- Uploads, derivatives and the queue are untouched. They key on content hashes and record ids,
+  neither of which is per site.
+
+## Deleting is a trash state, and the URL goes immediately
+
+*2026-09-10*
+
+Editors delete the wrong thing. Nothing else in the system recovers from it — revisions hang off an
+entry that still exists and go with it — so delete sets `deleted_at` through Laravel's `SoftDeletes`,
+which is already in the framework and brings the global scope, `restore()` and `forceDelete()` with
+it.
+
+The part that is not free is the URI lookup. A trashed entry has to stop being reachable in the same
+request, so its lookup row is really deleted rather than flagged; leaving it means the catch-all
+resolves a path to a row the global scope then hides. Restore rewrites that row from the type's route
+pattern, which is the same write that already happens on save.
+
+That makes restore a save rather than an undo, and the URI may be taken by the time it runs. This is
+the one place a suffixed URL is the right answer. Refusing would hold the content hostage to a slug
+somebody else claimed, and the objection to suffixing elsewhere is not the suffix — it is that an
+editor typing a slug has no idea a URL was changed underneath them. Here they are standing in front
+of the action, so restore takes the next free URI and says which one it took.
+
+Consequences:
+
+- Relations need no change. The defensive resolve already tolerates a target that is not there, so a
+  trashed target degrades exactly as a deleted one did, and comes back if the target does.
+- Media is trashed the same way. Originals are kept permanently regardless, and derivative filenames
+  are content hashes, so a restored image's existing URLs still resolve.
+- Terms are trashed with their pivot rows intact. The reverse query scopes to untrashed terms
+  instead, so restoring a term restores what pointed at it. The foreign key argument is untouched:
+  the row never goes anywhere.
+- Globals cannot be trashed. Their row always exists, one per site, so deleting one means nothing.
+- Nothing purges automatically. Trash is emptied by hand until a real library makes a retention
+  window worth configuring.
+- Every query in the CMS now carries a scope it did not have. That is the cost of the layer, and it
+  is the reason to add it before there are queries rather than after.
+
+## Onboarding is spatie/laravel-onboard, and the installation is onboardable too
+
+*2026-09-10*
+
+A checklist that walks a new installation into a working state: create the first user, name the site,
+declare a content type, upload a logo, publish something.
+
+`spatie/laravel-onboard` is the package, and it survives the test the permissions package failed.
+That decision rejected `spatie/laravel-permission` because storing capabilities means seeding them
+and then proving the seeded rows still agree with the classes they came from. This package stores
+nothing at all — steps are declared in a service provider and every one is a `completeIf` closure
+evaluated on read. There is no table, so there is nothing to drift. Roles are data a human edits;
+progress is derived, and derived things belong in code.
+
+Its useful property here is that it is not really a user package. `Onboardable` goes on any model or
+class, and `addStep($title, Thing::class)` limits a step to one of them. So there are two lists: an
+installation list hanging off a plain `Installation` class, which is where most of what people call
+CMS onboarding actually lives, and a per-user list for the things that are genuinely per person.
+
+The first user is the one step no checklist can carry, because there is nobody to show it to. A setup
+route reachable only while the user table is empty creates that account, then hands off to the
+checklist behind the login.
+
+Consequences:
+
+- The setup route is the only unauthenticated write path in the admin. It has to check for zero users
+  when it renders *and* when it submits, or it is an open account-creation endpoint.
+- Steps are declared in Mainstay's service provider, so a host adds its own the same way it adds a
+  field type. No new extension mechanism.
+- Because nothing is stored, a finished step comes back if the thing it checked goes away. Delete
+  your only content type and "declare a content type" reappears. That is correct, and worth writing
+  down before it is reported as a bug.
+- `excludeIf` takes the capability check, so a step an editor cannot perform is hidden rather than
+  shown and then refused. Onboarding routes through the authorization decision rather than around it.
+- Settings the checklist collects are globals. A `#[GlobalSet]` is already a table with one row per
+  site, so onboarding writes through it and gets no storage of its own.
+- It requires `illuminate/contracts ^9|^10|^11|^12|^13`, so it matches on Laravel 13. Installed at
+  2.6.3 it brings `spatie/laravel-package-tools` and nothing else.
+- It is required by phase 13, not now. Nothing before then uses it, and a host installing today
+  should not be paying for a checklist that does not exist yet.
 
 ## Deferred
 
