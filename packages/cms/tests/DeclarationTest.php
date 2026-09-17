@@ -16,10 +16,12 @@ use Mainstay\Fields\Select;
 use Mainstay\Fields\Text;
 use Mainstay\Fields\Textarea;
 use Mainstay\Mainstay;
+use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Blanks;
 use Mainstay\Tests\Fixtures\ColorPicker;
 use Mainstay\Tests\Fixtures\NewsItem;
+use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -830,5 +832,22 @@ class DeclarationTest extends TestCase
         $this->expectExceptionMessage('Two content types are called "article"');
 
         $this->mainstay->types([Fixtures\Other\Article::class]);
+    }
+
+    #[Test]
+    public function each_field_type_says_what_fills_a_required_column_added_to_stored_rows(): void
+    {
+        $fields = $this->mainstay->fields(RevisedArticle::class);
+
+        $this->assertSame('', $fields['headline']->backfill());
+        $this->assertSame(0.0, $fields['readingMinutes']->backfill());
+        $this->assertFalse($fields['featured']->backfill());
+        $this->assertSame('plain', $fields['tone']->backfill(), 'A select takes its first option.');
+        $this->assertSame(CarbonImmutable::now('UTC')->format('Y-m-d'), $fields['reviewedOn']->backfill());
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $fields['publishedAt']->backfill(), 'A timestamp is written the way to() writes one.');
+
+        $this->expectException(InvalidArgumentException::class);
+
+        $this->mainstay->fields(AccentedArticle::class)['accent']->backfill();
     }
 }

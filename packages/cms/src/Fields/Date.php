@@ -142,6 +142,13 @@ class Date extends Field
             : $date->format('Y-m-d');
     }
 
+    /* The moment the column arrived: a real date, and the one a reader of the
+       row is least likely to mistake for something an editor chose. */
+    public function backfill(): mixed
+    {
+        return $this->to(CarbonImmutable::now());
+    }
+
     /*
      | `date-time` is RFC 3339 and wants the `T` and the offset that to() does
      | not write. They describe different things and neither is wrong: to() is

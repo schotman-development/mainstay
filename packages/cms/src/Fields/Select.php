@@ -115,6 +115,13 @@ class Select extends Field
         return (string) $value;
     }
 
+    /* The first option, which is the one a form offers first. The constructor
+       guarantees there is one. */
+    public function backfill(): mixed
+    {
+        return $this->to($this->values()[0]);
+    }
+
     public function column(): ?array
     {
         return ['string', 255];

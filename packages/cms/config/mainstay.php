@@ -34,4 +34,19 @@ return [
         'middleware' => ['api'],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Schema sync
+    |--------------------------------------------------------------------------
+    |
+    | mainstay:sync alters the database to match the declared content types,
+    | and drops the column of any property that was renamed or removed. Turn
+    | it on in development only; it refuses to run in production regardless.
+    |
+    */
+
+    'schema' => [
+        'sync' => env('MAINSTAY_SCHEMA_SYNC', false),
+    ],
+
 ];
