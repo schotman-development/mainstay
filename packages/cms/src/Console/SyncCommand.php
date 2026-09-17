@@ -8,7 +8,7 @@ use Mainstay\Database\ContentSchema;
 
 class SyncCommand extends Command
 {
-    protected $signature = 'mainstay:sync {--force : Drop columns without asking}';
+    protected $signature = 'mainstay:sync {--force : Drop and retype columns without asking}';
 
     protected $description = 'Alter the database to match the declared content types (development only)';
 
@@ -59,14 +59,22 @@ class SyncCommand extends Command
             return self::FAILURE;
         }
 
-        $schema->sync($diff);
+        /*
+         | A type change converts what is stored, and a narrower type loses
+         | some of it without an error. Asked for the same reason as a drop,
+         | and only where something stored would actually change. Asked of
+         | the database even under --force, where a value the new type refuses
+         | stops the sync before anything is altered.
+         */
+        $lossy = $schema->lossy($diff);
 
-        /* Bound by name only; the interface is not in the container. */
-        $migrations = $this->laravel->make('migration.repository');
+        if ($lossy !== [] && ! $this->option('force') && ! $this->confirm('Retype '.implode(', ', $lossy).', and change values stored in them that the new type cannot hold?')) {
+            $this->components->warn('Nothing was changed.');
 
-        if (! in_array(ContentSchema::MARKER, $migrations->getRan(), true)) {
-            $migrations->log(ContentSchema::MARKER, -1);
+            return self::FAILURE;
         }
+
+        $schema->sync($diff);
 
         /* Asked again rather than assumed: sync leaves a primary key of the
            wrong type alone, and a difference it could not close is one the

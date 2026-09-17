@@ -4,8 +4,10 @@ namespace Mainstay\Database;
 
 use Carbon\CarbonImmutable;
 use Closure;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\Schema\ColumnDefinition;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -197,6 +199,8 @@ class ContentSchema
      |
      | Every fill value, for every table, is settled before the first ALTER,
      | so a column nothing can fill stops the sync with the schema as it was.
+     | The marker migrate warns on is written between the two: after the last
+     | refusal that leaves the schema as it was, before the first change.
      | Nothing else is checked ahead: a Postgres cast refusing stored values,
      | or a restored unique index refusing duplicate rows, fails where it
      | happens, after the tables ahead of it were altered.
@@ -211,11 +215,7 @@ class ContentSchema
                 continue;
             }
 
-            /* The declared definitions without executing anything: a Blueprint
-               runs its closure when it is constructed and only touches the
-               database when it is built. */
-            $definitions = collect((new Blueprint(Schema::getConnection(), $name, $tables[$name]['columns']))->getAddedColumns())
-                ->keyBy('name');
+            $definitions = $this->definitions($name, $tables[$name]['columns']);
 
             /* The primary key is left as it is. Made nullable on the way
                through, as every other column is, it is refused by MySQL and
@@ -245,6 +245,8 @@ class ContentSchema
             $plans[$name] = compact('changes', 'definitions', 'required', 'fills');
         }
 
+        $this->mark();
+
         foreach ($diff as $name => $changes) {
             if ($changes['missing']) {
                 Schema::create($name, function (Blueprint $table) use ($tables, $name) {
@@ -267,7 +269,9 @@ class ContentSchema
              |
              | Postgres converts stored values only when told how, so the type
              | change casts. Values that do not convert fail with Postgres's
-             | error, and nothing is invented for them.
+             | error, and nothing is invented for them. Values that do convert
+             | can still lose data -- a varchar cast cuts them short -- which
+             | lossy() finds for mainstay:sync to ask about first.
              */
             $pgsql = Schema::getConnection()->getDriverName() === 'pgsql';
             $grammar = Schema::getConnection()->getQueryGrammar();
@@ -334,6 +338,108 @@ class ContentSchema
                     $table->dropColumn($changes['drop']);
                 }
             });
+        }
+    }
+
+    /*
+     | The retyped columns, as `table.column`, holding a value the declared
+     | type would not give back unchanged: a string cut short, a float
+     | rounded, a code with its leading zeros gone.
+     |
+     | Asked of the database rather than of the type names, because whether
+     | a conversion loses anything depends on the driver and on what is
+     | stored. The values are copied into a scratch table of the declared
+     | types the way sync converts them -- Postgres's cast, and plain
+     | assignment elsewhere -- and compared as text with what they came from.
+     | A different spelling of the same value, a decimal's trailing zero,
+     | reads as a loss; that asks once too often rather than once too few.
+     */
+    public function lossy(array $diff): array
+    {
+        $connection = Schema::getConnection();
+        $driver = $connection->getDriverName();
+        $grammar = $connection->getQueryGrammar();
+        $tables = $this->tables();
+        $lossy = [];
+
+        foreach ($diff as $name => $changes) {
+            /* The primary key is left out, since sync leaves it alone. */
+            $retyped = collect($changes['change'])
+                ->except('id')
+                ->filter(fn (array $shapes) => $shapes['live']['type'] !== $shapes['declared']['type']);
+
+            if ($retyped->isEmpty() || ! DB::table($name)->exists()) {
+                continue;
+            }
+
+            $definitions = $this->definitions($name, $tables[$name]['columns']);
+            $scratch = 'mainstay_scratch_'.bin2hex(random_bytes(4));
+
+            try {
+                /* The key as text, so a table whose id is not an integer
+                   still pairs its rows. */
+                Schema::create($scratch, function (Blueprint $table) use ($retyped, $definitions) {
+                    $table->string('id')->primary();
+
+                    foreach ($retyped->keys() as $column) {
+                        $table->addColumn($definitions[$column]->type, $column, ['nullable' => true] + $definitions[$column]->getAttributes());
+                    }
+                });
+
+                $text = $driver === 'mysql' || $driver === 'mariadb' ? 'char' : 'text';
+                $columns = $retyped->keys()->map(fn (string $column) => $grammar->wrap($column));
+                $values = $retyped->map(fn (array $shapes, string $column) => $driver === 'pgsql'
+                    ? "{$grammar->wrap($column)}::{$shapes['declared']['type']}"
+                    : $grammar->wrap($column));
+
+                /* Refused outright -- a Postgres cast a value does not parse
+                   in, or strict MySQL declining to cut a string -- sync would
+                   be refused the same way, after the tables ahead of it. */
+                try {
+                    DB::statement("insert into {$grammar->wrapTable($scratch)} (id, {$columns->implode(', ')}) select cast(id as {$text}), {$values->implode(', ')} from {$grammar->wrapTable($name)}");
+                } catch (QueryException $e) {
+                    throw new InvalidArgumentException("{$name} holds values the declared type of ".$retyped->keys()->map(fn (string $column) => "{$name}.{$column}")->implode(', ').' refuses. Change them by hand first.', previous: $e);
+                }
+
+                foreach ($retyped->keys() as $column) {
+                    [$live, $converted] = ["l.{$grammar->wrap($column)}", "s.{$grammar->wrap($column)}"];
+
+                    /* MySQL as bytes, since its collations can ignore trailing
+                       spaces. SQLite keeps a number as an integer or a real by
+                       what it holds, so 42 and 42.0 are the same value there. */
+                    $differs = match ($driver) {
+                        'mysql', 'mariadb' => "not (cast({$live} as binary) <=> cast({$converted} as binary))",
+                        'sqlite' => "cast({$live} as text) is not cast({$converted} as text) and not (typeof({$live}) in ('integer', 'real') and typeof({$converted}) in ('integer', 'real') and {$live} = {$converted})",
+                        default => "cast({$live} as text) is distinct from cast({$converted} as text)",
+                    };
+
+                    if (DB::selectOne("select 1 as lost from {$grammar->wrapTable($name)} l join {$grammar->wrapTable($scratch)} s on s.id = cast(l.id as {$text}) where {$differs} limit 1") !== null) {
+                        $lossy[] = "{$name}.{$column}";
+                    }
+                }
+            } finally {
+                Schema::dropIfExists($scratch);
+            }
+        }
+
+        return $lossy;
+    }
+
+    /* The declared definitions without executing anything: a Blueprint runs
+       its closure when it is constructed and only touches the database when
+       it is built. */
+    private function definitions(string $table, Closure $columns): Collection
+    {
+        return collect((new Blueprint(Schema::getConnection(), $table, $columns))->getAddedColumns())->keyBy('name');
+    }
+
+    /* Bound by name only; the interface is not in the container. */
+    private function mark(): void
+    {
+        $migrations = app('migration.repository');
+
+        if (! in_array(self::MARKER, $migrations->getRan(), true)) {
+            $migrations->log(self::MARKER, -1);
         }
     }
 

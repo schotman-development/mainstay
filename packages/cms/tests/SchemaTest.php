@@ -303,11 +303,139 @@ class SchemaTest extends TestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('article')->insert(['site_id' => 1, 'code' => '42']);
 
+        /* Without --force: '42' survives the cast, so nothing is asked. */
         $this->declare(RecodedArticle::class);
-        $this->artisan('mainstay:sync --force')->assertSuccessful();
+        $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertEquals(42, DB::table('article')->value('code'));
         $this->assertSame([], app(ContentSchema::class)->diff());
+    }
+
+    #[Test]
+    public function sync_asks_before_a_type_change_that_loses_data_and_changes_nothing_when_declined(): void
+    {
+        $this->declare(CodedArticle::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('article')->insert([['site_id' => 1, 'code' => '42'], ['site_id' => 1, 'code' => '007']]);
+        $type = collect(Schema::getColumns('article'))->firstWhere('name', 'code')['type'];
+
+        $this->declare(RecodedArticle::class);
+
+        $this->artisan('mainstay:sync')
+            ->expectsConfirmation('Retype article.code, and change values stored in them that the new type cannot hold?', 'no')
+            ->assertFailed();
+
+        $this->assertSame(1, Artisan::call('mainstay:sync', ['--no-interaction' => true]), 'A type change is never applied unasked.');
+
+        $this->assertSame($type, collect(Schema::getColumns('article'))->firstWhere('name', 'code')['type']);
+        $this->assertSame(['42', '007'], DB::table('article')->orderBy('id')->pluck('code')->all());
+        $this->assertEmpty(array_filter(Schema::getTableListing(schemaQualified: false), fn (string $name) => str_starts_with($name, 'mainstay_scratch_')));
+    }
+
+    #[Test]
+    public function sync_asks_before_narrowing_a_string_that_holds_longer_values(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite reports no length, so a narrower string is no difference to it.');
+        }
+
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        Schema::table('article', fn ($table) => $table->string('title', 255)->change());
+        $this->insertArticle(['title' => str_repeat('a', 200)]);
+
+        /* Postgres's cast cuts the string short; strict MySQL refuses to. */
+        if (DB::getDriverName() === 'pgsql') {
+            $this->artisan('mainstay:sync')
+                ->expectsConfirmation('Retype article.title, and change values stored in them that the new type cannot hold?', 'no')
+                ->assertFailed();
+        } else {
+            try {
+                Artisan::call('mainstay:sync');
+                $this->fail('Strict MySQL took a string longer than its column.');
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString('article holds values the declared type of article.title refuses', $e->getMessage());
+            }
+        }
+
+        $this->assertSame(200, strlen(DB::table('article')->value('title')));
+    }
+
+    #[Test]
+    public function only_a_type_change_that_changes_stored_numbers_is_lossy(): void
+    {
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->insertArticle(['reading_minutes' => 42]);
+
+        $this->declare(RevisedArticle::class);
+        $this->assertNotContains('article.reading_minutes', app(ContentSchema::class)->lossy(app(ContentSchema::class)->diff()), 'An integer widened to a float keeps its value.');
+
+        $this->artisan('mainstay:sync --force')->assertSuccessful();
+        DB::table('article')->update(['reading_minutes' => 1.5]);
+
+        /* SQLite keeps 1.5 in an integer column; the servers round it. */
+        $this->declare(Article::class);
+        $lossy = app(ContentSchema::class)->lossy(app(ContentSchema::class)->diff());
+
+        DB::getDriverName() === 'sqlite'
+            ? $this->assertNotContains('article.reading_minutes', $lossy)
+            : $this->assertContains('article.reading_minutes', $lossy);
+    }
+
+    #[Test]
+    public function sync_refuses_a_value_the_new_type_cannot_hold_before_marking_even_when_forced(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite stores the text in an integer column as it is.');
+        }
+
+        $this->declare(CodedArticle::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
+        DB::table('article')->insert(['site_id' => 1, 'code' => 'abc']);
+
+        $this->declare(RecodedArticle::class);
+
+        try {
+            Artisan::call('mainstay:sync', ['--force' => true]);
+            $this->fail('An integer column took abc.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('article holds values the declared type of article.code refuses', $e->getMessage());
+        }
+
+        $this->assertSame('abc', DB::table('article')->value('code'));
+        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+    }
+
+    #[Test]
+    public function sync_leaves_the_marker_when_it_fails_after_altering_a_table(): void
+    {
+        config()->set('app.locale', 'nl');
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
+        $id = $this->insertArticle();
+        DB::table('article_locales')->insert([
+            ['parent_id' => $id, 'site_id' => 1, 'locale' => 'fr', 'summary' => 'Kept'],
+            ['parent_id' => $id, 'site_id' => 1, 'locale' => 'de', 'summary' => 'Kept'],
+        ]);
+        Schema::table('article_locales', fn ($table) => $table->dropForeign(['parent_id']));
+        Schema::table('article_locales', fn ($table) => $table->dropUnique(['parent_id', 'locale']));
+        Schema::table('article_locales', fn ($table) => $table->dropColumn('locale'));
+
+        /* article gains columns; article_locales, second, gets both rows the
+           default locale and its unique index back, which refuses them. */
+        $this->declare(RevisedArticle::class);
+
+        try {
+            Artisan::call('mainstay:sync', ['--force' => true]);
+            $this->fail('The restored unique index took two rows with the same parent and locale.');
+        } catch (UniqueConstraintViolationException) {
+        }
+
+        $this->assertTrue(Schema::hasColumn('article', 'headline'), 'The table ahead of the failure was altered.');
+        $this->assertSame(1, DB::table('migrations')->where('migration', ContentSchema::MARKER)->count());
     }
 
     #[Test]
@@ -434,6 +562,7 @@ class SchemaTest extends TestCase
     {
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
         $id = $this->insertArticle();
         DB::table('article_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'en', 'summary' => 'Kept']);
         Schema::table('article_locales', fn ($table) => $table->dropForeign(['parent_id']));
@@ -453,6 +582,7 @@ class SchemaTest extends TestCase
 
         $this->assertFalse(Schema::hasColumn('article', 'headline'));
         $this->assertTrue(Schema::hasColumn('article', 'title'));
+        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists(), 'Nothing was altered, so migrate has nothing to warn about.');
     }
 
     #[Test]
