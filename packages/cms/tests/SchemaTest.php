@@ -204,15 +204,30 @@ class SchemaTest extends TestCase
     #[Test]
     public function keys_are_compared_on_a_connection_with_a_table_prefix(): void
     {
+        /*
+         | Emptied on the way in and out rather than left to migrate:fresh,
+         | which drops what the prefix in force can see. An index is named
+         | after the table without its prefix and lives in the schema rather
+         | than in the table, so the unprefixed run's `sites_handle_unique` is
+         | still there for `ms_sites` to collide with -- on every driver whose
+         | database outlives the test, which in-memory SQLite is not.
+         */
+        $this->artisan('db:wipe')->run();
+
         config()->set('database.connections.testing.prefix', 'ms_');
         DB::purge('testing');
-        $this->artisan('migrate:fresh')->run();
 
-        $this->declare(Article::class);
-        $this->artisan('mainstay:sync')->assertSuccessful();
+        try {
+            $this->artisan('migrate:fresh')->run();
 
-        $this->assertSame([], app(ContentSchema::class)->diff());
-        $this->artisan('mainstay:schema:check')->assertSuccessful();
+            $this->declare(Article::class);
+            $this->artisan('mainstay:sync')->assertSuccessful();
+
+            $this->assertSame([], app(ContentSchema::class)->diff());
+            $this->artisan('mainstay:schema:check')->assertSuccessful();
+        } finally {
+            $this->artisan('db:wipe')->run();
+        }
     }
 
     #[Test]
