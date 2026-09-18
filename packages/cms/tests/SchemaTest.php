@@ -165,9 +165,12 @@ class SchemaTest extends TestCase
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
 
+        /* The key before the index it leans on: MySQL indexes a foreign key's
+           columns, takes the unique index as that index because parent_id is
+           its first column, and refuses to drop an index a key still needs. */
         Schema::table('article_locales', function ($table) {
-            $table->dropUnique(['parent_id', 'locale']);
             $table->dropForeign(['parent_id']);
+            $table->dropUnique(['parent_id', 'locale']);
         });
 
         $this->assertSame(1, Artisan::call('mainstay:schema:check'));
