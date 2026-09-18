@@ -82,6 +82,79 @@ jobs:
           DB_USERNAME: ${{ matrix.db == 'pgsql' && 'postgres' || 'root' }}
           DB_PASSWORD: secret
 
+  # Its own job rather than a third leg above: the image is a slow pull, and a
+  # matrix would drag it into the Postgres and MySQL legs that never touch it.
+  # It also needs an ODBC driver and a database made by hand, which they do not.
+  schema-sqlsrv:
+    name: Schema (sqlsrv)
+    runs-on: ubuntu-latest
+    services:
+      sqlsrv:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'Mainstay-Passw0rd!'
+        ports: ['1433:1433']
+    steps:
+      - uses: actions/checkout@v5
+
+      # pdo_sqlsrv talks to SQL Server through ODBC and reports its absence
+      # as a connection failure, so the driver goes in before PHP does.
+      - name: Microsoft ODBC driver
+        run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
+          curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list" \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list > /dev/null
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlsrv
+          coverage: none
+
+      - uses: ramsey/composer-install@v3
+
+      # The image reports healthy before it accepts logins and creates no
+      # database of its own, so waiting and creating are the same step.
+      - name: Wait for SQL Server, and create the database
+        run: |
+          cat > /tmp/wait.php <<'PHP'
+          <?php
+          $last = 'no attempt was made';
+
+          for ($i = 0; $i < 60; $i++) {
+              try {
+                  $pdo = new PDO(
+                      'sqlsrv:Server=127.0.0.1,1433;Database=master;TrustServerCertificate=1',
+                      'sa',
+                      getenv('SA_PASSWORD'),
+                  );
+                  $pdo->exec("if db_id('mainstay') is null create database mainstay");
+                  exit(0);
+              } catch (Throwable $e) {
+                  $last = $e->getMessage();
+                  sleep(2);
+              }
+          }
+
+          fwrite(STDERR, "SQL Server never took a login: {$last}\n");
+          exit(1);
+          PHP
+          php /tmp/wait.php
+        env:
+          SA_PASSWORD: 'Mainstay-Passw0rd!'
+
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php
+        env:
+          MAINSTAY_TEST_DB: sqlsrv
+          DB_DATABASE: mainstay
+          DB_PORT: '1433'
+          DB_USERNAME: sa
+          DB_PASSWORD: 'Mainstay-Passw0rd!'
+
   runtime-floor:
     name: PHP 8.3 runtime constraint
     runs-on: ubuntu-latest

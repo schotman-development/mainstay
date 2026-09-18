@@ -3,6 +3,7 @@
 namespace Mainstay\Tests;
 
 use Illuminate\Console\Events\CommandStarting;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -70,6 +71,10 @@ class SchemaTest extends TestCase
                 'username' => env('DB_USERNAME', 'root'),
                 'password' => env('DB_PASSWORD', ''),
                 'charset' => $driver === 'mysql' ? 'utf8mb4' : 'utf8',
+                /* Only sqlsrv reads this, and only because ODBC 18 encrypts
+                   by default and the server in CI signs its own certificate.
+                   The others ignore a key they have no use for. */
+                'trust_server_certificate' => true,
             ]);
         $app['config']->set('mainstay.schema.sync', true);
     }
@@ -306,7 +311,10 @@ class SchemaTest extends TestCase
 
         $this->artisan('mainstay:sync --force')->assertSuccessful();
 
-        $this->assertSame(1, DB::table('article')->value('site_id'));
+        /* Equals rather than same: PDO hands a bigint back as a string on
+           SQL Server and as an int on the rest, and which it is is not what
+           this is asking. */
+        $this->assertEquals(1, DB::table('article')->value('site_id'));
         $this->assertSame(['site_id'], collect(Schema::getForeignKeys('article'))->pluck('columns')->flatten()->all(), 'The key comes back with the column.');
         $this->assertSame([], app(ContentSchema::class)->diff());
     }
@@ -426,8 +434,8 @@ class SchemaTest extends TestCase
             $this->assertStringContainsString('s.code', $differs('l.code', 's.code', 'integer'), "{$driver} does not read the converted value.");
         }
 
-        /* Written against a server this suite has no driver for, so the SQL
-           is pinned here instead: INTERSECT for a null-safe comparison, a
+        /* Pinned as well as run, since CI reaches SQL Server on one job and
+           this test on every driver: INTERSECT for a null-safe comparison, a
            binary collation against a case-insensitive default, and no LIMIT,
            which the builder spells as TOP for it. */
         [$text, $differs] = $comparison('sqlsrv');
@@ -442,10 +450,10 @@ class SchemaTest extends TestCase
            two rounded-apart values reading as one and the question never
            being asked. Style 3 renders the seventeen that round-trip. */
         $this->assertSame(
-            'not exists (select convert(varchar(max), l.rate, 3) intersect select convert(varchar(max), s.rate, 3))',
+            'not exists (select convert(varchar(max), cast(l.rate as float), 3) intersect select convert(varchar(max), cast(s.rate as float), 3))',
             $differs('l.rate', 's.rate', 'float'),
         );
-        $this->assertStringContainsString('convert(varchar(max), l.rate, 3)', $differs('l.rate', 's.rate', 'real'));
+        $this->assertStringContainsString('convert(varchar(max), cast(l.rate as float), 3)', $differs('l.rate', 's.rate', 'real'));
     }
 
     #[Test]
@@ -580,10 +588,15 @@ class SchemaTest extends TestCase
            default locale and its unique index back, which refuses them. */
         $this->declare(RevisedArticle::class);
 
+        /* QueryException rather than UniqueConstraintViolationException:
+           Laravel reads that from the driver's error for a row refused on
+           insert, and SQL Server refuses this one while building the index
+           instead, which is an error of its own. What the assertions below
+           want is that sync stopped, whatever it was told. */
         try {
             Artisan::call('mainstay:sync', ['--force' => true]);
             $this->fail('The restored unique index took two rows with the same parent and locale.');
-        } catch (UniqueConstraintViolationException) {
+        } catch (QueryException) {
         }
 
         $this->assertTrue(Schema::hasColumn('article', 'headline'), 'The table ahead of the failure was altered.');
