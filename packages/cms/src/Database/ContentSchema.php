@@ -10,6 +10,7 @@ use Illuminate\Database\Schema\ColumnDefinition;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Fluent;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Mainstay\Fields\Field;
@@ -37,9 +38,10 @@ class ContentSchema
      |
      | `columns` and `keys` are separate because the comparison builds
      | `columns` under a scratch name, where a foreign key would reference a
-     | table that may not exist yet. Keys are written when a table is created
-     | and not compared. `fields` is keyed by column name, for sync to look a
-     | column's field up by.
+     | table that may not exist yet. Keys are written when a table is created,
+     | and compared against the live table by reading the closure's commands
+     | rather than by building it. `fields` is keyed by column name, for sync
+     | to look a column's field up by.
      |
      | @return array<string, array{columns: Closure(Blueprint): void, keys: Closure(Blueprint): void, fields: array<string, Field>}>
      */
@@ -110,8 +112,15 @@ class ContentSchema
 
     /*
      | Per table, what differs: missing outright, or columns to add, to drop,
-     | and to change from the live `[type, nullable]` to the declared one.
-     | Tables that match are left out, so an empty array is a database in step.
+     | and to change from the live `[type, nullable]` to the declared one, and
+     | the declared keys the table does not have. Tables that match are left
+     | out, so an empty array is a database in step.
+     |
+     | Keys are compared because a hand-written migration that forgets the
+     | `(parent_id, locale)` unique index leaves the check passing and two rows
+     | free to claim one locale, which is the invariant the sibling table
+     | exists for. Only the declared keys are asked about: an index a host
+     | added for a query of its own is not drift, and nothing drops it.
      |
      | Types are compared as the driver reports them for a table Laravel built
      | from the declaration, rather than through a map of what each driver
@@ -119,7 +128,7 @@ class ContentSchema
      | connection being checked, and buys a comparison that works for any
      | column a host's field type asks for.
      |
-     | @return array<string, array{missing: bool, add: list<string>, drop: list<string>, change: array<string, array{live: array, declared: array}>}>
+     | @return array<string, array{missing: bool, add: list<string>, drop: list<string>, change: array<string, array{live: array, declared: array}>, keys: list<array>}>
      */
     public function diff(): array
     {
@@ -127,7 +136,7 @@ class ContentSchema
 
         foreach ($this->tables() as $name => $table) {
             if (! Schema::hasTable($name)) {
-                $diff[$name] = ['missing' => true, 'add' => [], 'drop' => [], 'change' => []];
+                $diff[$name] = ['missing' => true, 'add' => [], 'drop' => [], 'change' => [], 'keys' => []];
 
                 continue;
             }
@@ -143,14 +152,20 @@ class ContentSchema
                 }
             }
 
+            $keys = array_map($this->comparable(...), $this->keys($name));
+
             $changes = [
                 'missing' => false,
                 'add' => array_keys(array_diff_key($declared, $live)),
                 'drop' => array_keys(array_diff_key($live, $declared)),
                 'change' => $change,
+                'keys' => array_values(array_filter(
+                    $this->declared($name, $table['keys']),
+                    fn (array $key) => ! in_array($this->comparable($key), $keys, true),
+                )),
             ];
 
-            if ($changes['add'] !== [] || $changes['drop'] !== [] || $changes['change'] !== []) {
+            if ($changes['add'] !== [] || $changes['drop'] !== [] || $changes['change'] !== [] || $changes['keys'] !== []) {
                 $diff[$name] = $changes;
             }
         }
@@ -179,6 +194,14 @@ class ContentSchema
             foreach ($changes['change'] as $column => ['live' => $live, 'declared' => $declared]) {
                 $lines[] = "{$table}.{$column}: {$this->shape($live)} in the database, declared {$this->shape($declared)}";
             }
+
+            foreach ($changes['keys'] as $key) {
+                $columns = implode(', ', $key['columns']);
+
+                $lines[] = $key['type'] === 'unique'
+                    ? "{$table}: declared unique on ({$columns}), and the database has no such index"
+                    : "{$table}: declared a foreign key on ({$columns}) referencing {$key['on']}.".implode(', ', $key['references']).', and the database has no such key';
+            }
         }
 
         return $lines;
@@ -202,7 +225,8 @@ class ContentSchema
      | The marker migrate warns on is written between the two: after the last
      | refusal that leaves the schema as it was, before the first change.
      | Nothing else is checked ahead: a Postgres cast refusing stored values,
-     | or a restored unique index refusing duplicate rows, fails where it
+     | a restored unique index refusing duplicate rows, or a key whose
+     | conventional name is already taken by something else, fails where it
      | happens, after the tables ahead of it were altered.
      */
     public function sync(array $diff): void
@@ -217,10 +241,13 @@ class ContentSchema
 
             $definitions = $this->definitions($name, $tables[$name]['columns']);
 
-            /* The primary key is left as it is. Made nullable on the way
-               through, as every other column is, it is refused by MySQL and
-               Postgres; a key of the wrong type stays in the check's report. */
+            /* The primary key is left as it is, whether it differs or is not
+               there at all. Made nullable on the way through, as every other
+               column is, it is refused by MySQL and Postgres, and a primary
+               key cannot be added to a table that exists on either; a key that
+               does not match stays in the check's report. */
             unset($changes['change']['id']);
+            $changes['add'] = array_values(array_diff($changes['add'], ['id']));
 
             $required = array_values(array_filter(
                 [...$changes['add'], ...array_keys($changes['change'])],
@@ -252,7 +279,8 @@ class ContentSchema
         $changing = collect($diff)->contains(fn (array $changes) => $changes['missing'])
             || collect($plans)->contains(fn (array $plan) => $plan['changes']['add'] !== []
                 || $plan['changes']['drop'] !== []
-                || $plan['changes']['change'] !== []);
+                || $plan['changes']['change'] !== []
+                || $plan['changes']['keys'] !== []);
 
         if ($changing) {
             $this->mark();
@@ -324,25 +352,23 @@ class ContentSchema
                 }
             }
 
-            Schema::table($name, function (Blueprint $table) use ($name, $changes, $definitions, $required, $pgsql) {
+            Schema::table($name, function (Blueprint $table) use ($changes, $definitions, $required, $pgsql) {
                 if (! $pgsql) {
                     foreach ($required as $column) {
                         $table->addColumn($definitions[$column]->type, $column, $definitions[$column]->getAttributes())->change();
                     }
                 }
 
-                /* Keys are written with a table, so a key column added to one
-                   that already exists brings its key with it. */
-                if (in_array('site_id', $changes['add'], true)) {
-                    $table->foreign('site_id')->references('id')->on('sites');
-                }
-
-                if (in_array('parent_id', $changes['add'], true)) {
-                    $table->foreign('parent_id')->references('id')->on(Str::beforeLast($name, '_locales'));
-                }
-
-                if (array_intersect(['parent_id', 'locale'], $changes['add']) !== []) {
-                    $table->unique(['parent_id', 'locale']);
+                /* Every declared key the table does not have, which covers the
+                   one whose column has just been added and the one that was
+                   dropped from a table whose columns were never touched.
+                   Written here rather than earlier so a unique index goes over
+                   columns that are by now filled and required; duplicate rows
+                   refuse it at this point. */
+                foreach ($changes['keys'] as $key) {
+                    $key['type'] === 'unique'
+                        ? $table->unique($key['columns'])
+                        : $table->foreign($key['columns'])->references($key['references'])->on($key['on']);
                 }
 
                 if ($changes['drop'] !== []) {
@@ -481,6 +507,71 @@ class ContentSchema
     private function definitions(string $table, Closure $columns): Collection
     {
         return collect((new Blueprint(Schema::getConnection(), $table, $columns))->getAddedColumns())->keyBy('name');
+    }
+
+    /*
+     | The declared keys, read the same way and for the same reason: the keys
+     | closure records a command per key when the Blueprint is constructed, so
+     | the declaration is asked what it wants rather than built to find out.
+     | Names are left out of the comparison -- each driver names an index its
+     | own way, and a key is the columns it covers.
+     |
+     | @return list<array{type: string, columns: list<string>, on?: string, references?: list<string>}>
+     */
+    private function declared(string $table, Closure $keys): array
+    {
+        return collect((new Blueprint(Schema::getConnection(), $table, $keys))->getCommands())
+            ->map(fn (Fluent $command) => match ($command->name) {
+                'foreign' => ['type' => 'foreign', 'columns' => $command->columns, 'on' => $command->on, 'references' => (array) $command->references],
+                'unique' => ['type' => 'unique', 'columns' => $command->columns],
+                /* Named rather than assumed: a plain index read as a unique one
+                   would have sync write a constraint nothing declared. */
+                default => throw new InvalidArgumentException("{$table} declares a {$command->name} key, which the drift check has no way to compare. Teach keys() to read it."),
+            })
+            ->all();
+    }
+
+    /*
+     | A unique index is the set of columns it covers: written the other way
+     | round it refuses exactly the same rows, so a database that spells it
+     | the other way is not drift and does not want a second index built
+     | beside the first. A foreign key is not a set -- its columns pair
+     | positionally with the ones they reference -- so only the unique arm
+     | settles an order, and only to be compared by: sync writes the key as it
+     | was declared, which is the order the index is worth reading in.
+     */
+    private function comparable(array $key): array
+    {
+        if ($key['type'] === 'unique') {
+            sort($key['columns']);
+        }
+
+        return $key;
+    }
+
+    /* The live table's keys in the same shape, so the two compare directly.
+       The primary key is left out: it arrives with id(), which sync does not
+       touch, and the column comparison already reports a key of the wrong
+       type. */
+    private function keys(string $table): array
+    {
+        $prefix = Schema::getConnection()->getTablePrefix();
+
+        return collect(Schema::getIndexes($table))
+            ->filter(fn (array $index) => $index['unique'] && ! $index['primary'])
+            ->map(fn (array $index) => ['type' => 'unique', 'columns' => $index['columns']])
+            ->merge(collect(Schema::getForeignKeys($table))->map(fn (array $key) => [
+                'type' => 'foreign',
+                'columns' => $key['columns'],
+                /* The driver reports the table it really wrote, prefix and all;
+                   the declaration names the one Laravel prefixes on its way
+                   there. Compared as reported, every key on a prefixed
+                   connection reads as missing and sync never converges. */
+                'on' => Str::replaceStart($prefix, '', $key['foreign_table']),
+                'references' => $key['foreign_columns'],
+            ]))
+            ->values()
+            ->all();
     }
 
     /* Bound by name only; the interface is not in the container. */

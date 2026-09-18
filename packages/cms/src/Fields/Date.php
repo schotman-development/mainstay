@@ -143,10 +143,12 @@ class Date extends Field
     }
 
     /* The moment the column arrived: a real date, and the one a reader of the
-       row is least likely to mistake for something an editor chose. */
+       row is least likely to mistake for something an editor chose. In UTC,
+       the zone from() reads in and to() writes out, so a date is filled with
+       the day the rest of this class would have called today. */
     public function backfill(): mixed
     {
-        return $this->to(CarbonImmutable::now());
+        return $this->to(CarbonImmutable::now('UTC'));
     }
 
     /*

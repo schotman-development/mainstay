@@ -153,6 +153,68 @@ class SchemaTest extends TestCase
         $this->assertMatchesRegularExpression('/article\.reading_minutes: \w+.*not null in the database, declared [\w ]+.*not null/', $output);
     }
 
+    /*
+     | A migration that writes the columns and forgets the index leaves two
+     | rows free to claim one locale, which is the whole reason the sibling
+     | table is keyed the way it is. The check compares keys so that CI sees
+     | it, and sync writes them back rather than only reporting them.
+     */
+    #[Test]
+    public function the_drift_check_fails_once_a_declared_key_is_gone_and_sync_puts_it_back(): void
+    {
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        Schema::table('article_locales', function ($table) {
+            $table->dropUnique(['parent_id', 'locale']);
+            $table->dropForeign(['parent_id']);
+        });
+
+        $this->assertSame(1, Artisan::call('mainstay:schema:check'));
+        $output = Artisan::output();
+        $this->assertStringContainsString('article_locales: declared unique on (parent_id, locale)', $output);
+        $this->assertStringContainsString('article_locales: declared a foreign key on (parent_id) referencing article.id', $output);
+
+        /* Gone with the index: the same locale twice, and a parent that is not
+           there at all. */
+        $parent = $this->insertArticle();
+        $row = ['parent_id' => $parent, 'site_id' => 1, 'locale' => 'en'];
+        DB::table('article_locales')->insert($row);
+        DB::table('article_locales')->insert($row);
+        DB::table('article_locales')->insert(['parent_id' => $parent + 99] + $row);
+        DB::table('article_locales')->delete();
+
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->assertSame([], app(ContentSchema::class)->diff());
+
+        DB::table('article_locales')->insert($row);
+
+        $this->expectException(UniqueConstraintViolationException::class);
+
+        DB::table('article_locales')->insert($row);
+    }
+
+    /*
+     | A prefixed connection reports its foreign keys against the table it
+     | really wrote, and the declaration names the one Laravel prefixes on the
+     | way there. Compared as reported, every key reads as missing: the check
+     | fails on a database that matches, and sync writes the same keys again
+     | on every run.
+     */
+    #[Test]
+    public function keys_are_compared_on_a_connection_with_a_table_prefix(): void
+    {
+        config()->set('database.connections.testing.prefix', 'ms_');
+        DB::purge('testing');
+        $this->artisan('migrate:fresh')->run();
+
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        $this->assertSame([], app(ContentSchema::class)->diff());
+        $this->artisan('mainstay:schema:check')->assertSuccessful();
+    }
+
     #[Test]
     public function sync_asks_before_dropping_and_changes_nothing_when_declined(): void
     {
@@ -578,22 +640,64 @@ class SchemaTest extends TestCase
         $this->assertFalse(Schema::hasTable('article'));
     }
 
+    /*
+     | The other half of leaving the primary key alone: a table that has none
+     | at all. Added the way every other column is -- nullable, then filled --
+     | it is refused outright, and a key cannot be added to a table that
+     | exists anyway. So it is reported and left, like a key of the wrong type.
+     */
+    #[Test]
+    public function sync_leaves_a_table_that_has_no_primary_key_alone(): void
+    {
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        Schema::drop('article_locales');
+        Schema::create('article_locales', function ($table) {
+            $table->unsignedBigInteger('parent_id');
+            $table->unsignedBigInteger('site_id');
+            $table->string('locale');
+            $table->text('summary')->nullable();
+            $table->softDeletes();
+            $table->foreign('parent_id')->references('id')->on('article');
+            $table->foreign('site_id')->references('id')->on('sites');
+            $table->unique(['parent_id', 'locale']);
+        });
+        DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
+
+        $this->assertSame(1, Artisan::call('mainstay:sync', ['--force' => true]));
+
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('article_locales.id: declared, and the column does not exist', $output);
+        $this->assertStringContainsString('Sync could not close every difference', $output);
+        $this->assertNotContains('id', Schema::getColumnListing('article_locales'));
+        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists(), 'Nothing was altered, so there is nothing for migrate to warn about.');
+    }
+
     #[Test]
     public function sync_reports_a_difference_it_leaves_alone_and_fails(): void
     {
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
-        Schema::table('article_locales', fn ($table) => $table->dropForeign(['parent_id']));
-        Schema::drop('article');
-        Schema::create('article', function ($table) {
+
+        /*
+         | The sibling rather than the main table: nothing references its
+         | primary key, so the key can be made to differ without dropping a
+         | foreign key -- which would be a second difference, and which MySQL
+         | would refuse to put back pointing a bigint at a varchar.
+         */
+        Schema::drop('article_locales');
+        Schema::create('article_locales', function ($table) {
             $table->string('id')->primary();
+            $table->unsignedBigInteger('parent_id');
             $table->unsignedBigInteger('site_id');
-            $table->string('title', 120);
-            $table->integer('reading_minutes');
-            $table->boolean('featured');
-            $table->dateTime('published_at')->nullable();
-            $table->string('status');
+            $table->string('locale');
+            $table->text('summary')->nullable();
             $table->softDeletes();
+            $table->foreign('parent_id')->references('id')->on('article');
+            $table->foreign('site_id')->references('id')->on('sites');
+            $table->unique(['parent_id', 'locale']);
         });
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
 
@@ -602,7 +706,7 @@ class SchemaTest extends TestCase
         $output = Artisan::output();
 
         $this->assertStringContainsString('Sync could not close every difference', $output);
-        $this->assertStringContainsString('article.id:', $output);
+        $this->assertStringContainsString('article_locales.id:', $output);
         $this->assertStringNotContainsString('The database matches', $output);
         $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists(), 'The key was left alone, so nothing was altered for migrate to warn about.');
     }

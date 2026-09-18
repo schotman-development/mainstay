@@ -850,4 +850,29 @@ class DeclarationTest extends TestCase
 
         $this->mainstay->fields(AccentedArticle::class)['accent']->backfill();
     }
+
+    /*
+     | The assertion above only says UTC where the host is already in it. This
+     | one pins an instant that falls on a different day either side of the
+     | line, so a backfill reading the ambient zone is a different date from
+     | the one ContentSchema::fill() writes for the columns it fills itself.
+     */
+    #[Test]
+    public function a_date_is_filled_with_the_utc_day_whatever_zone_the_host_keeps(): void
+    {
+        $zone = date_default_timezone_get();
+
+        try {
+            date_default_timezone_set('Etc/GMT+12');
+            CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-18 06:00:00', 'UTC'));
+
+            $fields = $this->mainstay->fields(RevisedArticle::class);
+
+            $this->assertSame('2026-09-18', $fields['reviewedOn']->backfill());
+            $this->assertSame('2026-09-18 06:00:00', $fields['publishedAt']->backfill());
+        } finally {
+            CarbonImmutable::setTestNow();
+            date_default_timezone_set($zone);
+        }
+    }
 }
