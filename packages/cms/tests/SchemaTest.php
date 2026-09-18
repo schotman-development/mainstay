@@ -333,6 +333,78 @@ class SchemaTest extends TestCase
     }
 
     #[Test]
+    public function every_driver_laravel_connects_to_has_a_comparison_of_its_own(): void
+    {
+        $schema = app(ContentSchema::class);
+        $comparison = fn (string $driver) => (fn () => $this->comparison($driver))->call($schema);
+
+        foreach (['sqlite', 'mysql', 'mariadb', 'pgsql', 'sqlsrv'] as $driver) {
+            [$text, $differs] = $comparison($driver);
+
+            $this->assertNotSame('', $text, "{$driver} has nothing to cast a key to.");
+            $this->assertStringContainsString('l.code', $differs('l.code', 's.code', 'integer'), "{$driver} does not read the live value.");
+            $this->assertStringContainsString('s.code', $differs('l.code', 's.code', 'integer'), "{$driver} does not read the converted value.");
+        }
+
+        /* Written against a server this suite has no driver for, so the SQL
+           is pinned here instead: INTERSECT for a null-safe comparison, a
+           binary collation against a case-insensitive default, and no LIMIT,
+           which the builder spells as TOP for it. */
+        [$text, $differs] = $comparison('sqlsrv');
+
+        $this->assertSame('varchar(max)', $text);
+        $this->assertSame(
+            'not exists (select cast(l.code as varchar(max)) collate Latin1_General_BIN2 intersect select cast(s.code as varchar(max)) collate Latin1_General_BIN2)',
+            $differs('l.code', 's.code', 'integer'),
+        );
+
+        /* A float rendered by CAST stops at six significant digits, which is
+           two rounded-apart values reading as one and the question never
+           being asked. Style 3 renders the seventeen that round-trip. */
+        $this->assertSame(
+            'not exists (select convert(varchar(max), l.rate, 3) intersect select convert(varchar(max), s.rate, 3))',
+            $differs('l.rate', 's.rate', 'float'),
+        );
+        $this->assertStringContainsString('convert(varchar(max), l.rate, 3)', $differs('l.rate', 's.rate', 'real'));
+    }
+
+    #[Test]
+    public function a_retype_is_refused_on_a_driver_with_no_comparison_of_its_own(): void
+    {
+        $this->declare(CodedArticle::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('article')->insert(['site_id' => 1, 'code' => '42']);
+
+        $this->declare(RecodedArticle::class);
+        $diff = app(ContentSchema::class)->diff();
+
+        /* The name only. Everything lossy() runs before the refusal is the
+           connection's own, and the refusal comes before the first statement
+           written for the driver it does not know. */
+        $driver = DB::getDriverName();
+        (fn () => $this->config['driver'] = 'firebird')->call(DB::connection());
+
+        /* Watched rather than looked for afterwards: the scratch table is
+           dropped in a finally either way, so only the statements themselves
+           show whether the refusal came first. */
+        $statements = [];
+        DB::listen(function ($query) use (&$statements) {
+            $statements[] = $query->sql;
+        });
+
+        try {
+            app(ContentSchema::class)->lossy($diff);
+            $this->fail('A driver with no comparison of its own was asked for one.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('firebird', $e->getMessage());
+        } finally {
+            (fn () => $this->config['driver'] = $driver)->call(DB::connection());
+        }
+
+        $this->assertEmpty(array_filter($statements, fn (string $sql) => str_contains($sql, 'mainstay_scratch_')), 'Refused before anything was built for it.');
+    }
+
+    #[Test]
     public function sync_asks_before_narrowing_a_string_that_holds_longer_values(): void
     {
         if (DB::getDriverName() === 'sqlite') {
@@ -523,6 +595,7 @@ class SchemaTest extends TestCase
             $table->string('status');
             $table->softDeletes();
         });
+        DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
 
         $this->assertSame(1, Artisan::call('mainstay:sync', ['--force' => true]));
 
@@ -531,6 +604,7 @@ class SchemaTest extends TestCase
         $this->assertStringContainsString('Sync could not close every difference', $output);
         $this->assertStringContainsString('article.id:', $output);
         $this->assertStringNotContainsString('The database matches', $output);
+        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists(), 'The key was left alone, so nothing was altered for migrate to warn about.');
     }
 
     #[Test]

@@ -245,7 +245,18 @@ class ContentSchema
             $plans[$name] = compact('changes', 'definitions', 'required', 'fills');
         }
 
-        $this->mark();
+        /* Not when the plan leaves nothing to do: a diff of nothing but a
+           primary key is one sync reports and does not touch, and a marker
+           for it makes every later migrate warn about a database that was
+           never pushed. */
+        $changing = collect($diff)->contains(fn (array $changes) => $changes['missing'])
+            || collect($plans)->contains(fn (array $plan) => $plan['changes']['add'] !== []
+                || $plan['changes']['drop'] !== []
+                || $plan['changes']['change'] !== []);
+
+        if ($changing) {
+            $this->mark();
+        }
 
         foreach ($diff as $name => $changes) {
             if ($changes['missing']) {
@@ -372,6 +383,10 @@ class ContentSchema
                 continue;
             }
 
+            /* Settled before the scratch table is built, so a driver with no
+               words of its own is refused before anything is made for it. */
+            [$text, $differs] = $this->comparison($driver);
+
             $definitions = $this->definitions($name, $tables[$name]['columns']);
             $scratch = 'mainstay_scratch_'.bin2hex(random_bytes(4));
 
@@ -386,7 +401,6 @@ class ContentSchema
                     }
                 });
 
-                $text = $driver === 'mysql' || $driver === 'mariadb' ? 'char' : 'text';
                 $columns = $retyped->keys()->map(fn (string $column) => $grammar->wrap($column));
                 $values = $retyped->map(fn (array $shapes, string $column) => $driver === 'pgsql'
                     ? "{$grammar->wrap($column)}::{$shapes['declared']['type']}"
@@ -401,19 +415,19 @@ class ContentSchema
                     throw new InvalidArgumentException("{$name} holds values the declared type of ".$retyped->keys()->map(fn (string $column) => "{$name}.{$column}")->implode(', ').' refuses. Change them by hand first.', previous: $e);
                 }
 
-                foreach ($retyped->keys() as $column) {
+                foreach ($retyped as $column => $shapes) {
                     [$live, $converted] = ["l.{$grammar->wrap($column)}", "s.{$grammar->wrap($column)}"];
 
-                    /* MySQL as bytes, since its collations can ignore trailing
-                       spaces. SQLite keeps a number as an integer or a real by
-                       what it holds, so 42 and 42.0 are the same value there. */
-                    $differs = match ($driver) {
-                        'mysql', 'mariadb' => "not (cast({$live} as binary) <=> cast({$converted} as binary))",
-                        'sqlite' => "cast({$live} as text) is not cast({$converted} as text) and not (typeof({$live}) in ('integer', 'real') and typeof({$converted}) in ('integer', 'real') and {$live} = {$converted})",
-                        default => "cast({$live} as text) is distinct from cast({$converted} as text)",
-                    };
+                    /* Asked through the builder rather than in one string, so
+                       the one row is taken the way each driver spells it:
+                       SQL Server has no LIMIT and wants TOP instead, and the
+                       grammar already knows that. */
+                    $lost = DB::table("{$name} as l")
+                        ->join("{$scratch} as s", 's.id', '=', DB::raw("cast(l.id as {$text})"))
+                        ->whereRaw($differs($live, $converted, $shapes['declared']['type']))
+                        ->exists();
 
-                    if (DB::selectOne("select 1 as lost from {$grammar->wrapTable($name)} l join {$grammar->wrapTable($scratch)} s on s.id = cast(l.id as {$text}) where {$differs} limit 1") !== null) {
+                    if ($lost) {
                         $lossy[] = "{$name}.{$column}";
                     }
                 }
@@ -423,6 +437,42 @@ class ContentSchema
         }
 
         return $lossy;
+    }
+
+    /*
+     | What this driver casts a key to so the two tables pair, and how it is
+     | asked whether a stored value and its converted self differ. One arm per
+     | driver Laravel connects to, because neither answer is portable.
+     |
+     | MySQL as bytes, since its collations can ignore trailing spaces and
+     | letter case. SQLite keeps a number as an integer or a real by what it
+     | holds, so 42 and 42.0 are the same value there. Postgres says it
+     | outright. SQL Server has none of their words: no IS DISTINCT FROM
+     | before 2022, no text it will compare, and a default collation that
+     | ignores case -- so it asks INTERSECT, which pairs two nulls as equal
+     | the way the others do, over a binary collation that does not.
+     |
+     | The declared type is passed because SQL Server alone needs it: CAST
+     | renders a float at six significant digits, so two values a retype did
+     | round apart both read back as 1.23457 and the question never gets
+     | asked. CONVERT with style 3 renders the seventeen that come back the
+     | same float, which is the whole point of the comparison. Style 3 wants
+     | SQL Server 2016; nothing older is contemplated here.
+     */
+    private function comparison(string $driver): array
+    {
+        $binary = 'collate Latin1_General_BIN2';
+        $sqlsrv = fn (string $value, string $type) => str_contains($type, 'float') || str_contains($type, 'real')
+            ? "convert(varchar(max), {$value}, 3)"
+            : "cast({$value} as varchar(max)) {$binary}";
+
+        return match ($driver) {
+            'mysql', 'mariadb' => ['char', fn (string $live, string $converted, string $type) => "not (cast({$live} as binary) <=> cast({$converted} as binary))"],
+            'sqlite' => ['text', fn (string $live, string $converted, string $type) => "cast({$live} as text) is not cast({$converted} as text) and not (typeof({$live}) in ('integer', 'real') and typeof({$converted}) in ('integer', 'real') and {$live} = {$converted})"],
+            'pgsql' => ['text', fn (string $live, string $converted, string $type) => "cast({$live} as text) is distinct from cast({$converted} as text)"],
+            'sqlsrv' => ['varchar(max)', fn (string $live, string $converted, string $type) => "not exists (select {$sqlsrv($live, $type)} intersect select {$sqlsrv($converted, $type)})"],
+            default => throw new InvalidArgumentException("mainstay:sync has no way to tell whether a type change loses values on {$driver}. Change the columns by hand, or sync on sqlite, mysql, mariadb, pgsql or sqlsrv."),
+        };
     }
 
     /* The declared definitions without executing anything: a Blueprint runs
