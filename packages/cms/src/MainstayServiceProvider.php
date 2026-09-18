@@ -2,9 +2,15 @@
 
 namespace Mainstay;
 
+use Illuminate\Console\Events\CommandStarting;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Mainstay\Console\SchemaCheckCommand;
+use Mainstay\Console\SyncCommand;
+use Mainstay\Database\ContentSchema;
 use Mainstay\Ui\UiServiceProvider;
+use Throwable;
 
 class MainstayServiceProvider extends ServiceProvider
 {
@@ -46,6 +52,10 @@ class MainstayServiceProvider extends ServiceProvider
         });
 
         if ($this->app->runningInConsole()) {
+            $this->commands([SyncCommand::class, SchemaCheckCommand::class]);
+
+            Event::listen(fn (CommandStarting $event) => $this->warnAboutSync($event));
+
             $this->publishes([
                 __DIR__.'/../config/mainstay.php' => config_path('mainstay.php'),
             ], 'mainstay-config');
@@ -53,6 +63,33 @@ class MainstayServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../dist' => public_path('vendor/mainstay'),
             ], 'mainstay-assets');
+        }
+    }
+
+    /*
+     | Payload's warning, for the same accident: hand-written migrations run
+     | against a database sync already built, where the first one that creates
+     | a content table collides with the table sync made. A warning rather than
+     | a refusal, because a migration that touches nothing sync built is fine.
+     |
+     | Quiet when the marker cannot be read. migrate reports a missing database
+     | better than a listener in front of it would.
+     */
+    public function warnAboutSync(CommandStarting $event): void
+    {
+        if ($event->command !== 'migrate') {
+            return;
+        }
+
+        try {
+            $repository = $this->app->make('migration.repository');
+            $synced = $repository->repositoryExists() && in_array(ContentSchema::MARKER, $repository->getRan(), true);
+        } catch (Throwable) {
+            return;
+        }
+
+        if ($synced) {
+            $event->output->writeln('<comment>mainstay:sync has altered this database. A migration that creates or alters a content table will collide with what sync built; migrate:fresh starts again from the migrations alone.</comment>');
         }
     }
 }

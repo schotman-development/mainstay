@@ -275,6 +275,23 @@ abstract class Field
         ));
     }
 
+    /*
+     | What mainstay:sync writes into rows that already exist when this field's
+     | column becomes required -- added to a table holding content, or
+     | tightened from nullable. Serialized, since it goes straight to the
+     | column.
+     |
+     | Not empty(): that is what every read of a null column falls back to,
+     | and a date or a select inventing a value there would invent it on every
+     | read. This is one write, in development, where a value that is merely
+     | valid beats a column that cannot be added. A type with no empty value
+     | overrides this, or sync falls back to the zero of its column's type.
+     */
+    public function backfill(): mixed
+    {
+        return $this->serialize(null);
+    }
+
     /* Identity for anything the driver already hands back in the shape the
        property is typed for. */
     protected function from(mixed $value): mixed

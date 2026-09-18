@@ -142,6 +142,15 @@ class Date extends Field
             : $date->format('Y-m-d');
     }
 
+    /* The moment the column arrived: a real date, and the one a reader of the
+       row is least likely to mistake for something an editor chose. In UTC,
+       the zone from() reads in and to() writes out, so a date is filled with
+       the day the rest of this class would have called today. */
+    public function backfill(): mixed
+    {
+        return $this->to(CarbonImmutable::now('UTC'));
+    }
+
     /*
      | `date-time` is RFC 3339 and wants the `T` and the offset that to() does
      | not write. They describe different things and neither is wrong: to() is

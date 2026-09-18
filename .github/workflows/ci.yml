@@ -29,6 +29,59 @@ jobs:
 
       - run: vendor/bin/phpunit
 
+  # SchemaTest is the only suite a driver changes the answer to: the scratch
+  # comparison reads back whatever the driver calls a type, Postgres casts and
+  # restates an enum its own way, and MySQL refuses foreign keys SQLite waves
+  # through. Run on SQLite alone, the job above passes syncs these refuse.
+  schema:
+    name: Schema (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [pgsql, mysql]
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: mainstay
+          POSTGRES_PASSWORD: secret
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: mainstay
+          MYSQL_ROOT_PASSWORD: secret
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_pgsql, pdo_mysql
+          coverage: none
+
+      - uses: ramsey/composer-install@v3
+
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php
+        env:
+          MAINSTAY_TEST_DB: ${{ matrix.db }}
+          DB_DATABASE: mainstay
+          DB_PORT: ${{ matrix.db == 'pgsql' && '5432' || '3306' }}
+          DB_USERNAME: ${{ matrix.db == 'pgsql' && 'postgres' || 'root' }}
+          DB_PASSWORD: secret
+
   runtime-floor:
     name: PHP 8.3 runtime constraint
     runs-on: ubuntu-latest
