@@ -8,8 +8,10 @@ Mainstay owns its own tables inside your Laravel application. "Headless" describ
 not the storage: your static site is the external thing, and the content API is the only contract
 between the two.
 
-> **Status: skeleton.** The packages build, link, and boot inside a real Laravel app. Content
-> modelling, the field system, and the block editor are not built yet.
+> **Status: early.** Content types are declared in PHP and reflected into a field list, and
+> `mainstay:sync` alters the database to match them. Nothing edits or reads content yet: there is no
+> authentication, no query layer, no admin form, and no block editor. `docs/plan.md` has the order
+> the rest arrives in.
 
 ## Repository layout
 
