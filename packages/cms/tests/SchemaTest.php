@@ -70,6 +70,10 @@ class SchemaTest extends TestCase
                 'username' => env('DB_USERNAME', 'root'),
                 'password' => env('DB_PASSWORD', ''),
                 'charset' => $driver === 'mysql' ? 'utf8mb4' : 'utf8',
+                /* Only sqlsrv reads this, and only because ODBC 18 encrypts
+                   by default and the server in CI signs its own certificate.
+                   The others ignore a key they have no use for. */
+                'trust_server_certificate' => true,
             ]);
         $app['config']->set('mainstay.schema.sync', true);
     }
