@@ -299,44 +299,55 @@ class ContentSchema
             ['changes' => $changes, 'definitions' => $definitions, 'required' => $required, 'fills' => $fills] = $plans[$name];
 
             /*
-             | Postgres is altered in its own words rather than through
-             | change(). change() restates the column as Blueprint builds it,
-             | and for an enum -- a varchar with a check -- that restatement is
-             | not valid in ALTER COLUMN. The declared type is the one the
-             | scratch table reported, so it is already Postgres's spelling of
-             | it, and a check constraint is not something the diff compares.
+             | Postgres and SQL Server are altered in their own words rather
+             | than through change(). change() restates the column as Blueprint
+             | builds it, and for an enum -- a varchar with a check -- that
+             | restatement is not valid in ALTER COLUMN on either. The declared
+             | type is the one the scratch table reported, so it is already
+             | that server's spelling of it, and a check constraint is not
+             | something the diff compares.
              |
-             | Postgres converts stored values only when told how, so the type
-             | change casts. Values that do not convert fail with Postgres's
-             | error, and nothing is invented for them. Values that do convert
-             | can still lose data -- a varchar cast cuts them short -- which
-             | lossy() finds for mainstay:sync to ask about first.
+             | They differ in what an ALTER COLUMN says. Postgres names the new
+             | type and converts stored values only when told how, so the type
+             | change casts; SQL Server converts on its own but wants the type
+             | restated every time the nullability is set. Values that do not
+             | convert fail with the server's own error, and nothing is
+             | invented for them. Values that do convert can still lose data --
+             | a varchar cut short, a float rounded -- which lossy() finds for
+             | mainstay:sync to ask about first.
              */
-            $pgsql = Schema::getConnection()->getDriverName() === 'pgsql';
+            $driver = Schema::getConnection()->getDriverName();
+            $pgsql = $driver === 'pgsql';
+            $sqlsrv = $driver === 'sqlsrv';
+            $raw = $pgsql || $sqlsrv;
             $grammar = Schema::getConnection()->getQueryGrammar();
 
-            if ($changes['add'] !== [] || (! $pgsql && $changes['change'] !== [])) {
-                Schema::table($name, function (Blueprint $table) use ($changes, $definitions, $pgsql) {
+            if ($changes['add'] !== [] || (! $raw && $changes['change'] !== [])) {
+                Schema::table($name, function (Blueprint $table) use ($changes, $definitions, $raw) {
                     foreach ($changes['add'] as $column) {
                         $table->addColumn($definitions[$column]->type, $column, ['nullable' => true] + $definitions[$column]->getAttributes());
                     }
 
-                    foreach ($pgsql ? [] : array_keys($changes['change']) as $column) {
+                    foreach ($raw ? [] : array_keys($changes['change']) as $column) {
                         $table->addColumn($definitions[$column]->type, $column, ['nullable' => true] + $definitions[$column]->getAttributes())->change();
                     }
                 });
             }
 
-            if ($pgsql) {
-                foreach ($changes['change'] as $column => ['live' => $live, 'declared' => $declared]) {
-                    $wrapped = $grammar->wrap($column);
+            foreach ($raw ? $changes['change'] : [] as $column => ['live' => $live, 'declared' => $declared]) {
+                $wrapped = $grammar->wrap($column);
 
-                    /* A cast rewrites the whole table under an exclusive lock,
-                       so it is only asked for when the type actually differs. */
-                    $type = $live['type'] === $declared['type'] ? '' : "alter column {$wrapped} type {$declared['type']} using {$wrapped}::{$declared['type']}, ";
+                if ($sqlsrv) {
+                    DB::statement("alter table {$grammar->wrapTable($name)} alter column {$wrapped} {$declared['type']} null");
 
-                    DB::statement("alter table {$grammar->wrapTable($name)} {$type}alter column {$wrapped} drop not null");
+                    continue;
                 }
+
+                /* A cast rewrites the whole table under an exclusive lock,
+                   so it is only asked for when the type actually differs. */
+                $type = $live['type'] === $declared['type'] ? '' : "alter column {$wrapped} type {$declared['type']} using {$wrapped}::{$declared['type']}, ";
+
+                DB::statement("alter table {$grammar->wrapTable($name)} {$type}alter column {$wrapped} drop not null");
             }
 
             foreach ($fills as $column => $value) {
@@ -344,16 +355,21 @@ class ContentSchema
             }
 
             /* Every required column already has its declared type, so what is
-               left is NOT NULL alone -- which Postgres is told directly, for the
-               same reason as above. */
-            if ($pgsql) {
-                foreach ($required as $column) {
-                    DB::statement("alter table {$grammar->wrapTable($name)} alter column {$grammar->wrap($column)} set not null");
-                }
+               left is NOT NULL alone -- told directly for the same reason as
+               above. SQL Server has no way to say that without naming the type
+               again, so it is read back from the column rather than worked out
+               a second time: added or retyped, what is there now is what the
+               declaration asked for. */
+            $live = $sqlsrv && $required !== [] ? $this->columns($name) : [];
+
+            foreach ($raw ? $required : [] as $column) {
+                $set = $sqlsrv ? "{$live[$column]['type']} not null" : 'set not null';
+
+                DB::statement("alter table {$grammar->wrapTable($name)} alter column {$grammar->wrap($column)} {$set}");
             }
 
-            Schema::table($name, function (Blueprint $table) use ($changes, $definitions, $required, $pgsql) {
-                if (! $pgsql) {
+            Schema::table($name, function (Blueprint $table) use ($changes, $definitions, $required, $raw) {
+                if (! $raw) {
                     foreach ($required as $column) {
                         $table->addColumn($definitions[$column]->type, $column, $definitions[$column]->getAttributes())->change();
                     }
@@ -488,8 +504,15 @@ class ContentSchema
     private function comparison(string $driver): array
     {
         $binary = 'collate Latin1_General_BIN2';
+        /* Both sides through float before style 3 renders them, because the
+           style is only read for a float and a real: the stored value of a
+           column being widened to one is still an int or a decimal, rendered
+           by rules of its own, and 42 against 4.2e+001 is a difference in the
+           spelling rather than in the number. Widening back does not put back
+           what a narrower column dropped, so a real that rounded its digits
+           away still reads apart from what it was. */
         $sqlsrv = fn (string $value, string $type) => str_contains($type, 'float') || str_contains($type, 'real')
-            ? "convert(varchar(max), {$value}, 3)"
+            ? "convert(varchar(max), cast({$value} as float), 3)"
             : "cast({$value} as varchar(max)) {$binary}";
 
         return match ($driver) {
