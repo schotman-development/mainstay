@@ -338,7 +338,7 @@ class ContentSchema
                 $wrapped = $grammar->wrap($column);
 
                 if ($sqlsrv) {
-                    DB::statement("alter table {$grammar->wrapTable($name)} alter column {$wrapped} {$declared['type']} null");
+                    DB::statement("alter table {$grammar->wrapTable($name)} alter column {$wrapped} {$this->ddl($declared['type'])} null");
 
                     continue;
                 }
@@ -363,7 +363,7 @@ class ContentSchema
             $live = $sqlsrv && $required !== [] ? $this->columns($name) : [];
 
             foreach ($raw ? $required : [] as $column) {
-                $set = $sqlsrv ? "{$live[$column]['type']} not null" : 'set not null';
+                $set = $sqlsrv ? "{$this->ddl($live[$column]['type'])} not null" : 'set not null';
 
                 DB::statement("alter table {$grammar->wrapTable($name)} alter column {$grammar->wrap($column)} {$set}");
             }
@@ -522,6 +522,23 @@ class ContentSchema
             'sqlsrv' => ['varchar(max)', fn (string $live, string $converted, string $type) => "not exists (select {$sqlsrv($live, $type)} intersect select {$sqlsrv($converted, $type)})"],
             default => throw new InvalidArgumentException("mainstay:sync has no way to tell whether a type change loses values on {$driver}. Change the columns by hand, or sync on sqlite, mysql, mariadb, pgsql or sqlsrv."),
         };
+    }
+
+    /*
+     | A type the way SQL Server takes it, from the way it reports it. It gives
+     | the length of an nvarchar in bytes and reads one in characters, so a
+     | type read off a column and handed straight back to ALTER COLUMN doubles
+     | it -- nvarchar(240) for a string of 120 becomes nvarchar(480), and the
+     | check reports a column sync has just written as wrong. Nothing else it
+     | reports counts itself twice, and nvarchar(max) has no count to halve.
+     */
+    private function ddl(string $type): string
+    {
+        return preg_replace_callback(
+            '/^(nvarchar|nchar)\((\d+)\)$/',
+            fn (array $matches) => "{$matches[1]}(".intdiv((int) $matches[2], 2).')',
+            $type,
+        );
     }
 
     /* The declared definitions without executing anything: a Blueprint runs
