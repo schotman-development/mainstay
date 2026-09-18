@@ -434,8 +434,8 @@ class SchemaTest extends TestCase
             $this->assertStringContainsString('s.code', $differs('l.code', 's.code', 'integer'), "{$driver} does not read the converted value.");
         }
 
-        /* Written against a server this suite has no driver for, so the SQL
-           is pinned here instead: INTERSECT for a null-safe comparison, a
+        /* Pinned as well as run, since CI reaches SQL Server on one job and
+           this test on every driver: INTERSECT for a null-safe comparison, a
            binary collation against a case-insensitive default, and no LIMIT,
            which the builder spells as TOP for it. */
         [$text, $differs] = $comparison('sqlsrv');
