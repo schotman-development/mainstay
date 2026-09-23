@@ -6,12 +6,15 @@ use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
@@ -43,6 +46,9 @@ class ContentStore
     /* The columns every main table has beside its fields, by the name a
        caller filters and sorts on. */
     private const STAMPS = ['id' => 'id', 'createdAt' => 'created_at', 'updatedAt' => 'updated_at'];
+
+    /* What Str::slug() writes, and the only thing a routed field holds. */
+    private const SLUG = '/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/';
 
     public function __construct(private Mainstay $mainstay) {}
 
@@ -90,6 +96,78 @@ class ContentStore
     public function findById(string $type, int $id, ?string $locale = null, bool $overrideAccess = false): ?Entry
     {
         return $this->find($type, where: ['id' => $id], locale: $locale, overrideAccess: $overrideAccess)->first();
+    }
+
+    /**
+     * Writes belong here rather than to the admin, for the reason reads do:
+     * a form, an HTTP call and a seeder save through the same rules, so none
+     * of them can validate differently from the others.
+     *
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return T
+     */
+    public function create(string $type, array $data, ?string $locale = null, bool $overrideAccess = false): Entry
+    {
+        $type = $this->entry($type);
+        $locale = $this->locale($locale);
+
+        if (! $overrideAccess) {
+            Gate::forUser($this->user())->authorize('create', $type);
+        }
+
+        $id = $this->write($type, null, $this->validate($type, $data, []), $data, $locale, false);
+
+        return $this->findById($type, $id, $locale, $overrideAccess);
+    }
+
+    /**
+     * Only the keys given change; the rest keep what is stored. In a locale
+     * the entry has no row in yet, this writes that row: an update is how a
+     * translation is added. Its required localized fields are then required
+     * of the call, since there is nothing stored for them.
+     *
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return T
+     */
+    public function update(string $type, int $id, array $data, ?string $locale = null, bool $overrideAccess = false): Entry
+    {
+        $type = $this->entry($type);
+        $locale = $this->locale($locale);
+        [$row, $translations] = $this->load($type, $id);
+
+        if (! $overrideAccess) {
+            Gate::forUser($this->user())->authorize('update', $this->hydrate($type, $row, null, true));
+        }
+
+        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale))), $data, $locale, $translations->has($locale));
+
+        return $this->findById($type, $id, $locale, $overrideAccess);
+    }
+
+    /*
+     | Into the trash, every locale at once, and out of the lookup in the same
+     | request: a path left behind would resolve to a row the read scope then
+     | hides.
+     */
+    public function delete(string $type, int $id, bool $overrideAccess = false): void
+    {
+        $type = $this->entry($type);
+        [$row] = $this->load($type, $id);
+
+        if (! $overrideAccess) {
+            Gate::forUser($this->user())->authorize('delete', $this->hydrate($type, $row, null, true));
+        }
+
+        DB::transaction(function () use ($type, $id) {
+            $now = $this->stamp(CarbonImmutable::now());
+
+            DB::table($type::handle())->where('id', $id)->update(['deleted_at' => $now, 'updated_at' => $now]);
+            DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
+        });
     }
 
     /*
@@ -339,17 +417,235 @@ class ContentStore
         return $moment->utc()->format('Y-m-d H:i:s');
     }
 
-    private function hydrate(string $type, object $row, string $locale, bool $internal): Entry
+    /*
+     | The main row and every locale's row, by locale. Out of the trash and on
+     | this site, or RecordNotFoundException, which Laravel answers with a 404.
+     |
+     | @return array{0: object, 1: Collection<string, object>}
+     */
+    private function load(string $type, int $id): array
+    {
+        $handle = $type::handle();
+
+        $row = DB::table($handle)
+            ->where('site_id', $this->site())
+            ->whereNull('deleted_at')
+            ->where('id', $id)
+            ->firstOrFail();
+
+        return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->get()->keyBy('locale')];
+    }
+
+    /*
+     | What is stored, by property, as the columns hold it. Not through cast():
+     | a translation not written yet has no row, and cast() refuses the null
+     | a required select or date would read as. Its localized keys are left
+     | out instead, which the validator then reports as missing.
+     */
+    private function stored(string $type, object $row, ?object $translation): array
+    {
+        $stored = [];
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            $source = $field->localized ? $translation : $row;
+
+            if ($source !== null) {
+                $stored[$name] = $source->{Str::snake($name)};
+            }
+        }
+
+        return $stored;
+    }
+
+    /*
+     | The entry as it will be stored -- what is there, with what was given
+     | over it -- checked against the declared rules. Every stored value is
+     | checked again, not only the ones given: a row that went in some other
+     | way and breaks a rule refuses the next save, naming the field.
+     */
+    private function validate(string $type, array $data, array $stored): array
+    {
+        $fields = $this->mainstay->fields($type);
+
+        if (($unknown = array_diff_key($data, $fields)) !== []) {
+            throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
+        }
+
+        $values = [...$stored, ...$data];
+        $routed = $this->placeholders($type);
+        $rules = $messages = [];
+
+        foreach ($fields as $name => $field) {
+            $rules[$name] = $field->rules();
+        }
+
+        foreach ($routed as $name) {
+            $rules[$name][] = 'regex:'.self::SLUG;
+            $messages["{$name}.regex"] = 'The :attribute field is part of a path: lowercase letters, digits and single hyphens, the way Str::slug() writes one.';
+        }
+
+        Validator::make($values, $rules, $messages)->validate();
+
+        return $values;
+    }
+
+    /*
+     | The row, the locale's row and every locale's path, or none of them.
+     |
+     | A row inserted -- a create, or a locale's first -- gets every column
+     | from the validated values, so a field left off it holds what its type
+     | stores for nothing rather than whatever the column defaults to. A row
+     | updated gets only the columns the call was given. The rest were read to
+     | be validated, not to be written: written back, they would put a field
+     | another save changed in the meantime back the way it was.
+     */
+    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated): int
+    {
+        $handle = $type::handle();
+        $site = $this->site();
+        [$localized, $shared] = $this->columns($type);
+        $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->serialize($values[$field->name] ?? null), $fields);
+        $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
+
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $localized, $shared, $serialize, $changed) {
+            $now = $this->stamp(CarbonImmutable::now());
+
+            if ($id === null) {
+                $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), 'created_at' => $now, 'updated_at' => $now]);
+            } else {
+                DB::table($handle)->where('id', $id)->update([...$serialize($changed($shared)), 'updated_at' => $now]);
+            }
+
+            /* An update with no columns compiles to `set  where`, and an
+               upsert with none quietly becomes an insert. A call that changed
+               nothing localized has only the locale's row to add, if that. */
+            if (! $translated) {
+                DB::table("{$handle}_locales")->insert(['parent_id' => $id, 'site_id' => $site, 'locale' => $locale, ...$serialize($localized)]);
+            } elseif (($columns = $changed($localized)) !== []) {
+                DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
+            }
+
+            $this->paths($type, (int) $id, $site);
+
+            return (int) $id;
+        });
+    }
+
+    /*
+     | Every locale's path, rebuilt after every write rather than only the
+     | locale written: a shared field in the pattern moves them all.
+     |
+     | A path another entry holds is refused on the fields that build it,
+     | never suffixed -- an editor looking at a URL they did not choose is the
+     | outcome the route decision rules out. The unique index is what decides,
+     | rather than a look beforehand, so two saves racing for one path cannot
+     | both win. The violation is rethrown at once: Postgres has abandoned the
+     | transaction, and the next statement in it would fail for that instead.
+     */
+    private function paths(string $type, int $id, int $site): void
+    {
+        $handle = $type::handle();
+
+        DB::table('uris')->where('type', $handle)->where('entry_id', $id)->delete();
+
+        if (($patterns = $this->patterns($type)) === null) {
+            return;
+        }
+
+        $row = DB::table($handle)->where('id', $id)->first();
+        $fields = $this->mainstay->fields($type);
+        $blamed = $this->placeholders($type) ?: ['uri'];
+
+        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->get() as $translation) {
+            /* A row in a locale that has since left the config has no
+               pattern to be given a path by. */
+            if (! isset($patterns[$translation->locale])) {
+                continue;
+            }
+
+            $uri = preg_replace_callback(
+                '/\{(\w+)\}/',
+                fn (array $name) => ($fields[$name[1]]->localized ? $translation : $row)->{Str::snake($name[1])},
+                $patterns[$translation->locale],
+            );
+
+            /* The column's width, which the drivers other than SQLite enforce
+               with an error nobody reading a form could act on. */
+            if (mb_strlen($uri) > 255) {
+                throw ValidationException::withMessages(array_fill_keys($blamed, "The path {$uri} is longer than the 255 characters a path can be."));
+            }
+
+            try {
+                DB::table('uris')->insert([
+                    'site_id' => $site, 'locale' => $translation->locale, 'uri' => $uri, 'type' => $handle, 'entry_id' => $id,
+                ]);
+            } catch (UniqueConstraintViolationException) {
+                throw ValidationException::withMessages(array_fill_keys($blamed, "The path {$uri} is already taken in {$translation->locale}."));
+            }
+        }
+    }
+
+    /*
+     | The type's pattern for each content locale, or null for a type with no
+     | route. A map has to name exactly the configured locales: `nl-NL`
+     | against `nl`, or a locale added to the config and not to the map, is a
+     | path some translation would silently not get.
+     |
+     | @return array<string, string>|null
+     */
+    private function patterns(string $type): ?array
+    {
+        $route = $this->mainstay->route($type);
+        $locales = config('mainstay.locales');
+
+        if (! is_array($route)) {
+            return $route === null ? null : array_fill_keys($locales, $route);
+        }
+
+        if (array_diff(array_keys($route), $locales) !== [] || array_diff($locales, array_keys($route)) !== []) {
+            throw new InvalidArgumentException(sprintf(
+                "%s's #[Route] has patterns for %s, and mainstay.locales holds %s. Give a pattern for every content locale, or one pattern for all of them.",
+                $type,
+                implode(', ', array_keys($route)),
+                implode(', ', $locales),
+            ));
+        }
+
+        return $route;
+    }
+
+    /* The fields a path is built from, in any locale's pattern. */
+    private function placeholders(string $type): array
+    {
+        preg_match_all('/\{(\w+)\}/', implode(' ', $this->patterns($type) ?? []), $names);
+
+        return array_values(array_unique($names[1]));
+    }
+
+    /*
+     | A row as the declared class. `$locale` is null for the entry a write
+     | asks Gate about, which is the main row alone -- its owner and its
+     | shared fields, what a policy decides on -- so its locale, its path and
+     | its localized fields are not set.
+     */
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal): Entry
     {
         $entry = (new ReflectionClass($type))->newInstanceWithoutConstructor();
 
         $entry->id = (int) $row->id;
-        $entry->locale = $locale;
         $entry->createdAt = $row->created_at === null ? null : CarbonImmutable::parse($row->created_at, 'UTC');
         $entry->updatedAt = $row->updated_at === null ? null : CarbonImmutable::parse($row->updated_at, 'UTC');
-        $entry->uri = $row->uri;
+
+        if ($locale !== null) {
+            $entry->locale = $locale;
+            $entry->uri = $row->uri;
+        }
 
         foreach ($this->mainstay->fields($type) as $name => $field) {
+            if (! property_exists($row, Str::snake($name))) {
+                continue;
+            }
+
             $property = new ReflectionProperty($entry, $name);
 
             /* Absent rather than null. Null is a value a field holds, and a

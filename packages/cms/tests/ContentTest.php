@@ -3,22 +3,28 @@
 namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\GenericUser;
+use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Memo;
+use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
 use ReflectionProperty;
 
 /*
- | The phase 3 check: content read through the query layer, scoped to one
- | site and one locale and out of the trash, with what is internal kept from a
- | reader who has not overridden access.
+ | The phase 3 check: content written through the query layer and read back
+ | through it, scoped to one site and one locale and out of the trash, with
+ | what is internal kept from a reader and every write refused to a caller
+ | who has not overridden access.
  */
 class ContentTest extends DatabaseTestCase
 {
@@ -33,7 +39,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, SiteSettings::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -240,6 +246,246 @@ class ContentTest extends DatabaseTestCase
         $this->assertSame(4, $page->total());
         $this->assertSame([$early, $undated], $this->ids($page->items()));
         $this->assertInstanceOf(Post::class, $page->items()[0]);
+    }
+
+    private function writePost(array $data = [], string $locale = 'en'): Post
+    {
+        return Mainstay::create(Post::class, ['title' => 'Hello', 'slug' => 'hello', 'status' => 'live', ...$data], locale: $locale, overrideAccess: true);
+    }
+
+    /* The field errors a write was refused with. */
+    private function refusal(callable $write): array
+    {
+        try {
+            $write();
+        } catch (ValidationException $exception) {
+            return $exception->errors();
+        }
+
+        $this->fail('The write was not refused.');
+    }
+
+    #[Test]
+    public function it_creates_an_entry_and_reads_it_back(): void
+    {
+        $post = $this->writePost([
+            'publishedAt' => CarbonImmutable::parse('2026-09-10 08:30:00', 'Europe/Amsterdam'),
+            'featured' => true,
+            'readingMinutes' => 4,
+            'editorNote' => 'Check the quote',
+        ]);
+
+        $this->assertSame('en', $post->locale);
+        $this->assertSame('/blog/hello', $post->uri);
+        $this->assertSame('2026-09-10 06:30:00 UTC', $post->publishedAt->format('Y-m-d H:i:s T'));
+        $this->assertTrue($post->featured);
+        $this->assertSame(4, $post->readingMinutes);
+        $this->assertSame('Check the quote', $post->editorNote, 'Read back with the access it was written with.');
+        $this->assertNotNull($post->createdAt);
+        $this->assertEquals($post->createdAt, $post->updatedAt);
+
+        $read = Mainstay::findById(Post::class, $post->id);
+
+        $this->assertSame('Hello', $read->title);
+        $this->assertFalse((new ReflectionProperty($read, 'editorNote'))->isInitialized($read));
+        $this->assertNull(DB::table('post')->value('owner_id'));
+        $this->assertSame([['en', '/blog/hello']], DB::table('uris')->get()->map(fn ($row) => [$row->locale, $row->uri])->all());
+    }
+
+    #[Test]
+    public function a_field_left_off_a_create_holds_what_its_type_stores_for_nothing(): void
+    {
+        $post = $this->writePost();
+
+        $this->assertFalse($post->featured);
+        $this->assertNull($post->publishedAt);
+        $this->assertNull($post->readingMinutes);
+    }
+
+    #[Test]
+    public function a_write_without_the_override_is_refused_and_writes_nothing(): void
+    {
+        $id = $this->writePost()->id;
+
+        foreach ([
+            fn () => Mainstay::create(Post::class, ['title' => 'Other', 'slug' => 'other', 'status' => 'live']),
+            fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed']),
+            fn () => Mainstay::delete(Post::class, $id),
+        ] as $write) {
+            $this->assertThrows($write, AuthorizationException::class, 'Code that writes on its own authority passes overrideAccess: true.');
+        }
+
+        $this->assertSame(['Hello'], Mainstay::find(Post::class)->pluck('title')->all());
+    }
+
+    #[Test]
+    public function it_refuses_what_the_declaration_refuses(): void
+    {
+        $this->assertSame(['title'], array_keys($this->refusal(fn () => $this->writePost(['title' => null]))));
+        $this->assertSame(['status'], array_keys($this->refusal(fn () => $this->writePost(['status' => 'published']))));
+        $this->assertStringContainsString('lowercase letters, digits and single hyphens', $this->refusal(fn () => $this->writePost(['slug' => 'Hello']))['slug'][0]);
+        $this->assertArrayHasKey('slug', $this->refusal(fn () => $this->writePost(['slug' => 'hello/world'])));
+        $this->assertThrows(fn () => $this->writePost(['titel' => 'Hello']), InvalidArgumentException::class, 'has no field called titel to write.');
+
+        $this->assertSame(0, DB::table('post')->count());
+    }
+
+    #[Test]
+    public function a_path_another_entry_holds_is_refused_on_the_slug_and_nothing_is_written(): void
+    {
+        $this->writePost();
+
+        $this->assertSame(
+            ['slug' => ['The path /blog/hello is already taken in en.']],
+            $this->refusal(fn () => $this->writePost(['title' => 'Another'])),
+        );
+        $this->assertSame([1, 1, 1], [DB::table('post')->count(), DB::table('post_locales')->count(), DB::table('uris')->count()]);
+    }
+
+    #[Test]
+    public function a_seeders_own_transaction_survives_a_path_it_was_refused(): void
+    {
+        /* The refused insert is rolled back to a savepoint, which is what
+           keeps Postgres, having abandoned the statement, accepting the next
+           one. */
+        DB::transaction(function () {
+            $this->writePost();
+            $this->refusal(fn () => $this->writePost(['title' => 'Another']));
+            $this->writePost(['slug' => 'another']);
+        });
+
+        $this->assertSame(['hello', 'another'], Mainstay::find(Post::class)->pluck('slug')->all());
+    }
+
+    #[Test]
+    public function a_path_longer_than_its_column_is_refused_on_the_fields_that_build_it(): void
+    {
+        $errors = $this->refusal(fn () => $this->writePost(['slug' => str_repeat('a', 250)]));
+
+        $this->assertStringContainsString('is longer than the 255 characters a path can be', $errors['slug'][0]);
+    }
+
+    #[Test]
+    public function an_update_adds_a_translation_and_asks_for_its_localized_fields(): void
+    {
+        $id = $this->writePost()->id;
+
+        /* status is a required localized select, which has no empty value
+           to read a missing row as. */
+        $this->assertEqualsCanonicalizing(['slug', 'status'], array_keys($this->refusal(
+            fn () => Mainstay::update(Post::class, $id, ['title' => 'Hallo'], locale: 'nl', overrideAccess: true),
+        )));
+
+        $dutch = Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'draft'], locale: 'nl', overrideAccess: true);
+
+        $this->assertSame(['Hallo', 'draft', '/nieuws/hallo'], [$dutch->title, $dutch->status, $dutch->uri]);
+
+        $english = Mainstay::findById(Post::class, $id, locale: 'en');
+
+        $this->assertSame(['Hello', 'live', '/blog/hello'], [$english->title, $english->status, $english->uri]);
+    }
+
+    #[Test]
+    public function an_update_changes_what_it_is_given_and_keeps_every_locales_path(): void
+    {
+        $id = $this->writePost()->id;
+        Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live'], locale: 'nl', overrideAccess: true);
+
+        $moved = Mainstay::update(Post::class, $id, ['slug' => 'hello-again'], locale: 'en', overrideAccess: true);
+
+        $this->assertSame(['Hello', '/blog/hello-again'], [$moved->title, $moved->uri]);
+        $this->assertSame('/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->uri, 'Rebuilt, not dropped, by a write in another locale.');
+
+        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
+
+        $this->assertTrue(Mainstay::findById(Post::class, $id, locale: 'nl')->featured, 'A shared field is one value in every locale.');
+    }
+
+    #[Test]
+    public function an_update_writes_only_the_columns_it_was_given(): void
+    {
+        $id = $this->writePost(['readingMinutes' => 4])->id;
+
+        /* Another save, landing once this one has read the locale rows and
+           before it writes anything. */
+        $raced = false;
+        DB::listen(function ($query) use ($id, &$raced) {
+            $sql = strtolower($query->sql);
+
+            if (! $raced && str_starts_with($sql, 'select') && str_contains($sql, 'post_locales')) {
+                $raced = true;
+                DB::table('post')->where('id', $id)->update(['reading_minutes' => 9]);
+                DB::table('post_locales')->where('parent_id', $id)->update(['slug' => 'raced']);
+            }
+        });
+
+        $post = Mainstay::update(Post::class, $id, ['featured' => true, 'title' => 'Changed'], locale: 'en', overrideAccess: true);
+
+        $this->assertTrue($raced);
+
+        $this->assertSame([true, 'Changed', 9, 'raced'], [$post->featured, $post->title, $post->readingMinutes, $post->slug]);
+    }
+
+    #[Test]
+    public function a_shared_field_in_the_pattern_moves_every_locales_path(): void
+    {
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Page::class, $id, ['slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
+
+        Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
+
+        $this->assertEqualsCanonicalizing(['/work/team', '/work/ploeg'], DB::table('uris')->pluck('uri')->all());
+    }
+
+    #[Test]
+    public function a_type_with_nothing_localized_is_written_in_the_locale_it_is_given(): void
+    {
+        $memo = Mainstay::create(Memo::class, ['note' => 'Call back', 'title' => 'Printer'], locale: 'en', overrideAccess: true);
+        $changed = Mainstay::update(Memo::class, $memo->id, ['title' => 'Plotter'], locale: 'en', overrideAccess: true);
+
+        $this->assertSame('Plotter', $changed->title);
+        $this->assertNull($changed->uri);
+        $this->assertNull(Mainstay::findById(Memo::class, $memo->id, locale: 'nl'), 'Only in the locales it was written in.');
+    }
+
+    #[Test]
+    public function delete_trashes_every_locale_and_takes_the_paths_with_it(): void
+    {
+        $id = $this->writePost()->id;
+        Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live'], locale: 'nl', overrideAccess: true);
+
+        Mainstay::delete(Post::class, $id, overrideAccess: true);
+
+        $this->assertNull(Mainstay::findById(Post::class, $id, locale: 'en'));
+        $this->assertNull(Mainstay::findById(Post::class, $id, locale: 'nl'));
+        $this->assertNotNull(DB::table('post')->value('deleted_at'));
+        $this->assertSame(DB::table('post')->value('deleted_at'), DB::table('post')->value('updated_at'));
+        $this->assertSame(2, DB::table('post_locales')->count(), 'Trashed, not removed.');
+        $this->assertSame(0, DB::table('uris')->count());
+
+        $this->assertThrows(fn () => Mainstay::delete(Post::class, $id, overrideAccess: true), RecordNotFoundException::class);
+        $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Back'], overrideAccess: true), RecordNotFoundException::class);
+    }
+
+    #[Test]
+    public function an_entry_on_another_site_cannot_be_written_from_this_one(): void
+    {
+        $campaign = DB::table('sites')->insertGetId(['handle' => 'campaign', 'name' => 'Campaign', 'hostname' => 'campaign.test']);
+        $id = $this->insert([], ['en' => []], $campaign);
+
+        $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Taken'], overrideAccess: true), RecordNotFoundException::class);
+    }
+
+    #[Test]
+    public function a_route_map_has_to_name_every_content_locale(): void
+    {
+        config()->set('mainstay.locales', ['en', 'nl', 'de']);
+
+        $this->assertThrows(
+            fn () => $this->writePost(),
+            InvalidArgumentException::class,
+            '#[Route] has patterns for en, nl, and mainstay.locales holds en, nl, de.',
+        );
     }
 
     #[Test]

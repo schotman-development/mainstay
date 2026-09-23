@@ -211,6 +211,21 @@ class Mainstay
         return $this->store()->paginate($type, ...$arguments);
     }
 
+    public function create(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->create($type, ...$arguments);
+    }
+
+    public function update(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->update($type, ...$arguments);
+    }
+
+    public function delete(string $type, mixed ...$arguments): void
+    {
+        $this->store()->delete($type, ...$arguments);
+    }
+
     private function store(): ContentStore
     {
         return new ContentStore($this);
