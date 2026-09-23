@@ -263,6 +263,13 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_limit_or_page_of_nothing_is_refused(): void
+    {
+        $this->assertThrows(fn () => Mainstay::find(Post::class, limit: 0), InvalidArgumentException::class, 'A limit reads at least one entry; 0 is not one.');
+        $this->assertThrows(fn () => Mainstay::paginate(Post::class, perPage: 0), InvalidArgumentException::class, 'A page holds at least one entry; 0 is not one.');
+    }
+
+    #[Test]
     public function sort_refuses_a_key_named_twice(): void
     {
         $this->assertThrows(fn () => Mainstay::find(Post::class, sort: ['publishedAt', '-publishedAt']), InvalidArgumentException::class, 'The sort names publishedAt more than once.');

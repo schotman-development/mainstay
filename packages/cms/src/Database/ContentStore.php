@@ -55,6 +55,16 @@ class ContentStore
     /* What Str::slug() writes, and the only thing a routed field holds. */
     private const SLUG = '/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/';
 
+    /*
+     | How often a write runs before a deadlock is the caller's. MySQL takes a
+     | gap lock for deleting paths an entry does not have yet, so two saves
+     | whose paths never meet can each hold one and wait on the other's
+     | insert; the one the server picks rolls back and runs again. Laravel
+     | retries only a transaction of its own, so inside a seeder's the
+     | deadlock reaches the seeder.
+     */
+    private const ATTEMPTS = 3;
+
     public function __construct(private Mainstay $mainstay) {}
 
     /**
@@ -65,6 +75,12 @@ class ContentStore
      */
     public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false): Collection
     {
+        /* Nothing, on three drivers; everything, on SQL Server, whose grammar
+           writes no `top` for it. Refused on all four instead. */
+        if ($limit !== null && $limit < 1) {
+            throw new InvalidArgumentException("A limit reads at least one entry; {$limit} is not one.");
+        }
+
         $type = $this->entry($type);
         $locale = $this->locale($locale);
         $internal = $this->reads($type, $overrideAccess);
@@ -83,6 +99,10 @@ class ContentStore
      */
     public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false): LengthAwarePaginator
     {
+        if ($perPage < 1) {
+            throw new InvalidArgumentException("A page holds at least one entry; {$perPage} is not one.");
+        }
+
         $type = $this->entry($type);
         $locale = $this->locale($locale);
         $internal = $this->reads($type, $overrideAccess);
@@ -172,7 +192,7 @@ class ContentStore
 
             DB::table($type::handle())->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now, 'updated_at' => $now]);
             DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
-        });
+        }, self::ATTEMPTS);
     }
 
     /* What a write committed, as the caller may read it. Gone only if a
@@ -595,7 +615,7 @@ class ContentStore
             $this->paths($type, (int) $id, $site);
 
             return (int) $id;
-        });
+        }, self::ATTEMPTS);
     }
 
     /*
