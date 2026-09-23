@@ -3,6 +3,7 @@
 namespace Mainstay\Database;
 
 use Carbon\CarbonImmutable;
+use Closure;
 use DateTimeInterface;
 use Illuminate\Contracts\Auth\Access\Gate as GateContract;
 use Illuminate\Database\Eloquent\Attributes\UsePolicy;
@@ -286,15 +287,23 @@ class ContentStore
             $this->where($query, $type, (string) $key, $condition, $internal);
         }
 
+        /* Refused on every driver because SQL Server refuses it: a column
+           named twice in one ORDER BY is an error there and a second mention
+           the others ignore. */
+        $sorted = array_map(fn (string $key) => ltrim($key, '-'), (array) $sort);
+
+        if (count($sorted) !== count(array_unique($sorted))) {
+            throw new InvalidArgumentException('The sort names '.implode(', ', array_unique(array_diff_assoc($sorted, array_unique($sorted)))).' more than once.');
+        }
+
         foreach ((array) $sort as $key) {
             $this->sort($query, $type, $key, $internal);
         }
 
         /* Last, so rows that tie on everything asked for keep one order and a
-           page never repeats a row the page before it showed. Not when the
-           sort already names it: SQL Server refuses a column twice in one
-           ORDER BY. */
-        if (in_array('id', array_map(fn (string $key) => ltrim($key, '-'), (array) $sort), true)) {
+           page never repeats a row the page before it showed -- unless the
+           sort already names it. */
+        if (in_array('id', $sorted, true)) {
             return $query;
         }
 
@@ -380,6 +389,8 @@ class ContentStore
 
             $value = $this->value($field, $key, $value);
 
+            /* != and not_in answer as SQL does: a row holding null matches
+               neither, since null is not a value to be unequal to. */
             match (true) {
                 $value !== null => $query->where($column, $operator, $value),
                 $operator === '=' => $query->whereNull($column),
@@ -699,10 +710,14 @@ class ContentStore
             /* Absent rather than null. Null is a value a field holds, and a
                template printing a note it was not given should fail where it
                reads it rather than print nothing. A default the declaration
-               gave goes for the same reason; a readonly property has none. */
+               gave goes for the same reason, unset from the declaring class,
+               where a `protected(set)` property allows it; a readonly one has
+               no default to take away. */
             if ($field->internal && ! $internal) {
                 if ($property->isInitialized($entry)) {
-                    unset($entry->{$name});
+                    Closure::bind(function () use ($name) {
+                        unset($this->{$name});
+                    }, $entry, $property->getDeclaringClass()->getName())();
                 }
 
                 continue;

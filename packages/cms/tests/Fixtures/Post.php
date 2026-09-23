@@ -17,7 +17,8 @@ use Mainstay\Fields\Textarea;
  | The fixture phase 3 is checked against: a translated title, slug and
  | status beside shared fields, a path with a translated segment, a readonly
  | property the layer has to initialize from outside the class, and an
- | internal note with a default the layer has to take away again.
+ | internal note with a default the layer has to take away again, from a
+ | property only the class may write.
  */
 #[Route(['en' => '/blog/{slug}', 'nl' => '/nieuws/{slug}'])]
 class Post extends Entry
@@ -42,5 +43,5 @@ class Post extends Entry
 
     #[Textarea]
     #[Internal]
-    public ?string $editorNote = null;
+    public protected(set) ?string $editorNote = null;
 }

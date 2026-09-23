@@ -247,6 +247,12 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function sort_refuses_a_key_named_twice(): void
+    {
+        $this->assertThrows(fn () => Mainstay::find(Post::class, sort: ['publishedAt', '-publishedAt']), InvalidArgumentException::class, 'The sort names publishedAt more than once.');
+    }
+
+    #[Test]
     public function where_refuses_a_bare_list_and_an_operator_it_does_not_take(): void
     {
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['status' => ['draft', 'live']]), InvalidArgumentException::class, "write ['in' => [...]]");
