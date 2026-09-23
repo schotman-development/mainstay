@@ -237,18 +237,25 @@ class ContentStore
      | a host with members of its own, that would be a site visitor answering
      | Mainstay's policies.
      |
-     | EntryPolicy answers for the type unless the host chose another, with
-     | Gate::policy() or #[UsePolicy] on the class. Chosen, not guessed:
-     | Laravel matches App\Policies\PostPolicy to any class called Post before
-     | it looks at base classes, and a host's Eloquent Post and a content type
-     | called Post are different things -- the host's policy, typed for its
-     | own users, would refuse every public read. Registered here rather than
-     | when types are, so a host registering its own after Mainstay still wins.
+     | EntryPolicy answers for the type unless the host chose another: with
+     | Gate::policy() or #[UsePolicy] on the type, or with Gate::policy() on a
+     | class it extends, which Laravel reads as a choice for every subclass.
+     | Chosen, not guessed: Laravel matches App\Policies\PostPolicy to any
+     | class called Post, and a host's Eloquent Post and a content type called
+     | Post are different things -- the host's policy, typed for its own
+     | users, would refuse every public read. So whatever answers is pinned to
+     | the exact type, since Laravel asks its guesser before it looks at base
+     | classes. Pinned here rather than when types are registered, so a host
+     | registering its own after Mainstay still wins.
      */
     private function gate(string $type): GateContract
     {
-        if (! array_key_exists($type, Gate::policies()) && (new ReflectionClass($type))->getAttributes(UsePolicy::class) === []) {
-            Gate::policy($type, EntryPolicy::class);
+        $policies = Gate::policies();
+
+        if (! array_key_exists($type, $policies) && (new ReflectionClass($type))->getAttributes(UsePolicy::class) === []) {
+            $parent = array_key_first(array_intersect_key(class_parents($type), $policies));
+
+            Gate::policy($type, $parent === null ? EntryPolicy::class : $policies[$parent]);
         }
 
         return Gate::forUser($this->user());
@@ -311,7 +318,7 @@ class ContentStore
             ->where("{$handle}.site_id", $this->site())
             ->whereNull("{$handle}.deleted_at")
             ->select([
-                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'created_at', 'updated_at', ...array_keys($shared)]),
+                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'created_at', 'updated_at', ...array_keys($shared)]),
                 ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
                 'uris.uri',
             ]);
@@ -654,6 +661,7 @@ class ContentStore
         $entry = (new ReflectionClass($type))->newInstanceWithoutConstructor();
 
         $entry->id = (int) $row->id;
+        $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
         $entry->createdAt = $row->created_at === null ? null : CarbonImmutable::parse($row->created_at, 'UTC');
         $entry->updatedAt = $row->updated_at === null ? null : CarbonImmutable::parse($row->updated_at, 'UTC');
 

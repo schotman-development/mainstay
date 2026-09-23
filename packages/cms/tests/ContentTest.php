@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Memo;
@@ -175,6 +176,32 @@ class ContentTest extends DatabaseTestCase
         $id = $this->insert();
 
         $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+    }
+
+    #[Test]
+    public function a_policy_the_host_chose_for_a_base_class_answers_for_its_types(): void
+    {
+        $this->insert();
+
+        Gate::policy(Entry::class, ClosedPolicy::class);
+
+        $this->assertThrows(fn () => Mainstay::find(Post::class), AuthorizationException::class);
+    }
+
+    #[Test]
+    public function a_write_asks_gate_about_the_entry_it_loaded_owner_and_all(): void
+    {
+        $id = $this->insert(['owner_id' => 7]);
+
+        $asked = null;
+        Gate::before(function (?object $user, string $ability, array $arguments) use (&$asked) {
+            $asked = $ability === 'update' ? $arguments[0] : $asked;
+        });
+
+        $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['featured' => true]), AuthorizationException::class);
+        $this->assertInstanceOf(Post::class, $asked);
+        $this->assertSame([$id, 7], [$asked->id, $asked->ownerId]);
+        $this->assertSame(7, Mainstay::findById(Post::class, $id)->ownerId);
     }
 
     #[Test]
@@ -388,6 +415,7 @@ class ContentTest extends DatabaseTestCase
         $errors = $this->refusal(fn () => $this->writePost(['slug' => str_repeat('a', 250)]));
 
         $this->assertStringContainsString('is longer than the 255 characters a path can be', $errors['slug'][0]);
+        $this->assertSame([0, 0, 0], [DB::table('post')->count(), DB::table('post_locales')->count(), DB::table('uris')->count()]);
     }
 
     #[Test]
@@ -470,6 +498,10 @@ class ContentTest extends DatabaseTestCase
 
         $this->assertSame('Plotter', $changed->title);
         $this->assertNull($changed->uri);
+        $this->assertSame('Call back', $changed->note);
+
+        $read = Mainstay::findById(Memo::class, $memo->id, locale: 'en');
+        $this->assertFalse((new ReflectionProperty($read, 'note'))->isInitialized($read), 'A base field widened by the child is still internal.');
         $this->assertNull(Mainstay::findById(Memo::class, $memo->id, locale: 'nl'), 'Only in the locales it was written in.');
     }
 
