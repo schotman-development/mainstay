@@ -4,6 +4,8 @@ namespace Mainstay\Database;
 
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
+use Illuminate\Contracts\Auth\Access\Gate as GateContract;
+use Illuminate\Database\Eloquent\Attributes\UsePolicy;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -20,6 +22,7 @@ use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
+use Mainstay\Policies\EntryPolicy;
 use ReflectionClass;
 use ReflectionProperty;
 use RuntimeException;
@@ -114,7 +117,7 @@ class ContentStore
         $locale = $this->locale($locale);
 
         if (! $overrideAccess) {
-            Gate::forUser($this->user())->authorize('create', $type);
+            $this->gate($type)->authorize('create', $type);
         }
 
         $id = $this->write($type, null, $this->validate($type, $data, []), $data, $locale, false);
@@ -140,7 +143,7 @@ class ContentStore
         [$row, $translations] = $this->load($type, $id);
 
         if (! $overrideAccess) {
-            Gate::forUser($this->user())->authorize('update', $this->hydrate($type, $row, null, true));
+            $this->gate($type)->authorize('update', $this->hydrate($type, $row, null, true));
         }
 
         $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale))), $data, $locale, $translations->has($locale));
@@ -159,7 +162,7 @@ class ContentStore
         [$row] = $this->load($type, $id);
 
         if (! $overrideAccess) {
-            Gate::forUser($this->user())->authorize('delete', $this->hydrate($type, $row, null, true));
+            $this->gate($type)->authorize('delete', $this->hydrate($type, $row, null, true));
         }
 
         DB::transaction(function () use ($type, $id) {
@@ -215,22 +218,40 @@ class ContentStore
         ));
     }
 
-    /*
-     | Whether the caller sees internal fields, after asking whether it may
-     | read at all. Asked about Mainstay's own user and never the default
-     | guard's: on a host with members of its own, that would be a site
-     | visitor answering Mainstay's policies.
-     */
+    /* Whether the caller sees internal fields, after asking whether it may
+       read at all. */
     private function reads(string $type, bool $overrideAccess): bool
     {
         if ($overrideAccess) {
             return true;
         }
 
-        $gate = Gate::forUser($this->user());
+        $gate = $this->gate($type);
         $gate->authorize('viewAny', $type);
 
         return $gate->allows('viewInternal', $type);
+    }
+
+    /*
+     | Gate, asked about Mainstay's own user and never the default guard's: on
+     | a host with members of its own, that would be a site visitor answering
+     | Mainstay's policies.
+     |
+     | EntryPolicy answers for the type unless the host chose another, with
+     | Gate::policy() or #[UsePolicy] on the class. Chosen, not guessed:
+     | Laravel matches App\Policies\PostPolicy to any class called Post before
+     | it looks at base classes, and a host's Eloquent Post and a content type
+     | called Post are different things -- the host's policy, typed for its
+     | own users, would refuse every public read. Registered here rather than
+     | when types are, so a host registering its own after Mainstay still wins.
+     */
+    private function gate(string $type): GateContract
+    {
+        if (! array_key_exists($type, Gate::policies()) && (new ReflectionClass($type))->getAttributes(UsePolicy::class) === []) {
+            Gate::policy($type, EntryPolicy::class);
+        }
+
+        return Gate::forUser($this->user());
     }
 
     /* Nobody until phase 9, which hands over the guard's user here and

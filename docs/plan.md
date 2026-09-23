@@ -21,7 +21,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Seven things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Eight things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -45,6 +45,11 @@ rather than edited into the log, which is append-only by construction.
   Laravel's `SoftDeletes`". Phase 3 is the query builder over the declared class, so there is no
   Eloquent model to carry the trait. `deleted_at` and the scope on it are the layer's own, applied
   in the one query every read starts from, which is the guarantee the trait was wanted for.
+- **A content type's policy is chosen, never guessed.** The authorization entry says a host writes
+  a policy for a Mainstay type "the way Laravel documents". It does, with `Gate::policy()` or
+  `#[UsePolicy]`, but not by naming convention: Laravel would hand a content type called `Post`
+  the host's `App\Policies\PostPolicy`, written for an Eloquent model of the same name and its own
+  users, and every public read would be refused. Anything the host did not choose is `EntryPolicy`.
 - **An untranslated entry is absent, not a fallback.** The localization entry has fallback on by
   default. Phase 3 has none, and phase 12 adds it as an opt-in, so a live multilingual site's
   listings do not start mixing languages on the deploy that ships it.

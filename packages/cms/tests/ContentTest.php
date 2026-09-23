@@ -15,6 +15,7 @@ use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
+use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
@@ -164,6 +165,30 @@ class ContentTest extends DatabaseTestCase
         $post = Mainstay::findById(Post::class, $id);
 
         $this->assertFalse((new ReflectionProperty($post, 'editorNote'))->isInitialized($post));
+    }
+
+    #[Test]
+    public function a_policy_found_by_name_does_not_answer_for_a_content_type(): void
+    {
+        /* Fixtures\Policies\PostPolicy is where Laravel guesses Post's policy
+           lives, and it refuses anyone who is not signed in. */
+        $id = $this->insert();
+
+        $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+    }
+
+    #[Test]
+    public function a_policy_the_host_chose_answers_for_a_content_type(): void
+    {
+        $this->insert();
+
+        /* Chosen with #[UsePolicy] on the class. */
+        $this->assertThrows(fn () => Mainstay::find(Page::class), AuthorizationException::class);
+
+        /* Chosen with Gate::policy(), after a read had registered Mainstay's. */
+        Mainstay::find(Post::class);
+        Gate::policy(Post::class, ClosedPolicy::class);
+        $this->assertThrows(fn () => Mainstay::find(Post::class), AuthorizationException::class);
     }
 
     #[Test]
