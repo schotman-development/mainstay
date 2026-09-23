@@ -14,9 +14,11 @@ use InvalidArgumentException;
 use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
+use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
@@ -176,16 +178,30 @@ class ContentTest extends DatabaseTestCase
         $id = $this->insert();
 
         $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+        $this->assertArrayNotHasKey(Post::class, Gate::policies(), "The host's Gate is left as Laravel would have it.");
     }
 
     #[Test]
     public function a_policy_the_host_chose_for_a_base_class_answers_for_its_types(): void
     {
-        $this->insert();
+        $id = $this->insert(['editor_note' => 'Check the quote']);
 
-        Gate::policy(Entry::class, ClosedPolicy::class);
+        /* After a read, so nothing was settled by the first check. The guessed
+           PostPolicy would refuse the read and EntryPolicy would hide the
+           note, so only the host's choice gives both. */
+        Mainstay::find(Post::class);
+        Gate::policy(Entry::class, OpenPolicy::class);
 
-        $this->assertThrows(fn () => Mainstay::find(Post::class), AuthorizationException::class);
+        $this->assertSame('Check the quote', Mainstay::findById(Post::class, $id)->editorNote);
+    }
+
+    #[Test]
+    public function a_policy_the_host_chose_for_an_interface_answers_for_its_types(): void
+    {
+        Mainstay::find(Memo::class);
+        Gate::policy(Listed::class, ClosedPolicy::class);
+
+        $this->assertThrows(fn () => Mainstay::find(Memo::class), AuthorizationException::class);
     }
 
     #[Test]
@@ -212,7 +228,7 @@ class ContentTest extends DatabaseTestCase
         /* Chosen with #[UsePolicy] on the class. */
         $this->assertThrows(fn () => Mainstay::find(Page::class), AuthorizationException::class);
 
-        /* Chosen with Gate::policy(), after a read had registered Mainstay's. */
+        /* Chosen with Gate::policy() on the type, after a read. */
         Mainstay::find(Post::class);
         Gate::policy(Post::class, ClosedPolicy::class);
         $this->assertThrows(fn () => Mainstay::find(Post::class), AuthorizationException::class);

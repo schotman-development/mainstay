@@ -8,7 +8,7 @@ use Mainstay\Fields\Text;
 /* A base's internal field widened to public by a child that restates neither
    attribute, which is the declaration that publishes it if the flag is read
    off the child alone. */
-class Memo extends BaseMemo
+class Memo extends BaseMemo implements Listed
 {
     public string $note;
 

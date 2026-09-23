@@ -248,28 +248,37 @@ class ContentStore
      | a host with members of its own, that would be a site visitor answering
      | Mainstay's policies.
      |
-     | EntryPolicy answers for the type unless the host chose another: with
-     | Gate::policy() or #[UsePolicy] on the type, or with Gate::policy() on a
-     | class it extends, which Laravel reads as a choice for every subclass.
-     | Chosen, not guessed: Laravel matches App\Policies\PostPolicy to any
-     | class called Post, and a host's Eloquent Post and a content type called
-     | Post are different things -- the host's policy, typed for its own
-     | users, would refuse every public read. So whatever answers is pinned to
-     | the exact type, since Laravel asks its guesser before it looks at base
-     | classes. Pinned here rather than when types are registered, so a host
-     | registering its own after Mainstay still wins.
+     | EntryPolicy answers for the type unless the host chose another, the
+     | way Laravel reads a choice: Gate::policy() on the type, #[UsePolicy]
+     | on it, or Gate::policy() on a class or interface it extends. Chosen,
+     | not guessed: Laravel matches App\Policies\PostPolicy to any class called
+     | Post before it looks at what a class extends, and a host's Eloquent
+     | Post and a content type called Post are different things -- the host's
+     | policy, typed for its own users, would refuse every public read.
+     |
+     | So the answer is pinned to the exact type, on the copy forUser() hands
+     | back and not on the host's Gate. Resolved on every call, a policy the
+     | host registers later is honoured, and what the host's own Gate says
+     | about the type is left as Laravel would say it.
      */
     private function gate(string $type): GateContract
     {
-        $policies = Gate::policies();
+        $gate = Gate::forUser($this->user());
+        $policies = $gate->policies();
 
-        if (! array_key_exists($type, $policies) && (new ReflectionClass($type))->getAttributes(UsePolicy::class) === []) {
-            $parent = array_key_first(array_intersect_key(class_parents($type), $policies));
-
-            Gate::policy($type, $parent === null ? EntryPolicy::class : $policies[$parent]);
+        if (array_key_exists($type, $policies) || (new ReflectionClass($type))->getAttributes(UsePolicy::class) !== []) {
+            return $gate;
         }
 
-        return Gate::forUser($this->user());
+        /* Laravel's own fallback, in its order: the first registered that
+           the type extends or implements. */
+        foreach ($policies as $expected => $policy) {
+            if (is_subclass_of($type, $expected)) {
+                return $gate->policy($type, $policy);
+            }
+        }
+
+        return $gate->policy($type, EntryPolicy::class);
     }
 
     /* Nobody until phase 9, which hands over the guard's user here and
