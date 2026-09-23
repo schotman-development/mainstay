@@ -64,7 +64,7 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'deleted_at'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
@@ -81,6 +81,15 @@ class ContentSchema
                     $table->id();
                     $table->unsignedBigInteger('site_id');
                     $this->fields($table, $shared);
+                    /* On from the first row a site writes, for the reason
+                       site_id is: added later, it is a migration of every
+                       table. Nothing fills owner_id before phase 9, and it
+                       has no key until there is a users table to point at.
+                       dateTime rather than timestamp, the column a
+                       Date(time: true) wants: MySQL shifts a timestamp by the
+                       session's zone and stops it at 2038. */
+                    $table->unsignedBigInteger('owner_id')->nullable();
+                    $table->datetimes();
                     $table->softDeletes();
                 },
                 'keys' => function (Blueprint $table) {

@@ -73,7 +73,7 @@ class SchemaTest extends DatabaseTestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertSame(
-            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'deleted_at'],
+            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
             Schema::getColumnListing('article'),
         );
         $this->assertSame(
