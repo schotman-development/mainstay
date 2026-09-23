@@ -1,0 +1,22 @@
+<?php
+
+namespace Mainstay\Content;
+
+use Attribute;
+
+/*
+ | The path an entry answers to, with fields interpolated: `#[Route('/blog/{slug}')]`.
+ | One pattern for every locale, or one per locale where a segment is
+ | translated -- `['en' => '/blog/{slug}', 'nl' => '/nieuws/{slug}']`. No
+ | locale base in it: how a request picks its locale, by prefix or by host, is
+ | the catch-all's, and a pattern written with `/nl` in it would have to change
+ | when that does.
+ |
+ | Not inherited. A subclass is its own type with its own table, and taking its
+ | parent's pattern would claim the parent's paths.
+ */
+#[Attribute(Attribute::TARGET_CLASS)]
+class Route
+{
+    public function __construct(public readonly string|array $pattern) {}
+}

@@ -7,6 +7,7 @@ use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\Route;
 use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
@@ -23,6 +24,9 @@ class Mainstay
 
     /** @var array<class-string, array<string, Field>> */
     private array $fields = [];
+
+    /** @var array<class-string, string|array<string, string>|null> */
+    private array $routes = [];
 
     public function version(): string
     {
@@ -93,6 +97,73 @@ class Mainstay
         $type = $this->canonical($type);
 
         return $this->fields[$type] ??= $this->reflect($type);
+    }
+
+    /*
+     | The type's #[Route] as declared -- one pattern, or one per locale --
+     | or null for a type with no URL. Checked here, the first time it is
+     | asked for, so a pattern no path can be built from is refused naming
+     | the type rather than surfacing as a broken lookup row.
+     |
+     | A pattern is `/` or a run of segments, each a lowercase slug or one
+     | `{field}`. Lowercase because the lookup's unique index compares as the
+     | database does, and MySQL and SQL Server fold case where SQLite and
+     | Postgres do not: `/Blog/x` and `/blog/x` would be one path on two
+     | drivers and two on the others. A placeholder names a field that is
+     | required, so there is always something to build the path from; a
+     | string, so the path is the value an editor typed rather than a date's
+     | column format; and not internal, since the path is published.
+     |
+     | @return string|array<string, string>|null
+     */
+    public function route(string $type): string|array|null
+    {
+        $type = $this->canonical($type);
+
+        if (array_key_exists($type, $this->routes)) {
+            return $this->routes[$type];
+        }
+
+        $attributes = (new ReflectionClass($type))->getAttributes(Route::class);
+        $route = $attributes === [] ? null : $attributes[0]->newInstance()->pattern;
+
+        if (is_array($route) && ($route === [] || array_is_list($route))) {
+            throw new InvalidArgumentException("{$type}'s #[Route] is a list. Give one pattern, or a pattern per locale keyed by the locale.");
+        }
+
+        foreach ((array) $route as $pattern) {
+            $this->pattern($type, $pattern);
+        }
+
+        return $this->routes[$type] = $route;
+    }
+
+    private function pattern(string $type, mixed $pattern): void
+    {
+        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:[a-z0-9]+(?:-[a-z0-9]+)*|\{\w+\}))+\z#', $pattern))) {
+            throw new InvalidArgumentException(sprintf(
+                "%s's #[Route] pattern %s is not a path Mainstay can store: it starts with /, has no trailing slash, and each segment is a lowercase slug or one {field}.",
+                $type,
+                is_string($pattern) ? "\"{$pattern}\"" : get_debug_type($pattern),
+            ));
+        }
+
+        preg_match_all('/\{(\w+)\}/', $pattern, $names);
+
+        foreach ($names[1] as $name) {
+            $field = $this->fields($type)[$name] ?? throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which is not a field of the type.");
+
+            $because = match (true) {
+                $field->internal => 'is internal, and the path is published',
+                $field->phpType !== 'string' => "is typed {$field->phpType}, and a path is built from strings",
+                ! $field->isRequired() => 'is optional, and a path cannot be built from nothing',
+                default => null,
+            };
+
+            if ($because !== null) {
+                throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which {$because}.");
+            }
+        }
     }
 
     /* The type as JSON Schema, which phase 11 serves from a discovery endpoint
