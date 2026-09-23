@@ -154,6 +154,33 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function an_internal_field_stays_internal_when_a_child_widens_it(): void
+    {
+        $fields = $this->mainstay->fields(Fixtures\Memo::class);
+
+        $this->assertTrue($fields['note']->internal, 'The flag follows the field attribute to the base, as the rest of the field does.');
+        $this->assertTrue($fields['source']->internal);
+        $this->assertFalse($fields['title']->internal);
+    }
+
+    #[Test]
+    public function a_child_widening_a_base_field_can_mark_it_internal(): void
+    {
+        $fields = $this->mainstay->fields(Fixtures\Restated::class);
+
+        $this->assertTrue($fields['body']->internal);
+        $this->assertFalse($fields['heading']->internal);
+    }
+
+    #[Test]
+    public function it_refuses_internal_on_a_property_that_is_not_a_field(): void
+    {
+        $this->expectExceptionMessage('carries no field attribute, so there is no field for it to hide');
+
+        $this->mainstay->fields(Fixtures\Broken\Unfielded::class);
+    }
+
+    #[Test]
     public function it_refuses_a_field_on_a_private_property_a_child_shadows(): void
     {
         /* The child's property of the same name is a second slot, not the

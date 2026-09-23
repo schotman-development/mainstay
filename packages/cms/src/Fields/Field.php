@@ -45,6 +45,13 @@ abstract class Field
     public readonly bool $nullable;
 
     /*
+     | Left out of what a reader without the capability is handed, and refused
+     | to them as a filter or a sort, so its value cannot be read back off
+     | which entries match.
+     */
+    public readonly bool $internal;
+
+    /*
      | The view namespace component() draws from. A property rather than a
      | literal because a host cannot add views to Mainstay's own: a field type
      | is only registration-free if the half of it that draws lives somewhere
@@ -73,6 +80,7 @@ abstract class Field
         $this->name = $property->getName();
         $this->phpType = $declared instanceof ReflectionNamedType ? $declared->getName() : 'mixed';
         $this->nullable = $declared === null || $declared->allowsNull();
+        $this->internal = $this->marked($property);
 
         /*
          | The one declaration isRequired() cannot answer for: `required: false`
@@ -89,6 +97,25 @@ abstract class Field
         }
 
         return $this;
+    }
+
+    /*
+     | Off every declaration of the property up the hierarchy, not only the one
+     | bound. A child widening a base's `#[Internal] protected` to public takes
+     | the field attribute from the base without restating it, and the registry
+     | binds the child's declaration -- so reading this off that one alone
+     | publishes a field the child only meant to open up. A child cannot make a
+     | base's internal field public: this fails closed rather than open.
+     */
+    private function marked(ReflectionProperty $property): bool
+    {
+        for ($class = $property->getDeclaringClass(); $class !== false; $class = $class->getParentClass()) {
+            if ($class->hasProperty($this->name) && $class->getProperty($this->name)->getAttributes(Internal::class) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /*

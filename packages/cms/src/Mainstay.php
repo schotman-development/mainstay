@@ -5,6 +5,7 @@ namespace Mainstay;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Internal;
 use ReflectionAttribute;
 use ReflectionClass;
 use stdClass;
@@ -161,6 +162,13 @@ class Mainstay
                 /* A property without a field attribute is the type's own
                    business, not a field the admin should be drawing. */
                 if ($attributes === []) {
+                    /* Unless it says it is hiding something: a flag with no
+                       field under it hides nothing, and reads as if it does.
+                       A base's field widened here is one to hide. */
+                    if ($property->getAttributes(Internal::class) !== [] && ! $this->fielded($class, $property->getName())) {
+                        throw new InvalidArgumentException("{$type}::\${$property->getName()} is marked #[Internal] and carries no field attribute, so there is no field for it to hide. Put the field attribute beside it.");
+                    }
+
                     continue;
                 }
 
@@ -210,6 +218,19 @@ class Mainstay
         }
 
         return $fields;
+    }
+
+    /* Whether a class this one extends carries a field attribute on the
+       property of that name. */
+    private function fielded(ReflectionClass $class, string $name): bool
+    {
+        for ($parent = $class->getParentClass(); $parent !== false; $parent = $parent->getParentClass()) {
+            if ($parent->hasProperty($name) && $parent->getProperty($name)->getAttributes(Field::class, ReflectionAttribute::IS_INSTANCEOF) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /*
