@@ -2,8 +2,12 @@
 
 namespace Mainstay;
 
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
+use Mainstay\Content\Entry;
+use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use ReflectionAttribute;
@@ -114,6 +118,31 @@ class Mainstay
             'required' => array_keys($fields),
             'additionalProperties' => false,
         ];
+    }
+
+    /*
+     | The query layer, reached from here so a template writes
+     | `Mainstay::find(Article::class, where: [...])`. The arguments are
+     | ContentStore's, passed through by name.
+     */
+    public function find(string $type, mixed ...$arguments): Collection
+    {
+        return $this->store()->find($type, ...$arguments);
+    }
+
+    public function findById(string $type, mixed ...$arguments): ?Entry
+    {
+        return $this->store()->findById($type, ...$arguments);
+    }
+
+    public function paginate(string $type, mixed ...$arguments): LengthAwarePaginator
+    {
+        return $this->store()->paginate($type, ...$arguments);
+    }
+
+    private function store(): ContentStore
+    {
+        return new ContentStore($this);
     }
 
     /* `\App\Article` and `App\Article` are one class and two cache keys -- and

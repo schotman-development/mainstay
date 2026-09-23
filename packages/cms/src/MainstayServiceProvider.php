@@ -4,11 +4,14 @@ namespace Mainstay;
 
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Mainstay\Console\SchemaCheckCommand;
 use Mainstay\Console\SyncCommand;
+use Mainstay\Content\Entry;
 use Mainstay\Database\ContentSchema;
+use Mainstay\Policies\EntryPolicy;
 use Mainstay\Ui\UiServiceProvider;
 use Throwable;
 
@@ -32,6 +35,11 @@ class MainstayServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        /* On the base class, so it is one policy per shape and a host's own
+           policy for a type -- registered, discovered or #[UsePolicy] --
+           still wins the way Laravel documents. */
+        Gate::policy(Entry::class, EntryPolicy::class);
+
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'mainstay');
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
