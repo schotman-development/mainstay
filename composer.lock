@@ -2452,10 +2452,14 @@
             "dist": {
                 "type": "path",
                 "url": "packages/cms",
-                "reference": "3708a92bcc528b6da9054962d1bd183c61fb0cdc"
+                "reference": "b6ce8d435bddc8bc1ceac3d7ad398201c462b3f1"
             },
             "require": {
+                "illuminate/auth": "^13.0",
+                "illuminate/database": "^13.0",
+                "illuminate/pagination": "^13.0",
                 "illuminate/support": "^13.0",
+                "illuminate/validation": "^13.0",
                 "mainstay/ui": "@dev",
                 "php": "^8.3"
             },
@@ -2478,7 +2482,7 @@
             "license": [
                 "MIT"
             ],
-            "description": "A headless CMS for Laravel: content modelled in PHP, edited in a React admin, served to static sites over HTTP.",
+            "description": "A headless CMS for Laravel: content modelled in PHP, edited in a Blade admin, served to static sites over HTTP.",
             "keywords": [
                 "cms",
                 "content",

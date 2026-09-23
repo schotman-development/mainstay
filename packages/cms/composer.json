@@ -5,7 +5,11 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "illuminate/auth": "^13.0",
+        "illuminate/database": "^13.0",
+        "illuminate/pagination": "^13.0",
         "illuminate/support": "^13.0",
+        "illuminate/validation": "^13.0",
         "mainstay/ui": "@dev"
     },
     "repositories": [
