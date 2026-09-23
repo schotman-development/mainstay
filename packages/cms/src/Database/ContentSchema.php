@@ -670,7 +670,7 @@ class ContentSchema
     /*
      | Columns are the snake_case of the property, the way every Laravel table
      | is written. A field that lives in JSON has no column of its own; the
-     | JSON column arrives with the first field type that needs it, in phase 7.
+     | JSON column arrives with the first field type that needs it, in phase 5.
      */
     private function fields(Blueprint $table, array $fields): void
     {

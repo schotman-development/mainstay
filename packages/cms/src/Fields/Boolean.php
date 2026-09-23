@@ -40,7 +40,7 @@ class Boolean extends Field
      | `accepted`, and only the argument can ask it -- `public bool` does not
      | mean "must be true", so isRequired() ignores the property type here.
      |
-     | `boolean` refuses the "on" a bare checkbox posts, so the form in phase 5
+     | `boolean` refuses the "on" a bare checkbox posts, so the form in phase 10
      | writes `value="1"` and a hidden `0`, the way a Laravel form always has.
      */
     public function isRequired(): bool

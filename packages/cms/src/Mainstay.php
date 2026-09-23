@@ -144,7 +144,7 @@ class Mainstay
          | Base classes first. getProperties() answers with a class's own
          | properties before the ones it inherits, which would file a shared
          | base's title after everything the child adds -- an order the
-         | declaration does not show anywhere, on a list phase 5 draws the form
+         | declaration does not show anywhere, on a list phase 10 draws the form
          | from. A property a child redeclares keeps the base's position and
          | takes the child's attribute -- assignment by name overwrites in
          | place, which is also why a trait's property, seen again on the class

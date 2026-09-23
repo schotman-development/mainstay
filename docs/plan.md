@@ -3,10 +3,14 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-The package today is a skeleton: a service provider, a config file, a catch-all admin view and an
-API route that reports its own version. `packages/ui` is ahead of it — Blade components, a theme,
-and a behaviour layer in `src/js` — and `packages/editor` is a built ProseMirror island. Nothing
-stores content yet.
+Phases 1 and 2 are done: content types are declared, reflected into a field list, and synced into
+tables that `mainstay:schema:check` holds CI to. `packages/ui` is ahead of the package — Blade
+components, a theme, and a behaviour layer in `src/js` — and `packages/editor` is a built
+ProseMirror island. Nothing reads or writes content yet.
+
+The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
+from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
+admin arrive after the model has been proven, as a surface over a layer that already works.
 
 ## What is already settled and does not get re-opened
 
@@ -33,7 +37,7 @@ rather than edited into the log, which is append-only by construction.
   attribute of that name to write and nothing reads one.
 - **`Navigation::sections()` lists a "Content types" screen.** Types are classes and there is no UI
   for authoring them. That item can only ever be a read-only inspector, and the navigation is
-  generated from the registry in phase 5 regardless.
+  generated from the registry in phase 10 regardless.
 
 ## Phase 1 — Declarations
 
@@ -47,15 +51,16 @@ extension point rather than three. The cost is that the set only exists once the
 booted, so the sync and drift commands in phase 2 are artisan commands rather than anything that
 could read the filesystem alone. They were always going to be artisan commands.
 
-Only the field types the phases before 7 need: text, textarea, number, boolean, date, select. Rich
-text and blocks arrive in phase 7, media in 8, relation and terms in 10, each registering through
+Only the field types the phases before 5 need: text, textarea, number, boolean, date, select. Rich
+text and blocks arrive in phase 5, media in 6, relation and terms in 7, each registering through
 the same contract a host would use — because a contract only exercised by third parties is a
 contract nobody has tested.
 
-**The contract is provisional until phase 8.** Six scalar types agree with each other too easily to
-prove anything. The types that will actually shape it are the ones that store in JSON, need a
+**The contract is provisional until phase 10.** Six scalar types agree with each other too easily
+to prove anything. The types that will actually shape it are the ones that store in JSON, need a
 sibling row, or draw an interface with state in it, and they are deliberately not here. Expect to
-reshape it when blocks and media land, and do not build a public extension API on it before then.
+reshape its storage half when blocks and media land in phases 5 and 6, and its interface half when
+the admin draws them in phase 10. Do not build a public extension API on it before then.
 
 Reflection turns a class into a field list. Everything downstream reads that list and never the
 class.
@@ -78,52 +83,50 @@ that is `sites`, seeded with one row, and the URI lookup keyed on `(site_id, loc
 
 The check is a declared type synced into sqlite, then a property renamed and the drift check failing.
 
-## Phase 3 — Identity
+## Phase 3 — Content, from code
 
-Mainstay's own users table, guard, session cookie and login view. A setup route that creates the
-first account and is reachable only while the user table is empty — checked when it renders *and*
-when it submits.
+`(type, where, sort, depth, locale, site)` for reads, and create, update and delete through the same
+layer, executing against the database with no HTTP hop. Models resolve their table from the type,
+cast through the field types, and carry the site scope and `SoftDeletes` from the first query
+written rather than the hundredth.
 
-Authorization lands with it, because it cannot be retrofitted onto a query layer that was written
-without it. Capabilities are strings derived from each type's declared capability type and never
-stored. `mainstay_roles` holds a name and a JSON array of them. `Gate::before` resolves primitives
-from the role plus per-user grants and denials; one policy per shape does the ownership mapping.
+Writes belong to the layer rather than to the admin, for the same reason reads do. A save validates
+from the declared rules, writes the row and its `_locales` sibling, and writes the URI lookup by
+interpolating the type's `#[Route]` pattern — so `#[Route]` is declared here, a phase before
+anything resolves it. A slug colliding with a URI another entry holds is a validation error on the
+field, not a silent suffix. The slug is an ordinary text field; deriving it from the title is a
+convenience for someone typing, and waits for the admin. Delete sets `deleted_at` and really deletes
+the lookup row, so the path stops resolving in the same request. The admin's form and any write over
+HTTP are transports over this, and cannot validate differently from a seeder.
 
-The check is a capability set derived from a fixture type, and a policy test for
-`edit_others_pages` against an entry someone else owns.
+Every main table gains `created_at` and `updated_at`, which writes fill, and a nullable `owner_id`,
+which nothing fills until phase 9. It goes on now for the reason phase 2 put `site_id` on first: the
+real site starts writing rows in this phase, and a column added later is a migration of every table
+it has. All three join the reserved names.
 
-## Phase 4 — The query layer
+Access control is on by default and opted out of explicitly, from the first call written. The old
+order put identity first to guarantee that, and the guarantee is about where the check sits, not
+about who it asks about. Every call asks `Gate::forUser()` with Mainstay's own user, never the
+default guard's — on a host with members of its own, that would be a site visitor answering
+Mainstay's policies. Until phase 9 there is no Mainstay user, so the one asked about is null: a read
+of the entry row passes with `#[Private]` fields absent, and a write is refused unless the caller
+opts out, the way a seeder bypasses authorization. Payload's Local API has the opposite default — it
+skips access control unless `overrideAccess: false` is passed — and that default is the one not to
+copy. Phase 9 changes where the user comes from and nothing else in this layer.
 
-`(type, where, sort, depth, locale, site)`, executing against the database with no HTTP hop.
-Models resolve their table from the type, cast through the field types, and carry the site scope and
-`SoftDeletes` from the first query written rather than the hundredth.
+`#[Private]` is honoured here, not in a controller, or the local caller and the HTTP caller diverge
+— which is the whole reason this layer exists. `depth` resolves relations defensively and skips what
+it cannot load.
 
-Access control is on by default and opted out of explicitly. `#[Private]` is honoured here, not in a
-controller, or the local caller and the HTTP caller diverge — which is the whole reason this layer
-exists. `depth` resolves relations defensively and skips what it cannot load.
+The check is a round trip: create through the layer and read back through it. A colliding slug is
+refused, a private field is absent without an override and present with one, and a write without an
+override is refused.
 
-The check is one call returning identical shapes at depth 0 and depth 1, and a private field absent
-without an override and present with one.
+## Phase 4 — Public rendering
 
-## Phase 5 — The admin, for scalar fields
-
-Navigation generated from the registry. A list screen per type on top of `EntryList::shape()`, which
-already exists and is tested. A form built from the field list, one Blade component per field type,
-drawn with the components in `packages/ui`.
-
-Save validates from the declared rules, writes the row, and writes the URI lookup by interpolating
-the route pattern. A slug colliding with a URI another entry holds is a validation error on the
-field, not a silent suffix.
-
-Blocks, media and rich text are not in this phase. Everything else about editing is.
-
-The check is a round trip: create through the admin, read back through the query layer.
-
-## Phase 6 — Public rendering
-
-`#[Route]` and `#[Template]`. One catch-all registered last, matching a path against every declared
-pattern through the lookup table, falling through to an ordinary 404. Template resolution cascades:
-per-entry override, then the type's declaration, then convention from the type name.
+`#[Template]`, and one catch-all registered last, matching a path through the lookup table phase 3
+writes and falling through to an ordinary 404. Template resolution cascades: per-entry override,
+then the type's declaration, then convention from the type name.
 
 Host templates call the query layer directly. They do not touch Eloquent and they do not make HTTP
 requests to their own server.
@@ -134,33 +137,30 @@ decision assumes when it says the `@foreach` a designer wrote is where the conte
 from. The consequence is that nothing end-to-end runs in this repository's CI, so the phases here
 stay covered by their own checks and the site is where the package is found to be wrong.
 
-Preview is a signed URL behind Mainstay's guard. Until phase 9 there are no drafts, so it renders
-the published row; the seam is here and the draft read is added there.
+Content reaches the site through phase 3, from the site's own seeders and import commands. Every
+field an editor would fill is one a seeder can, so that is enough to prove the model, and the model
+is the first thing the site should be allowed to find wrong.
 
-**This is the milestone that matters.** Declare a type, edit an entry, visit a URL. Everything after
-it makes that loop richer rather than making it exist.
+**This is the milestone that matters.** Declare a type, write an entry, visit a URL. Everything
+after it makes that loop richer rather than making it exist.
 
-## Phase 7 — Rich text and blocks
+## Phase 5 — Rich text and blocks
 
-The JSON column holding an ordered array of `{ id, type, data }`. The editor island wired into the
-form for rich text fields, storing ProseMirror document JSON.
+The JSON column holding an ordered array of `{ id, type, data }`, and rich text stored as
+ProseMirror document JSON, both written through phase 3's layer.
 
 A PHP walker turning that document into HTML at render time. The node schema is closed and an
 unknown node renders as nothing.
 
-The block list is built by moving DOM nodes, not re-rendering a list. `insertBefore` on a live node
-is a move, so typed-in state, focus and any editor instance inside a block survive a reorder. Adding
-clones a `<template>`; removing is `.remove()`; reordering is the platform's `draggable`. Serializing
-walks `[data-block]` in DOM order into a hidden input inside the form, so `FormData` sees it and
-`dirty-form.ts` covers blocks with no change at all.
-
 Block Blade templates on the site are the other half, and they are the only part of a design
 conversion that is not a rename.
 
-The check is a document fixture rendered to expected HTML, and a reorder that preserves an untouched
-sibling's value.
+Until phase 10 a document is written by hand, as a nested array in a seeder. That is the cost of
+testing the model before the editor exists.
 
-## Phase 8 — Media
+The check is a document fixture rendered to expected HTML.
+
+## Phase 6 — Media
 
 Upload, then derivatives generated immediately and written as plain files. Originals kept
 permanently. Derivative filenames are the original's content hash plus the size and crop parameters,
@@ -169,33 +169,96 @@ so regenerating writes new files and no cache needs invalidating.
 Sizes are declared in code beside the field. Crops and focal points are data on the media record, so
 reprocessing honours them. `mainstay:media:reprocess` runs on the queue.
 
-The picker and the browser are admin screens on the behaviour layer.
+Upload is a call from code first, so a seeder attaches an image the same way it writes a title. The
+picker and the browser are the admin's, in phase 10.
 
-## Phase 9 — Drafts, publishing, revisions, trash
+## Phase 7 — Globals, taxonomies and relations
 
-At most one draft row per entry, in a parallel table. The entry row always holds published content,
-so the site's read stays a single-row select with no version resolution on it.
+Globals reuse the field attributes and phase 3's layer, and differ only in having no route, no slug,
+and one row per site. The draft row and the revisions table reach them in phase 8, alongside
+entries.
+
+A relation is a field storing a plain ID, resolved defensively at every `depth`. This is where
+`depth` first has something to follow.
+
+Taxonomies are the deliberate exception to the relations decision: a term page exists to run the
+reverse query, so the pivot is real. One polymorphic `(term_id, entry_type, entry_id)` indexed both
+ways. Terms are flat, take `#[Template]`, and route through the same lookup table.
+
+The check is one call returning identical shapes at depth 0 and depth 1, and a trashed target
+skipped rather than failing the read.
+
+## Phase 8 — Drafts, publishing, revisions, trash
+
+At most one draft row per entry and per global, in a parallel table. The entry row always holds
+published content, so the site's read stays a single-row select with no version resolution on it.
 
 Publishing is one transaction: the draft overwrites the entry row, the outgoing content is appended
 to revisions, the draft is deleted. That transaction is also the single place where "content
 changed" is known, which is where the deferred publishing question will attach.
 
+Phase 3's create and update keep writing the entry row, so the site's seeders and import commands go
+on changing the site. A direct write is a publish with no draft before it and runs through the same
+transaction, so it appends a revision too. Saving a draft is its own call, and it is the one the
+admin's save button makes.
+
 Revisions are one shared table — type, id, JSON snapshot, author, timestamp, and a hash of the
-declared field set. Restore drops unknown fields, fills missing ones with defaults, tells the editor
-what changed, and writes a draft rather than republishing.
+declared field set. The author is null for anything published before phase 9 gives a write someone
+to be. Restore drops unknown fields, fills missing ones with defaults, tells the caller what
+changed, and writes a draft rather than republishing.
 
-Trash is `SoftDeletes`, but the URI lookup row is really deleted so the path stops resolving in the
-same request. Restore rewrites it from the route pattern and takes the next free URI if it is gone,
-saying which one it took.
+Delete already trashes, from phase 3. Restore rewrites the lookup row from the route pattern and
+takes the next free URI if it is gone, saying which one it took.
 
-## Phase 10 — Globals and taxonomies
+Publish and restore are calls on the layer here, and buttons in phase 10.
 
-Globals reuse the field attributes, the draft row and the revisions table, and differ only in having
-no route, no slug, and one row per site.
+## Phase 9 — Identity
 
-Taxonomies are the deliberate exception to the relations decision: a term page exists to run the
-reverse query, so the pivot is real. One polymorphic `(term_id, entry_type, entry_id)` indexed both
-ways. Terms are flat, take `#[Template]`, and route through the same lookup table.
+Mainstay's own users table, guard, session cookie and login view. A setup route that creates the
+first account and is reachable only while the user table is empty — checked when it renders *and*
+when it submits.
+
+Authorization is the other half. Capabilities are strings derived from each type's declared
+capability type and never stored. `mainstay_roles` holds a name and a JSON array of them.
+`Gate::before` resolves primitives from the role plus per-user grants and denials; one policy per
+shape does the ownership mapping. The query layer has asked `Gate` about Mainstay's user on every
+call since phase 3; the one change there is that the user now comes from this guard rather than
+being null.
+
+`owner_id` is filled from here, and every row written before this phase has none.
+`edit_others_pages` has to answer for a null owner, and "someone else's" is the answer that fails
+closed.
+
+The check is a capability set derived from a fixture type, and a policy test for
+`edit_others_pages` against an entry someone else owns and against one nobody owns.
+
+## Phase 10 — The admin
+
+Everything the phases before this built from code, drawn. Navigation generated from the registry. A
+list screen per type on top of `EntryList::shape()`, which already exists and is tested. A form built
+from the field list, one Blade component per field type, drawn with the components in
+`packages/ui`, and saving through phase 3's write, so the admin validates exactly as a seeder does.
+A slug fills from the title as it is typed.
+
+The editor island wired into the form for rich text fields. The block list built by moving DOM
+nodes, not re-rendering a list. `insertBefore` on a live node is a move, so typed-in state, focus and
+any editor instance inside a block survive a reorder. Adding clones a `<template>`; removing is
+`.remove()`; reordering is the platform's `draggable`. Serializing walks `[data-block]` in DOM order
+into a hidden input inside the form, so `FormData` sees it and `dirty-form.ts` covers blocks with no
+change at all.
+
+The media picker and browser on the behaviour layer. Publish, restore and the trash as buttons over
+the calls phase 8 made.
+
+Preview is a signed URL behind Mainstay's guard, in an iframe beside the form, reading the draft
+when there is one.
+
+This is the largest phase, and it cuts by field type: scalars first, then rich text, blocks and
+media, each a screen that works before the next begins. It is also where the field contract's
+interface half is first exercised, so expect its last reshape here.
+
+The check is a round trip — create through the admin, read back through the query layer — and a
+block reorder that preserves an untouched sibling's value.
 
 ## Phase 11 — The API as a product
 
@@ -234,7 +297,7 @@ revisions. A cached rendered-HTML column. A bulk export endpoint. Redirects when
 changes. Each is available later and each is recorded in `decisions.md` with the reason it is not
 needed yet.
 
-How rendered pages reach the public is still deferred, and phase 9's publish transaction is the hook
+How rendered pages reach the public is still deferred, and phase 8's publish transaction is the hook
 it will attach to.
 
 ## Decided while writing this
@@ -244,6 +307,17 @@ it will attach to.
   types, field types and onboarding steps rather than three.
 - **Phase 1 ships six scalar field types, not eleven.** Declaring the awkward ones early would only
   freeze a contract before anything had tested it.
-- **Phases 6 and 9 keep this order.** Rendering first buys the end-to-end loop sooner and leaves
-  preview showing published content for three phases. Drafts first would make preview honest
-  immediately and delay the first visible page. The loop is the more useful thing to have early.
+- **Content works before anyone can log in to it.** Identity and the admin were phases 3 and 5,
+  ahead of the query layer and rendering. They are now 9 and 10, so a real site tests the content
+  model from phase 4, fed by seeders rather than an editor. Identity came first so that access
+  control could not be left out of the query layer. That is kept by putting the `Gate` check in the
+  layer from its first call and having code opt out explicitly, so identity arrives as a user for
+  `Gate` to ask about rather than as a change to the layer. The costs are rows written before phase
+  9 with no owner, rich text written by hand for five phases, and an admin phase that carries every
+  field type's interface at once.
+- **Globals, taxonomies and relations come before drafts.** A real site needs its navigation, its
+  categories and its related entries before it needs an editorial workflow. Globals were after
+  drafts only to reuse the draft row; the drafts phase now adds that row to both shapes at once.
+- **Preview moves to the admin.** It sat in rendering, showing published rows until drafts arrived.
+  It needs Mainstay's guard, which now arrives after drafts, so it is built once, reading the draft,
+  beside the form that edits it.

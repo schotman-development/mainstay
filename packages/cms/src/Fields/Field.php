@@ -22,7 +22,7 @@ use ReflectionUnionType;
  | A host adds a field type by writing a subclass. There is no registration
  | call, which is one extension point fewer rather than one more.
  |
- | Provisional until phase 8. Six scalars agree with each other too easily; the
+ | Provisional until phase 10. Six scalars agree with each other too easily; the
  | types that will actually shape this are the ones storing in JSON, needing a
  | sibling row, or drawing an interface with state in it.
  */
@@ -307,7 +307,7 @@ abstract class Field
     /*
      | The Blade component that draws this field in the admin, derived from the
      | class name so a host's field type gets one by writing the file. The
-     | components themselves arrive with the form in phase 5.
+     | components themselves arrive with the form in phase 10.
      */
     public function component(): string
     {
