@@ -3,10 +3,10 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 and 2 are done: content types are declared, reflected into a field list, and synced into
-tables that `mainstay:schema:check` holds CI to. `packages/ui` is ahead of the package — Blade
-components, a theme, and a behaviour layer in `src/js` — and `packages/editor` is a built
-ProseMirror island. Nothing reads or writes content yet.
+Phases 1 to 3 are done: content types are declared, reflected into a field list, synced into
+tables that `mainstay:schema:check` holds CI to, and read and written from PHP through one query
+layer. `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
+`src/js` — and `packages/editor` is a built ProseMirror island. Nothing renders content yet.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
@@ -21,7 +21,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Four things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Seven things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -38,6 +38,16 @@ rather than edited into the log, which is append-only by construction.
 - **`Navigation::sections()` lists a "Content types" screen.** Types are classes and there is no UI
   for authoring them. That item can only ever be a read-only inspector, and the navigation is
   generated from the registry in phase 10 regardless.
+- **`#[Private]` is `#[Internal]`.** `private` is a reserved word, so `class Private` does not
+  parse — the reason `Global` is `GlobalSet`. The API and localization entries mean `#[Internal]`
+  wherever they say `#[Private]`.
+- **The trash is the query layer's, not `SoftDeletes`.** The trash entry says delete goes "through
+  Laravel's `SoftDeletes`". Phase 3 is the query builder over the declared class, so there is no
+  Eloquent model to carry the trait. `deleted_at` and the scope on it are the layer's own, applied
+  in the one query every read starts from, which is the guarantee the trait was wanted for.
+- **An untranslated entry is absent, not a fallback.** The localization entry has fallback on by
+  default. Phase 3 has none, and phase 12 adds it as an opt-in, so a live multilingual site's
+  listings do not start mixing languages on the deploy that ships it.
 
 ## Phase 1 — Declarations
 
@@ -85,42 +95,53 @@ The check is a declared type synced into sqlite, then a property renamed and the
 
 ## Phase 3 — Content, from code
 
-`(type, where, sort, depth, locale, site)` for reads, and create, update and delete through the same
-layer, executing against the database with no HTTP hop. Models resolve their table from the type,
-cast through the field types, and carry the site scope and `SoftDeletes` from the first query
-written rather than the hundredth.
+`find`, `findById` and `paginate` for reads, taking `(type, where, sort, limit, locale)`, and
+`create`, `update` and `delete` through the same layer, executing against the database with no HTTP
+hop. `where` and `sort` are data rather than closures, so phase 11's transport carries the same call
+a template makes. A read hydrates the declared class through the field types, and every read starts
+from one query scoped to the site, to the locale's row and out of the trash. The query builder, not
+Eloquent: the declared class is the model, and an Eloquent one would be a second object per row.
+
+`locale` is here rather than in phase 12, because the real site is multilingual from the start. It
+defaults to the request's locale and has to be one of `mainstay.locales`, the first of which is the
+default. There is no fallback: an entry with no row in a locale is not there in it. `depth` waits
+for phase 7, where relations give it something to follow, and `site` for phase 12. Both are named
+arguments, so adding them breaks no caller.
 
 Writes belong to the layer rather than to the admin, for the same reason reads do. A save validates
-from the declared rules, writes the row and its `_locales` sibling, and writes the URI lookup by
-interpolating the type's `#[Route]` pattern — so `#[Route]` is declared here, a phase before
-anything resolves it. A slug colliding with a URI another entry holds is a validation error on the
-field, not a silent suffix. The slug is an ordinary text field; deriving it from the title is a
-convenience for someone typing, and waits for the admin. Delete sets `deleted_at` and really deletes
-the lookup row, so the path stops resolving in the same request. The admin's form and any write over
-HTTP are transports over this, and cannot validate differently from a seeder.
+the entry as it will be stored from the declared rules, writes the row and its `_locales` sibling in
+one transaction, and rebuilds every locale's URI lookup from the type's `#[Route]`: one pattern, or
+one per locale where a segment is translated. An update in a locale with no row yet adds that
+translation. A slug colliding with a URI another entry holds is a validation error on the field, not
+a silent suffix, and the lookup's unique index decides it. A routed field holds what `Str::slug`
+writes, since that index folds case on MySQL and SQL Server and not on the others; deriving it from
+the title is a convenience for someone typing, and waits for the admin. Delete sets `deleted_at` and
+really deletes the lookup rows, so the path stops resolving in the same request. The admin's form
+and any write over HTTP are transports over this, and cannot validate differently from a seeder.
 
 Every main table gains `created_at` and `updated_at`, which writes fill, and a nullable `owner_id`,
 which nothing fills until phase 9. It goes on now for the reason phase 2 put `site_id` on first: the
 real site starts writing rows in this phase, and a column added later is a migration of every table
-it has. All three join the reserved names.
+it has. All three join the reserved names, with `uri`.
 
 Access control is on by default and opted out of explicitly, from the first call written. The old
 order put identity first to guarantee that, and the guarantee is about where the check sits, not
 about who it asks about. Every call asks `Gate::forUser()` with Mainstay's own user, never the
 default guard's — on a host with members of its own, that would be a site visitor answering
 Mainstay's policies. Until phase 9 there is no Mainstay user, so the one asked about is null: a read
-of the entry row passes with `#[Private]` fields absent, and a write is refused unless the caller
-opts out, the way a seeder bypasses authorization. Payload's Local API has the opposite default — it
-skips access control unless `overrideAccess: false` is passed — and that default is the one not to
-copy. Phase 9 changes where the user comes from and nothing else in this layer.
+passes with `#[Internal]` fields absent, and a write is refused unless the caller passes
+`overrideAccess: true`, the way a seeder bypasses authorization. Payload's Local API has the
+opposite default — it skips access control unless `overrideAccess: false` is passed — and that
+default is the one not to copy. Phase 9 changes where the user comes from and nothing else in this
+layer.
 
-`#[Private]` is honoured here, not in a controller, or the local caller and the HTTP caller diverge
-— which is the whole reason this layer exists. `depth` resolves relations defensively and skips what
-it cannot load.
+`#[Internal]` is honoured here, not in a controller, or the local caller and the HTTP caller diverge
+— which is the whole reason this layer exists. Filtering or sorting on an internal field is refused
+in the words an unknown field is, so its value cannot be read back off which entries match.
 
-The check is a round trip: create through the layer and read back through it. A colliding slug is
-refused, a private field is absent without an override and present with one, and a write without an
-override is refused.
+The check is a round trip: create through the layer and read back through it, in two locales. A
+colliding slug is refused with nothing written, an internal field is absent without an override
+and present with one, and a write without an override is refused. It runs on all four drivers.
 
 ## Phase 4 — Public rendering
 
@@ -130,6 +151,11 @@ then the type's declaration, then convention from the type name.
 
 Host templates call the query layer directly. They do not touch Eloquent and they do not make HTTP
 requests to their own server.
+
+A locale has a base, a path prefix or a host, and the catch-all strips it and looks up
+`(site, locale, uri)`; phase 3 stores the path without one, so choosing between them rewrites no
+rows. A link is the locale's base and the entry's `uri`. An unprefixed default locale can hold a
+path whose first segment is another locale's prefix, so the rule against that belongs here too.
 
 The host is a real site in its own repository, consuming `mainstay/cms` through a path repository,
 not the testbench skeleton. Real requirements drive the design — which is what the design-phase
@@ -276,9 +302,10 @@ zone question, but it is a choice this phase has to make rather than inherit.
 
 ## Phase 12 — The second locale and the second site
 
-Nothing new in the schema — phase 2 put the columns there. This is where they are proven by
-configuring a second of each: the locale switcher, per-locale publish state, fallback config, and
-the request host matched to a site. With one of each configured, none of it renders.
+Nothing new in the schema — phase 2 put the columns there, and phase 3 already reads and writes
+more than one locale. This is where the rest is proven by configuring a second of each: the locale
+switcher, per-locale publish state and trash, fallback as an opt-in, and the request host matched to
+a site. With one of each configured, none of it renders.
 
 ## Phase 13 — Onboarding
 
@@ -318,6 +345,9 @@ it will attach to.
 - **Globals, taxonomies and relations come before drafts.** A real site needs its navigation, its
   categories and its related entries before it needs an editorial workflow. Globals were after
   drafts only to reuse the draft row; the drafts phase now adds that row to both shapes at once.
+- **Locales arrive in phase 3, not phase 12.** The real site is multilingual from the start, so
+  the layer takes `locale` on every call and writes a row and a path per locale from its first save.
+  Phase 12 keeps what only a second locale in the admin needs.
 - **Preview moves to the admin.** It sat in rendering, showing published rows until drafts arrived.
   It needs Mainstay's guard, which now arrives after drafts, so it is built once, reading the draft,
   beside the form that edits it.
