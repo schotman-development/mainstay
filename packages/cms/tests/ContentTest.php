@@ -480,6 +480,29 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function an_update_a_delete_overtook_writes_nothing_and_gives_no_path_back(): void
+    {
+        $id = $this->writePost()->id;
+
+        /* Another request trashing the entry once this save has loaded it. */
+        $deleted = false;
+        DB::listen(function ($query) use ($id, &$deleted) {
+            $sql = strtolower($query->sql);
+
+            if (! $deleted && str_starts_with($sql, 'select') && str_contains($sql, 'post_locales')) {
+                $deleted = true;
+                DB::table('post')->where('id', $id)->update(['deleted_at' => '2026-09-23 00:00:00']);
+                DB::table('uris')->where('entry_id', $id)->delete();
+            }
+        });
+
+        $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class);
+        $this->assertTrue($deleted);
+        $this->assertSame('Hello', DB::table('post_locales')->value('title'));
+        $this->assertSame(0, DB::table('uris')->count());
+    }
+
+    #[Test]
     public function a_shared_field_in_the_pattern_moves_every_locales_path(): void
     {
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;

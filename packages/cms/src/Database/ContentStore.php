@@ -8,6 +8,7 @@ use Illuminate\Contracts\Auth\Access\Gate as GateContract;
 use Illuminate\Database\Eloquent\Attributes\UsePolicy;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
+use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
@@ -122,7 +123,7 @@ class ContentStore
 
         $id = $this->write($type, null, $this->validate($type, $data, []), $data, $locale, false);
 
-        return $this->findById($type, $id, $locale, $overrideAccess);
+        return $this->readBack($type, $id, $locale, $overrideAccess);
     }
 
     /**
@@ -148,7 +149,7 @@ class ContentStore
 
         $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale))), $data, $locale, $translations->has($locale));
 
-        return $this->findById($type, $id, $locale, $overrideAccess);
+        return $this->readBack($type, $id, $locale, $overrideAccess);
     }
 
     /*
@@ -168,9 +169,18 @@ class ContentStore
         DB::transaction(function () use ($type, $id) {
             $now = $this->stamp(CarbonImmutable::now());
 
-            DB::table($type::handle())->where('id', $id)->update(['deleted_at' => $now, 'updated_at' => $now]);
+            DB::table($type::handle())->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now, 'updated_at' => $now]);
             DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
         });
+    }
+
+    /* What a write committed, as the caller may read it. Gone only if a
+       delete landed after the commit, which is what the caller is then
+       told. */
+    private function readBack(string $type, int $id, string $locale, bool $overrideAccess): Entry
+    {
+        return $this->findById($type, $id, $locale, $overrideAccess)
+            ?? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.");
     }
 
     /*
@@ -541,7 +551,16 @@ class ContentStore
             if ($id === null) {
                 $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), 'created_at' => $now, 'updated_at' => $now]);
             } else {
-                DB::table($handle)->where('id', $id)->update([...$serialize($changed($shared)), 'updated_at' => $now]);
+                /* Only while it is out of the trash, and asked again after. A
+                   delete committed since the load leaves the update nothing
+                   to match, and writing on would give a trashed entry its
+                   paths back. The update holds the row from here, so a delete
+                   arriving later waits for this commit. */
+                DB::table($handle)->where('id', $id)->whereNull('deleted_at')->update([...$serialize($changed($shared)), 'updated_at' => $now]);
+
+                if (! DB::table($handle)->where('id', $id)->whereNull('deleted_at')->exists()) {
+                    throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
+                }
             }
 
             /* An update with no columns compiles to `set  where`, and an
