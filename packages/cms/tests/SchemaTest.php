@@ -519,7 +519,7 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_leaves_the_marker_when_it_fails_after_altering_a_table(): void
     {
-        config()->set('app.locale', 'nl');
+        config()->set('mainstay.locales', ['nl', 'en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
@@ -554,7 +554,7 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_gives_a_missing_locale_the_default_and_restores_the_locale_keys(): void
     {
-        config()->set('app.locale', 'nl');
+        config()->set('mainstay.locales', ['nl', 'en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $id = $this->insertArticle();

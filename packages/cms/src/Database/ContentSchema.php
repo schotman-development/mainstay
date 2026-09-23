@@ -659,7 +659,7 @@ class ContentSchema
         return match (true) {
             $column->name === 'site_id' => DB::table('sites')->orderBy('id')->value('id')
                 ?? throw new InvalidArgumentException("{$table}.site_id is required, and there is no site to give the rows already in the table. Run php artisan migrate."),
-            $column->name === 'locale' => config('app.locale'),
+            $column->name === 'locale' => config('mainstay.locales')[0],
             $column->name === 'parent_id' => throw new InvalidArgumentException("{$table}.parent_id is required, and a row with no parent has none to be given. Empty the table, or add the column by hand."),
             in_array($column->type, ['char', 'string', 'tinyText', 'text', 'mediumText', 'longText'], true) => '',
             in_array($column->type, ['tinyInteger', 'smallInteger', 'mediumInteger', 'integer', 'bigInteger', 'float', 'double', 'decimal'], true) => 0,
