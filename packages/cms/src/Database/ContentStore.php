@@ -202,8 +202,10 @@ class ContentStore
             /* By entry, which reads the rows as they are now: MySQL answers a
                plain read inside a caller's transaction from its snapshot, and
                a path added since would outlive the trash. The gap lock this
-               takes makes a create inserting beside it wait, and nothing a
-               create holds is needed here, so it is a wait, not a deadlock. */
+               takes makes a create inserting beside it wait until the commit.
+               Alone that is a wait, not a deadlock; a caller's own
+               transaction that writes a path after the delete can turn it
+               into one, which reaches the caller. */
             DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
         }, self::ATTEMPTS);
     }
@@ -606,18 +608,18 @@ class ContentStore
 
         $values = [...$stored, ...$data];
 
-        /* An internal field the caller may not see, on a row being inserted
-           -- nothing is stored for it yet -- takes the default its property
-           declares. Without one, a required field has nothing valid to hold,
-           and the write is refused as a question of access, which it is,
-           without naming the field. */
-        foreach ($internal ? [] : array_diff_key($this->mainstay->fields($type), $fields, $stored) as $name => $field) {
+        /* A field left off a row being inserted -- nothing is stored for it
+           yet -- takes the default its property declares, whoever writes it.
+           An internal one the caller may not see, required and with no
+           default, has nothing valid to hold, and the write is refused as a
+           question of access, which it is, without naming the field. */
+        foreach (array_diff_key($this->mainstay->fields($type), $data, $stored) as $name => $field) {
             $property = new ReflectionProperty($type, $name);
 
             if ($property->hasDefaultValue()) {
                 $values[$name] = $property->getDefaultValue();
-            } elseif ($field->isRequired()) {
-                throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, or write with access to it.');
+            } elseif (! $internal && $field->internal && $field->isRequired()) {
+                throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, make it optional, or write with access to it.');
             }
         }
 
@@ -642,8 +644,9 @@ class ContentStore
      | The row, the locale's row and every locale's path, or none of them.
      |
      | A row inserted -- a create, or a locale's first -- gets every column
-     | from the validated values, so a field left off it holds what its type
-     | stores for nothing rather than whatever the column defaults to. A row
+     | from the validated values, so a field left off it holds its declared
+     | default, or what its type stores for nothing, rather than whatever the
+     | column defaults to. A row
      | updated gets only the columns the call was given. The rest were read to
      | be validated, not to be written: written back, they would put a field
      | another save changed in the meantime back the way it was.
@@ -838,13 +841,22 @@ class ContentStore
         $entry = (new ReflectionClass($type))->newInstanceWithoutConstructor();
 
         $entry->id = (int) $row->id;
-        $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
-        $entry->createdAt = $row->created_at === null ? null : CarbonImmutable::parse($row->created_at, 'UTC');
-        $entry->updatedAt = $row->updated_at === null ? null : CarbonImmutable::parse($row->updated_at, 'UTC');
+
+        /* A caller that may not read the type is handed the id and nothing it
+           did not write: not the owner, not the stamps, and not the path,
+           which spells out the fields it is built from. */
+        if ($only === null) {
+            $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
+            $entry->createdAt = $row->created_at === null ? null : CarbonImmutable::parse($row->created_at, 'UTC');
+            $entry->updatedAt = $row->updated_at === null ? null : CarbonImmutable::parse($row->updated_at, 'UTC');
+        }
 
         if ($locale !== null) {
             $entry->locale = $locale;
-            $entry->uri = $row->uri;
+
+            if ($only === null) {
+                $entry->uri = $row->uri;
+            }
         }
 
         foreach ($this->mainstay->fields($type) as $name => $field) {
@@ -857,26 +869,47 @@ class ContentStore
             /* Absent rather than null. Null is a value a field holds, and a
                template printing a note it was not given should fail where it
                reads it rather than print nothing. A default the declaration
-               gave goes for the same reason, unset from the declaring class,
-               where a `protected(set)` property allows it; a readonly one has
-               no default to take away. The same goes for a field outside
-               `$only`, which a write hands back to a caller that may not
-               read the type. */
+               gave goes for the same reason. The same goes for a field
+               outside `$only`, which a write hands back to a caller that may
+               not read the type. */
             if (($field->internal && ! $internal) || ($only !== null && ! in_array($name, $only, true))) {
-                if ($property->isInitialized($entry)) {
-                    Closure::bind(function () use ($name) {
-                        unset($this->{$name});
-                    }, $entry, $property->getDeclaringClass()->getName())();
-                }
+                $this->absent($entry, $property);
 
                 continue;
             }
 
             /* Through reflection, which initializes a readonly property from
-               outside its class where assignment cannot. */
-            $property->setValue($entry, $field->cast($row->{Str::snake($name)}));
+               outside its class where assignment cannot.
+
+               The entry a write asks Gate about is built before Gate has
+               answered, so a stored value its field cannot read -- a blank
+               select, put there from outside the layer -- is left out of it,
+               rather than refusing the caller in that field's name. A read
+               still fails on it, naming the declaration. */
+            try {
+                $property->setValue($entry, $field->cast($row->{Str::snake($name)}));
+            } catch (InvalidArgumentException $exception) {
+                if ($locale !== null) {
+                    throw $exception;
+                }
+
+                $this->absent($entry, $property);
+            }
         }
 
         return $entry;
+    }
+
+    /* Unset from the declaring class, where a `protected(set)` property
+       allows it; a readonly one has no default to take away. */
+    private function absent(Entry $entry, ReflectionProperty $property): void
+    {
+        if ($property->isInitialized($entry)) {
+            $name = $property->getName();
+
+            Closure::bind(function () use ($name) {
+                unset($this->{$name});
+            }, $entry, $property->getDeclaringClass()->getName())();
+        }
     }
 }

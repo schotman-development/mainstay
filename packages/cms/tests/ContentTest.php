@@ -19,6 +19,7 @@ use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
+use Mainstay\Tests\Fixtures\Policies\FormPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
@@ -420,6 +421,30 @@ class ContentTest extends DatabaseTestCase
 
         $this->assertSame('Hello again', $amended->message);
         $this->assertFalse((new ReflectionProperty($amended, 'name'))->isInitialized($amended), 'Stored, but not written by this call.');
+
+        foreach (['uri', 'ownerId', 'createdAt', 'updatedAt'] as $unwritten) {
+            $this->assertFalse((new ReflectionProperty($amended, $unwritten))->isInitialized($amended), "{$unwritten} was not written by this call.");
+        }
+    }
+
+    #[Test]
+    public function a_declared_default_fills_a_field_left_off_whoever_writes(): void
+    {
+        $this->assertSame('new', Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true)->state);
+    }
+
+    #[Test]
+    public function a_stored_value_a_hidden_field_cannot_read_is_not_named_to_a_writer(): void
+    {
+        $id = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en')->id;
+        DB::table('submission')->update(['state' => '']);
+
+        $this->assertSame('Hello', Mainstay::update(Submission::class, $id, ['message' => 'Hello'], locale: 'en')->message);
+
+        Gate::policy(Submission::class, ClosedPolicy::class);
+
+        $this->assertThrows(fn () => Mainstay::update(Submission::class, $id, ['message' => 'Again'], locale: 'en'), AuthorizationException::class);
+        $this->assertThrows(fn () => Mainstay::delete(Submission::class, $id), AuthorizationException::class);
     }
 
     #[Test]
@@ -428,9 +453,15 @@ class ContentTest extends DatabaseTestCase
         $this->assertThrows(
             fn () => Mainstay::create(Ticket::class, ['name' => 'Ann'], locale: 'en'),
             AuthorizationException::class,
-            'Writing a Ticket needs a field this caller may not see. Give it a default in the declaration, or write with access to it.',
+            'Writing a Ticket needs a field this caller may not see. Give it a default in the declaration, make it optional, or write with access to it.',
         );
         $this->assertSame(0, DB::table('ticket')->count());
+
+        /* A required Textarea has an empty value to fall back on, and is
+           refused all the same: stored empty, it would refuse the next save
+           of someone who can see it. */
+        Gate::policy(Memo::class, FormPolicy::class);
+        $this->assertThrows(fn () => Mainstay::create(Memo::class, ['title' => 'Printer'], locale: 'en'), AuthorizationException::class, 'Writing a Memo needs a field this caller may not see.');
     }
 
     #[Test]
@@ -503,7 +534,7 @@ class ContentTest extends DatabaseTestCase
 
         Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
 
-        $this->assertSame(1, DB::table('uris')->count());
+        $this->assertSame(['/blog/hello'], DB::table('uris')->pluck('uri')->all());
         $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
     }
 
