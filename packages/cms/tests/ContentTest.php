@@ -6,6 +6,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\GenericUser;
 use Illuminate\Database\RecordNotFoundException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -626,15 +627,30 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_save_clears_a_second_path_row_left_from_outside(): void
+    public function a_save_clears_the_path_of_a_type_that_lost_its_route(): void
     {
+        /* Memo has no route; a path left from one it had goes on its next
+           save, or the catch-all would go on answering it. */
+        $id = Mainstay::create(Memo::class, ['note' => 'Call back', 'title' => 'Printer'], locale: 'en', overrideAccess: true)->id;
+        DB::table('uris')->insert(['site_id' => 1, 'locale' => 'en', 'uri' => '/memos/printer', 'type' => 'memo', 'entry_id' => $id]);
+
+        Mainstay::update(Memo::class, $id, ['title' => 'Plotter'], locale: 'en', overrideAccess: true);
+
+        $this->assertSame(0, DB::table('uris')->count());
+    }
+
+    #[Test]
+    public function the_lookup_holds_one_path_per_entry_and_locale(): void
+    {
+        /* Every read joins it, so a second row would read the entry twice. */
         $id = $this->writePost()->id;
-        DB::table('uris')->insert(['site_id' => 1, 'locale' => 'en', 'uri' => '/blog/stray', 'type' => 'post', 'entry_id' => $id]);
 
-        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
-
-        $this->assertSame(['/blog/hello'], DB::table('uris')->pluck('uri')->all());
+        $this->assertThrows(
+            fn () => DB::table('uris')->insert(['site_id' => 1, 'locale' => 'en', 'uri' => '/blog/stray', 'type' => 'post', 'entry_id' => $id]),
+            UniqueConstraintViolationException::class,
+        );
         $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+        $this->assertSame(1, Mainstay::paginate(Post::class)->total());
     }
 
     #[Test]

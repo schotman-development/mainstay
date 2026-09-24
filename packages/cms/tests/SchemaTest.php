@@ -56,13 +56,34 @@ class SchemaTest extends DatabaseTestCase
 
         $second = DB::table('sites')->insertGetId(['handle' => 'campaign', 'name' => 'Campaign', 'hostname' => 'campaign.test']);
 
+        /* An entry belongs to one site, so the same path on the second site
+           is another entry's. */
         DB::table('uris')->insert($row);
         DB::table('uris')->insert(['locale' => 'nl'] + $row);
-        DB::table('uris')->insert(['site_id' => $second] + $row);
+        DB::table('uris')->insert(['site_id' => $second, 'entry_id' => 2] + $row);
 
         $this->expectException(UniqueConstraintViolationException::class);
 
-        DB::table('uris')->insert(['entry_id' => 2] + $row);
+        DB::table('uris')->insert(['entry_id' => 3] + $row);
+    }
+
+    #[Test]
+    public function one_path_per_entry_and_locale_arrives_over_rows_that_break_it(): void
+    {
+        $migration = require __DIR__.'/../database/migrations/2026_09_24_000000_hold_one_path_per_entry_and_locale.php';
+        $migration->down();
+
+        $row = ['site_id' => 1, 'locale' => 'en', 'type' => 'article', 'entry_id' => 1];
+        $first = DB::table('uris')->insertGetId(['uri' => '/blog/first'] + $row);
+        DB::table('uris')->insert(['uri' => '/blog/second'] + $row);
+        DB::table('uris')->insert(['uri' => '/blog/other', 'entry_id' => 2] + $row);
+
+        $migration->up();
+
+        $this->assertSame([$first, '/blog/first'], [(int) DB::table('uris')->where('entry_id', 1)->value('id'), DB::table('uris')->where('entry_id', 1)->value('uri')]);
+        $this->assertSame(2, DB::table('uris')->count());
+        $this->expectException(UniqueConstraintViolationException::class);
+        DB::table('uris')->insert(['uri' => '/blog/third'] + $row);
     }
 
     #[Test]

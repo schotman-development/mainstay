@@ -384,7 +384,8 @@ class ContentStore
      | Every read starts here. The row in one locale -- an inner join, so an
      | entry with no row in that locale is not there, which is what no
      | fallback means -- and the path it answers to there. Both joins match
-     | one row at most, which is what keeps paginate's count honest.
+     | one row at most, each by a unique index, which is what keeps
+     | paginate's count honest.
      |
      | Only the main row's `deleted_at` is asked about. The sibling has one
      | too, for trashing a single translation, and nothing sets it yet.
@@ -739,9 +740,8 @@ class ContentStore
         $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri']);
         $held = $rows->keyBy('locale')->only(array_keys($wanted));
 
-        /* Every row but the one kept for a locale still wanted: a locale
-           whose path went, or a second row for one, which only a write from
-           outside the layer leaves behind. */
+        /* The row of a locale whose path went: one the config dropped, or a
+           route the type no longer has. */
         if (($gone = $rows->pluck('id')->diff($held->pluck('id')))->isNotEmpty()) {
             DB::table('uris')->whereIn('id', $gone)->delete();
         }
