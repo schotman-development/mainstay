@@ -2,6 +2,7 @@
 
 namespace Mainstay\Tests;
 
+use BadMethodCallException;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -186,8 +187,8 @@ class SchemaTest extends DatabaseTestCase
          | which drops what the prefix in force can see. An index is named
          | after the table without its prefix and lives in the schema rather
          | than in the table, so the unprefixed run's `sites_handle_unique` is
-         | still there for `ms_sites` to collide with -- on every driver whose
-         | database outlives the test, which in-memory SQLite is not.
+         | still there for `ms_sites` to collide with -- on every driver, since
+         | each one's database, SQLite's file included, outlives the test.
          */
         $this->artisan('db:wipe')->run();
 
@@ -338,19 +339,25 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_fills_a_set_column_with_its_first_member(): void
     {
-        if (DB::getDriverName() !== 'mysql') {
-            $this->markTestSkipped('Only MySQL has a set column.');
-        }
-
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $this->insertArticle();
 
         $this->declare(SettedArticle::class);
-        $this->artisan('mainstay:sync --force')->assertSuccessful();
 
-        $this->assertSame('news', DB::table('article')->value('sections'));
-        $this->assertSame([], app(ContentSchema::class)->diff());
+        /* Only MySQL and MariaDB have a set column. Anywhere else Laravel's
+           grammar has no type to write, and sync stops at the comparison,
+           before it has altered anything. */
+        if (! in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->assertThrows(fn () => Artisan::call('mainstay:sync', ['--force' => true]), BadMethodCallException::class, 'typeSet does not exist');
+            $this->assertFalse(Schema::hasColumn('article', 'sections'));
+            $this->assertSame('Kept', DB::table('article')->value('title'));
+        } else {
+            $this->artisan('mainstay:sync --force')->assertSuccessful();
+
+            $this->assertSame('news', DB::table('article')->value('sections'));
+            $this->assertSame([], app(ContentSchema::class)->diff());
+        }
     }
 
     #[Test]
@@ -464,17 +471,18 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_asks_before_narrowing_a_string_that_holds_longer_values(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite reports no length, so a narrower string is no difference to it.');
-        }
-
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         Schema::table('article', fn ($table) => $table->string('title', 255)->change());
         $this->insertArticle(['title' => str_repeat('a', 200)]);
 
-        /* Postgres's cast cuts the string short; strict MySQL refuses to. */
-        if (DB::getDriverName() === 'pgsql') {
+        /* SQLite reports no length, so a narrower string is no difference to
+           it: nothing to ask about, and nothing cut. Postgres's cast cuts the
+           string short; strict MySQL refuses to. */
+        if (DB::getDriverName() === 'sqlite') {
+            $this->assertSame([], app(ContentSchema::class)->diff());
+            $this->artisan('mainstay:sync')->assertSuccessful();
+        } elseif (DB::getDriverName() === 'pgsql') {
             $this->artisan('mainstay:sync')
                 ->expectsConfirmation('Retype article.title, and change values stored in them that the new type cannot hold?', 'no')
                 ->assertFailed();
@@ -515,10 +523,6 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_refuses_a_value_the_new_type_cannot_hold_before_marking_even_when_forced(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite stores the text in an integer column as it is.');
-        }
-
         $this->declare(CodedArticle::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
@@ -526,15 +530,26 @@ class SchemaTest extends DatabaseTestCase
 
         $this->declare(RecodedArticle::class);
 
-        try {
-            Artisan::call('mainstay:sync', ['--force' => true]);
-            $this->fail('An integer column took abc.');
-        } catch (InvalidArgumentException $e) {
-            $this->assertStringContainsString('article holds values the declared type of article.code refuses', $e->getMessage());
-        }
+        /* SQLite stores the text in an integer column as it is, so the new
+           type can hold it: nothing is refused, because nothing is lost, and
+           the database is marked as one sync has altered. */
+        if (DB::getDriverName() === 'sqlite') {
+            $this->artisan('mainstay:sync --force')->assertSuccessful();
 
-        $this->assertSame('abc', DB::table('article')->value('code'));
-        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+            $this->assertSame('abc', DB::table('article')->value('code'));
+            $this->assertSame([], app(ContentSchema::class)->diff());
+            $this->assertTrue(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+        } else {
+            try {
+                Artisan::call('mainstay:sync', ['--force' => true]);
+                $this->fail('An integer column took abc.');
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString('article holds values the declared type of article.code refuses', $e->getMessage());
+            }
+
+            $this->assertSame('abc', DB::table('article')->value('code'));
+            $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+        }
     }
 
     #[Test]

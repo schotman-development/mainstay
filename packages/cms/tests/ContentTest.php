@@ -6,6 +6,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\Access\Response;
 use Illuminate\Auth\GenericUser;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\App;
@@ -309,16 +310,21 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_blank_stamp_column_reads_as_nothing(): void
     {
-        if (DB::getDriverName() !== 'sqlite') {
-            $this->markTestSkipped('Only SQLite stores a blank in a datetime column.');
+        $insert = fn () => $this->insert(['created_at' => '', 'updated_at' => ' ']);
+
+        /* Only SQLite keeps a blank in a datetime column. Postgres and MySQL
+           refuse one, and SQL Server's datetime reads it as its first day, so
+           none of them can hand the layer a blank to read. */
+        if (in_array(DB::getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->assertThrows($insert, QueryException::class);
+        } elseif (DB::getDriverName() === 'sqlsrv') {
+            $this->assertSame('1900-01-01', Mainstay::findById(Post::class, $insert())->createdAt->format('Y-m-d'));
+        } else {
+            $post = Mainstay::findById(Post::class, $insert());
+
+            $this->assertNull($post->createdAt);
+            $this->assertNull($post->updatedAt);
         }
-
-        $id = $this->insert(['created_at' => '', 'updated_at' => ' ']);
-
-        $post = Mainstay::findById(Post::class, $id);
-
-        $this->assertNull($post->createdAt);
-        $this->assertNull($post->updatedAt);
     }
 
     #[Test]
@@ -393,6 +399,28 @@ class ContentTest extends DatabaseTestCase
     private function writePost(array $data = [], string $locale = 'en'): Post
     {
         return Mainstay::create(Post::class, ['title' => 'Hello', 'slug' => 'hello', 'status' => 'live', ...$data], locale: $locale, overrideAccess: true);
+    }
+
+    /*
+     | Another request's write, committed beside the caller's transaction a
+     | test has open, and whether it landed. SQLite will not have it: the
+     | caller's read holds a shared lock until its transaction ends, and a
+     | commit needs every other lock gone, so the write waits out the busy
+     | timeout and is refused. There is then no newer data for the caller to
+     | miss, which is SQLite's answer to what the others answer with locking
+     | reads.
+     */
+    private function beside(callable $write): bool
+    {
+        if (DB::getDriverName() !== 'sqlite') {
+            $write();
+
+            return true;
+        }
+
+        $this->assertThrows($write, QueryException::class, 'database is locked');
+
+        return false;
     }
 
     /* The field errors a write was refused with. */
@@ -902,10 +930,6 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function an_update_inside_a_callers_transaction_sees_a_delete_committed_since(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
-        }
-
         config()->set('database.connections.beside', config('database.connections.testing'));
         $id = $this->writePost()->id;
 
@@ -914,36 +938,37 @@ class ContentTest extends DatabaseTestCase
         DB::beginTransaction();
         DB::table('post')->count();
 
-        DB::connection('beside')->table('post')->where('id', $id)->update(['deleted_at' => '2026-09-24 00:00:00']);
-        DB::connection('beside')->table('uris')->where('entry_id', $id)->delete();
+        $trashed = $this->beside(function () use ($id) {
+            DB::connection('beside')->table('post')->where('id', $id)->update(['deleted_at' => '2026-09-24 00:00:00']);
+            DB::connection('beside')->table('uris')->where('entry_id', $id)->delete();
+        });
 
         /* Committed, not rolled back, so whatever the update wrote stays to
            be seen. */
         try {
-            $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class);
+            $trashed
+                ? $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class)
+                : Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true);
         } finally {
             DB::commit();
         }
 
-        $this->assertSame('Hello', DB::table('post_locales')->value('title'));
-        $this->assertSame(0, DB::table('uris')->count());
+        $this->assertSame($trashed ? ['Hello', 0] : ['Changed', 1], [DB::table('post_locales')->value('title'), DB::table('uris')->count()]);
     }
 
     #[Test]
     public function a_delete_inside_a_callers_transaction_takes_a_path_added_since(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
-        }
-
         config()->set('database.connections.beside', config('database.connections.testing'));
         $id = $this->writePost()->id;
 
         DB::beginTransaction();
         DB::table('post')->count();
 
-        DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live']);
-        DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/nieuws/hallo', 'type' => 'post', 'entry_id' => $id]);
+        $this->beside(function () use ($id) {
+            DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live']);
+            DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/nieuws/hallo', 'type' => 'post', 'entry_id' => $id]);
+        });
 
         Mainstay::delete(Post::class, $id, overrideAccess: true);
         DB::commit();
@@ -993,10 +1018,6 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_save_inside_a_callers_transaction_builds_paths_from_what_is_stored_now(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
-        }
-
         config()->set('database.connections.beside', config('database.connections.testing'));
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
         Mainstay::update(Page::class, $id, ['slug' => 'a'], locale: 'nl', overrideAccess: true);
@@ -1005,22 +1026,20 @@ class ContentTest extends DatabaseTestCase
         DB::table('page')->count();
 
         /* Another request renames the Dutch slug, path and all. */
-        DB::connection('beside')->table('page_locales')->where('parent_id', $id)->where('locale', 'nl')->update(['slug' => 'b']);
-        DB::connection('beside')->table('uris')->where('entry_id', $id)->where('locale', 'nl')->update(['uri' => '/about/b']);
+        $renamed = $this->beside(function () use ($id) {
+            DB::connection('beside')->table('page_locales')->where('parent_id', $id)->where('locale', 'nl')->update(['slug' => 'b']);
+            DB::connection('beside')->table('uris')->where('entry_id', $id)->where('locale', 'nl')->update(['uri' => '/about/b']);
+        });
 
         Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
         DB::commit();
 
-        $this->assertSame('/work/b', DB::table('uris')->where('locale', 'nl')->value('uri'), 'Built from the slug stored now, not the one in the snapshot.');
+        $this->assertSame($renamed ? '/work/b' : '/work/a', DB::table('uris')->where('locale', 'nl')->value('uri'), 'Built from the slug stored now, not the one in the snapshot.');
     }
 
     #[Test]
     public function a_save_inside_a_callers_transaction_sees_a_path_added_since(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
-        }
-
         config()->set('database.connections.beside', config('database.connections.testing'));
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
 
@@ -1028,31 +1047,29 @@ class ContentTest extends DatabaseTestCase
         DB::table('page')->count();
 
         /* Another request adds the Dutch translation, path and all. */
-        DB::connection('beside')->table('page_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'slug' => 'ploeg', 'tagline' => 'Welkom']);
-        DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/about/ploeg', 'type' => 'page', 'entry_id' => $id]);
+        $added = $this->beside(function () use ($id) {
+            DB::connection('beside')->table('page_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'slug' => 'ploeg', 'tagline' => 'Welkom']);
+            DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/about/ploeg', 'type' => 'page', 'entry_id' => $id]);
+        });
 
         /* A shared field in the pattern moves both paths, the Dutch one only
            if the save sees the translation and the path it already has. */
         Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
         DB::commit();
 
-        $this->assertSame(['/work/team', '/work/ploeg'], DB::table('uris')->orderBy('locale')->pluck('uri')->all());
+        $this->assertSame($added ? ['/work/team', '/work/ploeg'] : ['/work/team'], DB::table('uris')->orderBy('locale')->pluck('uri')->all());
     }
 
     #[Test]
     public function a_translation_added_beside_a_callers_transaction_is_updated_rather_than_refused(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
-        }
-
         config()->set('database.connections.beside', config('database.connections.testing'));
         $id = $this->writePost()->id;
 
         DB::beginTransaction();
         DB::table('post')->count();
 
-        DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Eerder', 'slug' => 'eerder', 'status' => 'draft']);
+        $this->beside(fn () => DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Eerder', 'slug' => 'eerder', 'status' => 'draft']));
 
         $dutch = Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live'], locale: 'nl', overrideAccess: true);
         DB::commit();
