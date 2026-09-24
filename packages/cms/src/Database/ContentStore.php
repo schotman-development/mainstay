@@ -1057,10 +1057,13 @@ class ContentStore
     }
 
     /* Unset from the declaring class, where a `protected(set)` property
-       allows it; a readonly one has no default to take away. */
+       allows it; a readonly one has no default to take away. A hooked one
+       cannot be unset at all, so one the caller is not handed keeps the
+       default its declaration gave: declared rather than stored, so nothing
+       read leaks through it. */
     private function absent(Entry $entry, ReflectionProperty $property): void
     {
-        if ($property->isInitialized($entry)) {
+        if ($property->isInitialized($entry) && ! (method_exists($property, 'hasHooks') && $property->hasHooks())) {
             $name = $property->getName();
 
             Closure::bind(function () use ($name) {

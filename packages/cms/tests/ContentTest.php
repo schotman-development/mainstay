@@ -16,6 +16,7 @@ use InvalidArgumentException;
 use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Hooked;
 use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Notebook;
@@ -51,7 +52,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Notebook::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Notebook::class, Hooked::class, SiteSettings::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -610,6 +611,15 @@ class ContentTest extends DatabaseTestCase
             ['The path this builds is longer than the 255 characters a path can be.'],
             array_unique(array_merge(...array_values($this->refusal(fn () => Mainstay::update(Page::class, $other, ['slug' => str_repeat('a', 250)], locale: 'en'))))),
         );
+    }
+
+    #[Test]
+    public function a_field_on_a_hooked_property_is_written_and_read(): void
+    {
+        $hooked = Mainstay::create(Hooked::class, ['title' => '  Hello  '], locale: 'en', overrideAccess: true);
+
+        $this->assertSame('Hello', $hooked->title);
+        $this->assertSame('Hello', Mainstay::findById(Hooked::class, $hooked->id)->title);
     }
 
     #[Test]
