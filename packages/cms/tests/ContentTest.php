@@ -18,6 +18,8 @@ use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
+use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
+use Mainstay\Tests\Fixtures\Policies\FormPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
@@ -397,6 +399,43 @@ class ContentTest extends DatabaseTestCase
         }
 
         $this->assertSame(['Hello'], Mainstay::find(Post::class)->pluck('title')->all());
+    }
+
+    #[Test]
+    public function a_caller_that_may_write_and_not_read_is_handed_what_it_wrote(): void
+    {
+        Gate::policy(Memo::class, FormPolicy::class);
+
+        $memo = Mainstay::create(Memo::class, ['title' => 'Printer'], locale: 'en');
+
+        $this->assertSame('Printer', $memo->title);
+        $this->assertFalse((new ReflectionProperty($memo, 'note'))->isInitialized($memo), 'Internal, to a caller who may not see it.');
+        $this->assertSame(1, DB::table('memo')->count());
+        $this->assertThrows(fn () => Mainstay::find(Memo::class), AuthorizationException::class);
+    }
+
+    #[Test]
+    public function a_writer_that_may_not_see_an_internal_field_cannot_write_it(): void
+    {
+        Gate::policy(Post::class, EditorPolicy::class);
+        Gate::policy(Memo::class, EditorPolicy::class);
+        $post = $this->writePost(['editorNote' => 'Check the quote']);
+
+        $this->assertThrows(
+            fn () => Mainstay::update(Post::class, $post->id, ['editorNote' => 'Overwritten'], locale: 'en'),
+            InvalidArgumentException::class,
+            'has no field called editorNote to write.',
+        );
+        $this->assertSame('Changed', Mainstay::update(Post::class, $post->id, ['title' => 'Changed'], locale: 'en')->title);
+        $this->assertSame('Check the quote', DB::table('post')->value('editor_note'));
+
+        /* A stored internal value that breaks its rule is not reported to a
+           writer who cannot see it -- and is, to one who can. */
+        $memo = Mainstay::create(Memo::class, ['note' => 'Call back', 'title' => 'Printer'], locale: 'en', overrideAccess: true);
+        DB::table('memo')->update(['note' => '']);
+
+        $this->assertSame('Plotter', Mainstay::update(Memo::class, $memo->id, ['title' => 'Plotter'], locale: 'en')->title);
+        $this->assertSame(['note'], array_keys($this->refusal(fn () => Mainstay::update(Memo::class, $memo->id, ['title' => 'Scanner'], locale: 'en', overrideAccess: true))));
     }
 
     #[Test]

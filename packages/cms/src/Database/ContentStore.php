@@ -138,13 +138,11 @@ class ContentStore
         $type = $this->entry($type);
         $locale = $this->locale($locale);
 
-        if (! $overrideAccess) {
-            $this->gate($type)->authorize('create', $type);
-        }
+        $internal = $this->writes($type, 'create', $type, $overrideAccess);
 
-        $id = $this->write($type, null, $this->validate($type, $data, []), $data, $locale, false);
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false);
 
-        return $this->readBack($type, $id, $locale, $overrideAccess);
+        return $this->readBack($type, $id, $locale, $internal);
     }
 
     /**
@@ -173,13 +171,11 @@ class ContentStore
             throw new RecordNotFoundException("{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
         }
 
-        if (! $overrideAccess) {
-            $this->gate($type)->authorize('update', $this->hydrate($type, $row, null, true));
-        }
+        $internal = $this->writes($type, 'update', $this->hydrate($type, $row, null, true), $overrideAccess);
 
-        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale))), $data, $locale, $translations->has($locale));
+        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale));
 
-        return $this->readBack($type, $id, $locale, $overrideAccess);
+        return $this->readBack($type, $id, $locale, $internal);
     }
 
     /*
@@ -210,13 +206,20 @@ class ContentStore
         }, self::ATTEMPTS);
     }
 
-    /* What a write committed, as the caller may read it. Gone only if a
-       delete landed after the commit, which is what the caller is then
-       told. */
-    private function readBack(string $type, int $id, string $locale, bool $overrideAccess): Entry
+    /*
+     | What a write committed, whether or not the caller may read the type: it
+     | supplied what it wrote, and a public form that may create submissions
+     | and not read them would otherwise commit the row and then be told it
+     | failed. Internal fields only if the caller may see them. Gone only if a
+     | delete landed after the commit, which is what the caller is then told.
+     */
+    private function readBack(string $type, int $id, string $locale, bool $internal): Entry
     {
-        return $this->findById($type, $id, $locale, $overrideAccess)
-            ?? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.");
+        $row = $this->select($type, $locale, ['id' => $id], [], $internal)->first();
+
+        return $row === null
+            ? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.")
+            : $this->hydrate($type, $row, $locale, $internal);
     }
 
     /*
@@ -314,6 +317,20 @@ class ContentStore
         }
 
         return $gate->policy($type, EntryPolicy::class);
+    }
+
+    /* Whether the caller sees internal fields, after asking whether it may
+       make this write at all. */
+    private function writes(string $type, string $ability, string|Entry $subject, bool $overrideAccess): bool
+    {
+        if ($overrideAccess) {
+            return true;
+        }
+
+        $gate = $this->gate($type);
+        $gate->authorize($ability, $subject);
+
+        return $gate->allows('viewInternal', $type);
     }
 
     /* Nobody until phase 9, which hands over the guard's user here and
@@ -555,10 +572,15 @@ class ContentStore
      | over it -- checked against the declared rules. Every stored value is
      | checked again, not only the ones given: a row that went in some other
      | way and breaks a rule refuses the next save, naming the field.
+     |
+     | Only the fields the caller can see. An internal one is not a field to
+     | a caller who may not read it: writing it is refused in the words an
+     | unknown key is, and what is stored in it is not checked, so no error
+     | names it either.
      */
-    private function validate(string $type, array $data, array $stored): array
+    private function validate(string $type, array $data, array $stored, bool $internal): array
     {
-        $fields = $this->mainstay->fields($type);
+        $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $internal || ! $field->internal);
 
         if (($unknown = array_diff_key($data, $fields)) !== []) {
             throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
