@@ -528,6 +528,25 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function gate_is_not_shown_a_default_for_a_field_the_main_row_does_not_carry(): void
+    {
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team', 'tagline' => 'Meet us'], locale: 'en', overrideAccess: true)->id;
+        Gate::policy(Page::class, FormPolicy::class);
+
+        $shown = null;
+        Gate::before(function (?object $user, string $ability, array $arguments) use (&$shown) {
+            $shown = $ability === 'update' ? $arguments[0] : $shown;
+        });
+
+        Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en');
+
+        /* tagline is translated, so it is on no row Gate is shown -- and
+           not the declared 'Welcome' in place of the stored 'Meet us'. */
+        $this->assertSame('about', $shown->section);
+        $this->assertFalse((new ReflectionProperty($shown, 'tagline'))->isInitialized($shown));
+    }
+
+    #[Test]
     public function a_declared_default_fills_a_field_left_off_whoever_writes(): void
     {
         $this->assertSame('new', Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true)->state);

@@ -67,6 +67,9 @@ class ContentStore
      */
     private const ATTEMPTS = 3;
 
+    /** @var array<class-string, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
+    private array $reflected = [];
+
     public function __construct(private Mainstay $mainstay) {}
 
     /**
@@ -173,7 +176,7 @@ class ContentStore
             throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
         }
 
-        [$internal, $reads] = $this->writes($type, 'update', $this->hydrate($type, $row, null, true), $overrideAccess);
+        [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
         $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
 
@@ -326,18 +329,20 @@ class ContentStore
 
     /*
      | Whether the caller sees internal fields, and whether it may read the
-     | type, after asking whether it may make this write at all.
+     | type, after asking whether it may make this write at all. The entry
+     | Gate is asked about comes as a closure, so a write that skips Gate
+     | never builds it.
      |
      | @return array{0: bool, 1: bool}
      */
-    private function writes(string $type, string $ability, string|Entry $subject, bool $overrideAccess): array
+    private function writes(string $type, string $ability, string|Closure $subject, bool $overrideAccess): array
     {
         if ($overrideAccess) {
             return [true, true];
         }
 
         $gate = $this->gate($type);
-        $gate->authorize($ability, $subject);
+        $gate->authorize($ability, $subject instanceof Closure ? $subject() : $subject);
 
         return [$gate->allows('viewInternal', $type), $gate->allows('viewAny', $type)];
     }
@@ -862,7 +867,21 @@ class ContentStore
      */
     private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null): Entry
     {
-        $entry = (new ReflectionClass($type))->newInstanceWithoutConstructor();
+        [$class, $properties] = $this->reflection($type);
+        $entry = $class->newInstanceWithoutConstructor();
+
+        /*
+         | Every field starts absent, and only what was read is set. Absent
+         | rather than null, since null is a value a field holds, and a template
+         | printing a note it was not given should fail where it reads it rather
+         | than print nothing. A default the declaration gave would be a value
+         | nobody stored -- an internal note for a reader who may not see it, a
+         | localized field on the entry Gate is shown, which the main row does
+         | not carry -- so it goes too.
+         */
+        foreach ($properties as $property) {
+            $this->absent($entry, $property);
+        }
 
         $entry->id = (int) $row->id;
 
@@ -884,21 +903,9 @@ class ContentStore
         }
 
         foreach ($this->mainstay->fields($type) as $name => $field) {
-            if (! property_exists($row, Str::snake($name))) {
-                continue;
-            }
+            $column = Str::snake($name);
 
-            $property = new ReflectionProperty($entry, $name);
-
-            /* Absent rather than null. Null is a value a field holds, and a
-               template printing a note it was not given should fail where it
-               reads it rather than print nothing. A default the declaration
-               gave goes for the same reason. The same goes for a field
-               outside `$only`, which a write hands back to a caller that may
-               not read the type. */
-            if (($field->internal && ! $internal) || ($only !== null && ! in_array($name, $only, true))) {
-                $this->absent($entry, $property);
-
+            if (! property_exists($row, $column) || ($field->internal && ! $internal) || ($only !== null && ! in_array($name, $only, true))) {
                 continue;
             }
 
@@ -911,17 +918,30 @@ class ContentStore
                rather than refusing the caller in that field's name. A read
                still fails on it, naming the declaration. */
             try {
-                $property->setValue($entry, $field->cast($row->{Str::snake($name)}));
+                $properties[$name]->setValue($entry, $field->cast($row->{$column}));
             } catch (InvalidArgumentException $exception) {
                 if ($locale !== null) {
                     throw $exception;
                 }
-
-                $this->absent($entry, $property);
             }
         }
 
         return $entry;
+    }
+
+    /*
+     | The class and its fields' properties, reflected once per type for as
+     | long as this store lives -- one call -- so a find of a hundred rows
+     | builds one of each rather than one per row.
+     |
+     | @return array{0: ReflectionClass, 1: array<string, ReflectionProperty>}
+     */
+    private function reflection(string $type): array
+    {
+        return $this->reflected[$type] ??= [
+            new ReflectionClass($type),
+            array_map(fn (Field $field) => new ReflectionProperty($type, $field->name), $this->mainstay->fields($type)),
+        ];
     }
 
     /* Unset from the declaring class, where a `protected(set)` property
@@ -933,7 +953,7 @@ class ContentStore
 
             Closure::bind(function () use ($name) {
                 unset($this->{$name});
-            }, $entry, $property->getDeclaringClass()->getName())();
+            }, $entry, $property->class)();
         }
     }
 }
