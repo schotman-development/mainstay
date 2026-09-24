@@ -143,7 +143,8 @@ layer.
 
 `#[Internal]` is honoured here, not in a controller, or the local caller and the HTTP caller diverge
 — which is the whole reason this layer exists. Filtering or sorting on an internal field is refused
-in the words an unknown field is, so its value cannot be read back off which entries match.
+in the words an unknown field is, so its value cannot be read back off which entries match, and so
+is writing one, for a caller who may not see it.
 
 The check is a round trip: create through the layer and read back through it, in two locales. A
 colliding slug is refused with nothing written, an internal field is absent without an override
