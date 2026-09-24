@@ -480,6 +480,32 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function an_update_moving_onto_a_taken_path_is_refused_and_writes_nothing(): void
+    {
+        $this->writePost();
+        $other = $this->writePost(['title' => 'Other', 'slug' => 'other'])->id;
+
+        $this->assertSame(
+            ['slug' => ['The path /blog/hello is already taken in en.']],
+            $this->refusal(fn () => Mainstay::update(Post::class, $other, ['slug' => 'hello'], locale: 'en', overrideAccess: true)),
+        );
+        $this->assertSame('other', Mainstay::findById(Post::class, $other)->slug);
+        $this->assertSame(['/blog/hello', '/blog/other'], DB::table('uris')->orderBy('id')->pluck('uri')->all());
+    }
+
+    #[Test]
+    public function a_save_clears_a_second_path_row_left_from_outside(): void
+    {
+        $id = $this->writePost()->id;
+        DB::table('uris')->insert(['site_id' => 1, 'locale' => 'en', 'uri' => '/blog/stray', 'type' => 'post', 'entry_id' => $id]);
+
+        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
+
+        $this->assertSame(1, DB::table('uris')->count());
+        $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+    }
+
+    #[Test]
     public function a_path_longer_than_its_column_is_refused_on_the_fields_that_build_it(): void
     {
         $errors = $this->refusal(fn () => $this->writePost(['slug' => str_repeat('a', 250)]));
@@ -614,6 +640,8 @@ class ContentTest extends DatabaseTestCase
         DB::connection('beside')->table('post')->where('id', $id)->update(['deleted_at' => '2026-09-24 00:00:00']);
         DB::connection('beside')->table('uris')->where('entry_id', $id)->delete();
 
+        /* Committed, not rolled back, so whatever the update wrote stays to
+           be seen. */
         try {
             $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class);
         } finally {
@@ -638,6 +666,28 @@ class ContentTest extends DatabaseTestCase
 
         $this->assertSame([$row->id, '/blog/moved'], [DB::table('uris')->value('id'), DB::table('uris')->value('uri')]);
         $this->assertSame(1, DB::table('uris')->count());
+    }
+
+    #[Test]
+    public function a_delete_inside_a_callers_transaction_takes_a_path_added_since(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
+        }
+
+        config()->set('database.connections.beside', config('database.connections.testing'));
+        $id = $this->writePost()->id;
+
+        DB::beginTransaction();
+        DB::table('post')->count();
+
+        DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live']);
+        DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/nieuws/hallo', 'type' => 'post', 'entry_id' => $id]);
+
+        Mainstay::delete(Post::class, $id, overrideAccess: true);
+        DB::commit();
+
+        $this->assertSame(0, DB::table('uris')->count(), 'No path outlives the trash.');
     }
 
     #[Test]

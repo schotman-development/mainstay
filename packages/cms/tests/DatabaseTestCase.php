@@ -36,7 +36,7 @@ abstract class DatabaseTestCase extends TestCase
 
         /* The suite runs migrate:fresh. Left to the driver's default port, it
            runs it on whatever server answers there. */
-        if ($driver !== 'sqlite' && env('DB_PORT') === null) {
+        if ($driver !== 'sqlite' && blank(env('DB_PORT'))) {
             throw new RuntimeException("MAINSTAY_TEST_DB={$driver} needs DB_PORT: the suite empties the database it reaches.");
         }
 

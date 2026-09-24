@@ -57,12 +57,12 @@ class ContentStore
     private const SLUG = '/\A'.Route::SEGMENT.'\z/';
 
     /*
-     | How often a write runs before a deadlock is the caller's. MySQL takes a
-     | gap lock for deleting paths an entry does not have yet, so two saves
-     | whose paths never meet can each hold one and wait on the other's
-     | insert; the one the server picks rolls back and runs again. Laravel
-     | retries only a transaction of its own, so inside a seeder's the
-     | deadlock reaches the seeder.
+     | How often a write runs before a deadlock is the caller's. Two saves
+     | inserting the same path on MySQL each lock it for the duplicate check
+     | and wait on the other's insert; the one the server picks rolls back,
+     | runs again, and is then told the path is taken. Laravel retries only a
+     | transaction of its own, so inside a seeder's the deadlock reaches the
+     | seeder.
      */
     private const ATTEMPTS = 3;
 
@@ -198,12 +198,12 @@ class ContentStore
 
             DB::table($type::handle())->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now, 'updated_at' => $now]);
 
-            /* By key, for the reason paths() writes that way. */
-            $paths = DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->pluck('id');
-
-            if ($paths->isNotEmpty()) {
-                DB::table('uris')->whereIn('id', $paths)->delete();
-            }
+            /* By entry, which reads the rows as they are now: MySQL answers a
+               plain read inside a caller's transaction from its snapshot, and
+               a path added since would outlive the trash. The gap lock this
+               takes makes a create inserting beside it wait, and nothing a
+               create holds is needed here, so it is a wait, not a deadlock. */
+            DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
         }, self::ATTEMPTS);
     }
 
@@ -691,11 +691,13 @@ class ContentStore
     {
         $handle = $type::handle();
         $wanted = $this->wanted($type, $id);
-        $held = $created
-            ? collect()
-            : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri'])->keyBy('locale');
+        $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri']);
+        $held = $rows->keyBy('locale')->only(array_keys($wanted));
 
-        if (($gone = $held->diffKeys($wanted)->pluck('id'))->isNotEmpty()) {
+        /* Every row but the one kept for a locale still wanted: a locale
+           whose path went, or a second row for one, which only a write from
+           outside the layer leaves behind. */
+        if (($gone = $rows->pluck('id')->diff($held->pluck('id')))->isNotEmpty()) {
             DB::table('uris')->whereIn('id', $gone)->delete();
         }
 
