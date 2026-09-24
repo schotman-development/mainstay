@@ -22,7 +22,7 @@ use ReflectionUnionType;
  | A host adds a field type by writing a subclass. There is no registration
  | call, which is one extension point fewer rather than one more.
  |
- | Provisional until phase 8. Six scalars agree with each other too easily; the
+ | Provisional until phase 10. Six scalars agree with each other too easily; the
  | types that will actually shape this are the ones storing in JSON, needing a
  | sibling row, or drawing an interface with state in it.
  */
@@ -43,6 +43,13 @@ abstract class Field
     public readonly string $phpType;
 
     public readonly bool $nullable;
+
+    /*
+     | Left out of what a reader without the capability is handed, and refused
+     | to them as a filter or a sort, so its value cannot be read back off
+     | which entries match.
+     */
+    public readonly bool $internal;
 
     /*
      | The view namespace component() draws from. A property rather than a
@@ -73,6 +80,7 @@ abstract class Field
         $this->name = $property->getName();
         $this->phpType = $declared instanceof ReflectionNamedType ? $declared->getName() : 'mixed';
         $this->nullable = $declared === null || $declared->allowsNull();
+        $this->internal = $this->marked($property);
 
         /*
          | The one declaration isRequired() cannot answer for: `required: false`
@@ -89,6 +97,25 @@ abstract class Field
         }
 
         return $this;
+    }
+
+    /*
+     | Off every declaration of the property up the hierarchy, not only the one
+     | bound. A child widening a base's `#[Internal] protected` to public takes
+     | the field attribute from the base without restating it, and the registry
+     | binds the child's declaration -- so reading this off that one alone
+     | publishes a field the child only meant to open up. A child cannot make a
+     | base's internal field public: this fails closed rather than open.
+     */
+    private function marked(ReflectionProperty $property): bool
+    {
+        for ($class = $property->getDeclaringClass(); $class !== false; $class = $class->getParentClass()) {
+            if ($class->hasProperty($this->name) && $class->getProperty($this->name)->getAttributes(Internal::class) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /*
@@ -307,7 +334,7 @@ abstract class Field
     /*
      | The Blade component that draws this field in the admin, derived from the
      | class name so a host's field type gets one by writing the file. The
-     | components themselves arrive with the form in phase 5.
+     | components themselves arrive with the form in phase 10.
      */
     public function component(): string
     {

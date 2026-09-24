@@ -2,6 +2,7 @@
 
 namespace Mainstay\Tests;
 
+use BadMethodCallException;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -11,8 +12,6 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
 use Mainstay\Database\ContentSchema;
-use Mainstay\Mainstay;
-use Mainstay\MainstayServiceProvider;
 use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Broken\Collided;
@@ -24,7 +23,6 @@ use Mainstay\Tests\Fixtures\Recoded\Article as RecodedArticle;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\Setted\Article as SettedArticle;
 use Mainstay\Tests\Fixtures\Tiered\Article as TieredArticle;
-use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
 use Symfony\Component\Console\Input\ArrayInput;
@@ -33,58 +31,9 @@ use Symfony\Component\Console\Output\BufferedOutput;
 /*
  | The phase 2 check: a declared type synced into sqlite, then a property
  | renamed and the drift check failing.
- |
- | SQLite in memory by default. MAINSTAY_TEST_DB=pgsql or mysql runs the same
- | tests against a server on DB_HOST/DB_PORT, since the scratch comparison,
- | the Postgres cast and MySQL's foreign key rules only show up on the real
- | driver.
- |
- | migrate:fresh rather than a trait: RefreshDatabase's transaction is one
- | SQLite cannot toggle foreign keys inside to rebuild a table, and
- | DatabaseMigrations rolls `sites` back from under the content tables sync
- | built, which still reference it. fresh drops those too.
  */
-class SchemaTest extends TestCase
+class SchemaTest extends DatabaseTestCase
 {
-    protected function defineDatabaseMigrations(): void
-    {
-        $this->artisan('migrate:fresh')->run();
-    }
-
-    protected function getPackageProviders($app): array
-    {
-        return [MainstayServiceProvider::class];
-    }
-
-    protected function defineEnvironment($app): void
-    {
-        $driver = env('MAINSTAY_TEST_DB', 'sqlite');
-
-        $app['config']->set('database.default', 'testing');
-        $app['config']->set('database.connections.testing', $driver === 'sqlite'
-            ? ['driver' => 'sqlite', 'database' => ':memory:', 'foreign_key_constraints' => true]
-            : [
-                'driver' => $driver,
-                'host' => env('DB_HOST', '127.0.0.1'),
-                'port' => env('DB_PORT'),
-                'database' => env('DB_DATABASE', 'mainstay'),
-                'username' => env('DB_USERNAME', 'root'),
-                'password' => env('DB_PASSWORD', ''),
-                'charset' => $driver === 'mysql' ? 'utf8mb4' : 'utf8',
-                /* Only sqlsrv reads this, and only because ODBC 18 encrypts
-                   by default and the server in CI signs its own certificate.
-                   The others ignore a key they have no use for. */
-                'trust_server_certificate' => true,
-            ]);
-        $app['config']->set('mainstay.schema.sync', true);
-    }
-
-    private function declare(string $type): void
-    {
-        $this->app->instance(Mainstay::class, $mainstay = new Mainstay);
-        $mainstay->types([$type]);
-    }
-
     private function insertArticle(array $values = []): int
     {
         return DB::table('article')->insertGetId([
@@ -108,13 +57,34 @@ class SchemaTest extends TestCase
 
         $second = DB::table('sites')->insertGetId(['handle' => 'campaign', 'name' => 'Campaign', 'hostname' => 'campaign.test']);
 
+        /* An entry belongs to one site, so the same path on the second site
+           is another entry's. */
         DB::table('uris')->insert($row);
         DB::table('uris')->insert(['locale' => 'nl'] + $row);
-        DB::table('uris')->insert(['site_id' => $second] + $row);
+        DB::table('uris')->insert(['site_id' => $second, 'entry_id' => 2] + $row);
 
         $this->expectException(UniqueConstraintViolationException::class);
 
-        DB::table('uris')->insert(['entry_id' => 2] + $row);
+        DB::table('uris')->insert(['entry_id' => 3] + $row);
+    }
+
+    #[Test]
+    public function one_path_per_entry_and_locale_arrives_over_rows_that_break_it(): void
+    {
+        $migration = require __DIR__.'/../database/migrations/2026_09_24_000000_hold_one_path_per_entry_and_locale.php';
+        $migration->down();
+
+        $row = ['site_id' => 1, 'locale' => 'en', 'type' => 'article', 'entry_id' => 1];
+        $first = DB::table('uris')->insertGetId(['uri' => '/blog/first'] + $row);
+        DB::table('uris')->insert(['uri' => '/blog/second'] + $row);
+        DB::table('uris')->insert(['uri' => '/blog/other', 'entry_id' => 2] + $row);
+
+        $migration->up();
+
+        $this->assertSame([$first, '/blog/first'], [(int) DB::table('uris')->where('entry_id', 1)->value('id'), DB::table('uris')->where('entry_id', 1)->value('uri')]);
+        $this->assertSame(2, DB::table('uris')->count());
+        $this->expectException(UniqueConstraintViolationException::class);
+        DB::table('uris')->insert(['uri' => '/blog/third'] + $row);
     }
 
     #[Test]
@@ -125,7 +95,7 @@ class SchemaTest extends TestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertSame(
-            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'deleted_at'],
+            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
             Schema::getColumnListing('article'),
         );
         $this->assertSame(
@@ -217,8 +187,8 @@ class SchemaTest extends TestCase
          | which drops what the prefix in force can see. An index is named
          | after the table without its prefix and lives in the schema rather
          | than in the table, so the unprefixed run's `sites_handle_unique` is
-         | still there for `ms_sites` to collide with -- on every driver whose
-         | database outlives the test, which in-memory SQLite is not.
+         | still there for `ms_sites` to collide with -- on every driver, since
+         | each one's database, SQLite's file included, outlives the test.
          */
         $this->artisan('db:wipe')->run();
 
@@ -369,19 +339,25 @@ class SchemaTest extends TestCase
     #[Test]
     public function sync_fills_a_set_column_with_its_first_member(): void
     {
-        if (DB::getDriverName() !== 'mysql') {
-            $this->markTestSkipped('Only MySQL has a set column.');
-        }
-
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $this->insertArticle();
 
         $this->declare(SettedArticle::class);
-        $this->artisan('mainstay:sync --force')->assertSuccessful();
 
-        $this->assertSame('news', DB::table('article')->value('sections'));
-        $this->assertSame([], app(ContentSchema::class)->diff());
+        /* Only MySQL and MariaDB have a set column. Anywhere else Laravel's
+           grammar has no type to write, and sync stops at the comparison,
+           before it has altered anything. */
+        if (! in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->assertThrows(fn () => Artisan::call('mainstay:sync', ['--force' => true]), BadMethodCallException::class, 'typeSet does not exist');
+            $this->assertFalse(Schema::hasColumn('article', 'sections'));
+            $this->assertSame('Kept', DB::table('article')->value('title'));
+        } else {
+            $this->artisan('mainstay:sync --force')->assertSuccessful();
+
+            $this->assertSame('news', DB::table('article')->value('sections'));
+            $this->assertSame([], app(ContentSchema::class)->diff());
+        }
     }
 
     #[Test]
@@ -495,17 +471,18 @@ class SchemaTest extends TestCase
     #[Test]
     public function sync_asks_before_narrowing_a_string_that_holds_longer_values(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite reports no length, so a narrower string is no difference to it.');
-        }
-
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         Schema::table('article', fn ($table) => $table->string('title', 255)->change());
         $this->insertArticle(['title' => str_repeat('a', 200)]);
 
-        /* Postgres's cast cuts the string short; strict MySQL refuses to. */
-        if (DB::getDriverName() === 'pgsql') {
+        /* SQLite reports no length, so a narrower string is no difference to
+           it: nothing to ask about, and nothing cut. Postgres's cast cuts the
+           string short; strict MySQL refuses to. */
+        if (DB::getDriverName() === 'sqlite') {
+            $this->assertSame([], app(ContentSchema::class)->diff());
+            $this->artisan('mainstay:sync')->assertSuccessful();
+        } elseif (DB::getDriverName() === 'pgsql') {
             $this->artisan('mainstay:sync')
                 ->expectsConfirmation('Retype article.title, and change values stored in them that the new type cannot hold?', 'no')
                 ->assertFailed();
@@ -546,10 +523,6 @@ class SchemaTest extends TestCase
     #[Test]
     public function sync_refuses_a_value_the_new_type_cannot_hold_before_marking_even_when_forced(): void
     {
-        if (DB::getDriverName() === 'sqlite') {
-            $this->markTestSkipped('SQLite stores the text in an integer column as it is.');
-        }
-
         $this->declare(CodedArticle::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
@@ -557,21 +530,32 @@ class SchemaTest extends TestCase
 
         $this->declare(RecodedArticle::class);
 
-        try {
-            Artisan::call('mainstay:sync', ['--force' => true]);
-            $this->fail('An integer column took abc.');
-        } catch (InvalidArgumentException $e) {
-            $this->assertStringContainsString('article holds values the declared type of article.code refuses', $e->getMessage());
-        }
+        /* SQLite stores the text in an integer column as it is, so the new
+           type can hold it: nothing is refused, because nothing is lost, and
+           the database is marked as one sync has altered. */
+        if (DB::getDriverName() === 'sqlite') {
+            $this->artisan('mainstay:sync --force')->assertSuccessful();
 
-        $this->assertSame('abc', DB::table('article')->value('code'));
-        $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+            $this->assertSame('abc', DB::table('article')->value('code'));
+            $this->assertSame([], app(ContentSchema::class)->diff());
+            $this->assertTrue(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+        } else {
+            try {
+                Artisan::call('mainstay:sync', ['--force' => true]);
+                $this->fail('An integer column took abc.');
+            } catch (InvalidArgumentException $e) {
+                $this->assertStringContainsString('article holds values the declared type of article.code refuses', $e->getMessage());
+            }
+
+            $this->assertSame('abc', DB::table('article')->value('code'));
+            $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists());
+        }
     }
 
     #[Test]
     public function sync_leaves_the_marker_when_it_fails_after_altering_a_table(): void
     {
-        config()->set('app.locale', 'nl');
+        config()->set('mainstay.locales', ['nl', 'en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
@@ -606,7 +590,7 @@ class SchemaTest extends TestCase
     #[Test]
     public function sync_gives_a_missing_locale_the_default_and_restores_the_locale_keys(): void
     {
-        config()->set('app.locale', 'nl');
+        config()->set('mainstay.locales', ['nl', 'en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $id = $this->insertArticle();

@@ -64,7 +64,7 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'deleted_at'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
@@ -81,6 +81,15 @@ class ContentSchema
                     $table->id();
                     $table->unsignedBigInteger('site_id');
                     $this->fields($table, $shared);
+                    /* On from the first row a site writes, for the reason
+                       site_id is: added later, it is a migration of every
+                       table. Nothing fills owner_id before phase 9, and it
+                       has no key until there is a users table to point at.
+                       dateTime rather than timestamp, the column a
+                       Date(time: true) wants: MySQL shifts a timestamp by the
+                       session's zone and stops it at 2038. */
+                    $table->unsignedBigInteger('owner_id')->nullable();
+                    $table->datetimes();
                     $table->softDeletes();
                 },
                 'keys' => function (Blueprint $table) {
@@ -650,7 +659,7 @@ class ContentSchema
         return match (true) {
             $column->name === 'site_id' => DB::table('sites')->orderBy('id')->value('id')
                 ?? throw new InvalidArgumentException("{$table}.site_id is required, and there is no site to give the rows already in the table. Run php artisan migrate."),
-            $column->name === 'locale' => config('app.locale'),
+            $column->name === 'locale' => config('mainstay.locales')[0],
             $column->name === 'parent_id' => throw new InvalidArgumentException("{$table}.parent_id is required, and a row with no parent has none to be given. Empty the table, or add the column by hand."),
             in_array($column->type, ['char', 'string', 'tinyText', 'text', 'mediumText', 'longText'], true) => '',
             in_array($column->type, ['tinyInteger', 'smallInteger', 'mediumInteger', 'integer', 'bigInteger', 'float', 'double', 'decimal'], true) => 0,
@@ -670,7 +679,7 @@ class ContentSchema
     /*
      | Columns are the snake_case of the property, the way every Laravel table
      | is written. A field that lives in JSON has no column of its own; the
-     | JSON column arrives with the first field type that needs it, in phase 7.
+     | JSON column arrives with the first field type that needs it, in phase 5.
      */
     private function fields(Blueprint $table, array $fields): void
     {

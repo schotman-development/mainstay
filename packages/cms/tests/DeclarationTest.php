@@ -8,9 +8,12 @@ use Illuminate\Translation\ArrayLoader;
 use Illuminate\Translation\Translator;
 use Illuminate\Validation\Factory;
 use InvalidArgumentException;
+use Mainstay\Content\Entry;
+use Mainstay\Content\Route;
 use Mainstay\Fields\Boolean;
 use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Internal;
 use Mainstay\Fields\Number;
 use Mainstay\Fields\Select;
 use Mainstay\Fields\Text;
@@ -112,6 +115,19 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function the_schema_leaves_out_internal_fields_unless_asked_for_them(): void
+    {
+        $public = $this->mainstay->schema(Fixtures\Post::class);
+        $internal = $this->mainstay->schema(Fixtures\Post::class, internal: true);
+
+        $this->assertArrayNotHasKey('editorNote', $public['properties']);
+        $this->assertNotContains('editorNote', $public['required']);
+        $this->assertArrayHasKey('editorNote', $internal['properties']);
+        $this->assertContains('editorNote', $internal['required']);
+        $this->assertSame(array_keys($public['properties']), $public['required']);
+    }
+
+    #[Test]
     public function a_nullable_select_admits_null_in_its_enum_as_well_as_its_type(): void
     {
         $this->assertSame(
@@ -151,6 +167,108 @@ class DeclarationTest extends TestCase
         $this->assertSame(['body', 'heading'], array_keys($fields));
         $this->assertInstanceOf(Textarea::class, $fields['body']);
         $this->assertInstanceOf(Text::class, $fields['heading']);
+    }
+
+    #[Test]
+    public function an_internal_field_stays_internal_when_a_child_widens_it(): void
+    {
+        $fields = $this->mainstay->fields(Fixtures\Memo::class);
+
+        $this->assertTrue($fields['note']->internal, 'The flag follows the field attribute to the base, as the rest of the field does.');
+        $this->assertTrue($fields['source']->internal);
+        $this->assertFalse($fields['title']->internal);
+    }
+
+    #[Test]
+    public function a_child_widening_a_base_field_can_mark_it_internal(): void
+    {
+        $fields = $this->mainstay->fields(Fixtures\Restated::class);
+
+        $this->assertTrue($fields['body']->internal);
+        $this->assertFalse($fields['heading']->internal);
+    }
+
+    #[Test]
+    public function it_refuses_internal_on_a_property_that_is_not_a_field(): void
+    {
+        $this->expectExceptionMessage('carries no field attribute, so there is no field for it to hide');
+
+        $this->mainstay->fields(Fixtures\Broken\Unfielded::class);
+    }
+
+    #[Test]
+    public function it_reads_a_route_as_declared(): void
+    {
+        $this->assertSame(['en' => '/blog/{slug}', 'nl' => '/nieuws/{slug}'], $this->mainstay->route(Fixtures\Post::class));
+        $this->assertSame('/', $this->mainstay->route((new #[Route('/')] class extends Entry {})::class), 'The root is a path, which is how a home page is made.');
+        $this->assertNull($this->mainstay->route(Article::class));
+    }
+
+    #[Test]
+    public function it_refuses_a_route_no_path_can_be_built_from(): void
+    {
+        $refusals = [
+            'is not a path Mainstay can store' => [
+                new #[Route('/Blog/{slug}')] class extends Entry
+                {
+                    #[Text]
+                    public string $slug;
+                },
+                new #[Route('/blog/')] class extends Entry {},
+                new #[Route('blog/{slug}')] class extends Entry
+                {
+                    #[Text]
+                    public string $slug;
+                },
+                new #[Route('/blog/{slug}-x')] class extends Entry
+                {
+                    #[Text]
+                    public string $slug;
+                },
+            ],
+            'names {nothing}, which is not a field of the type' => [new #[Route('/blog/{nothing}')] class extends Entry {}],
+            'names {slug}, which is internal, and the path is published' => [
+                new #[Route('/blog/{slug}')] class extends Entry
+                {
+                    #[Text]
+                    #[Internal]
+                    public string $slug;
+                },
+            ],
+            'names {slug}, which is typed int, and a path is built from strings' => [
+                new #[Route('/blog/{slug}')] class extends Entry
+                {
+                    #[Number]
+                    public int $slug;
+                },
+            ],
+            'names {kind}, which offers "In review", which is not a path segment' => [
+                new #[Route('/{kind}')] class extends Entry
+                {
+                    #[Select(options: ['draft', 'In review'], required: true)]
+                    public string $kind;
+                },
+            ],
+            'names {slug}, which is optional, and a path cannot be built from nothing' => [
+                new #[Route('/blog/{slug}')] class extends Entry
+                {
+                    #[Text]
+                    public ?string $slug;
+                },
+            ],
+            '#[Route] is a list. Give one pattern, or a pattern per locale keyed by the locale.' => [new #[Route(['/blog'])] class extends Entry {}],
+        ];
+
+        foreach ($refusals as $message => $types) {
+            foreach ($types as $type) {
+                try {
+                    $this->mainstay->route($type::class);
+                    $this->fail("A route was read that should have been refused with: {$message}");
+                } catch (InvalidArgumentException $exception) {
+                    $this->assertStringContainsString($message, $exception->getMessage());
+                }
+            }
+        }
     }
 
     #[Test]

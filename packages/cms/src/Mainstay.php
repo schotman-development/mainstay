@@ -2,9 +2,16 @@
 
 namespace Mainstay;
 
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
+use Mainstay\Content\Entry;
+use Mainstay\Content\Route;
+use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Internal;
+use Mainstay\Fields\Select;
 use ReflectionAttribute;
 use ReflectionClass;
 use stdClass;
@@ -18,6 +25,9 @@ class Mainstay
 
     /** @var array<class-string, array<string, Field>> */
     private array $fields = [];
+
+    /** @var array<class-string, string|array<string, string>|null> */
+    private array $routes = [];
 
     public function version(): string
     {
@@ -90,11 +100,101 @@ class Mainstay
         return $this->fields[$type] ??= $this->reflect($type);
     }
 
-    /* The type as JSON Schema, which phase 11 serves from a discovery endpoint
-       and writes out as a `.d.ts` -- from here rather than derived twice. */
-    public function schema(string $type): array
+    /*
+     | The type's #[Route] as declared -- one pattern, or one per locale --
+     | or null for a type with no URL. Checked here, the first time it is
+     | asked for, so a pattern no path can be built from is refused naming
+     | the type rather than surfacing as a broken lookup row.
+     |
+     | A pattern is `/` or a run of segments, each a lowercase slug or one
+     | `{field}`. Lowercase because the lookup's unique index compares as the
+     | database does, and MySQL and SQL Server fold case where SQLite and
+     | Postgres do not: `/Blog/x` and `/blog/x` would be one path on two
+     | drivers and two on the others. A placeholder names a field that is
+     | required, so there is always something to build the path from; a
+     | string, so the path is the value an editor typed rather than a date's
+     | column format; and not internal, since the path is published.
+     |
+     | @return string|array<string, string>|null
+     */
+    public function route(string $type): string|array|null
     {
-        $fields = $this->fields($type);
+        $type = $this->canonical($type);
+
+        if (array_key_exists($type, $this->routes)) {
+            return $this->routes[$type];
+        }
+
+        $attributes = (new ReflectionClass($type))->getAttributes(Route::class);
+        $route = $attributes === [] ? null : $attributes[0]->newInstance()->pattern;
+
+        if (is_array($route) && ($route === [] || array_is_list($route))) {
+            throw new InvalidArgumentException("{$type}'s #[Route] is a list. Give one pattern, or a pattern per locale keyed by the locale.");
+        }
+
+        foreach ((array) $route as $pattern) {
+            $this->pattern($type, $pattern);
+        }
+
+        return $this->routes[$type] = $route;
+    }
+
+    private function pattern(string $type, mixed $pattern): void
+    {
+        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:'.Route::SEGMENT.'|'.Route::PLACEHOLDER.'))+\z#', $pattern))) {
+            throw new InvalidArgumentException(sprintf(
+                "%s's #[Route] pattern %s is not a path Mainstay can store: it starts with /, has no trailing slash, and each segment is a lowercase slug or one {field}.",
+                $type,
+                is_string($pattern) ? "\"{$pattern}\"" : get_debug_type($pattern),
+            ));
+        }
+
+        preg_match_all('/'.Route::PLACEHOLDER.'/', $pattern, $names);
+
+        foreach ($names[1] as $name) {
+            $field = $this->fields($type)[$name] ?? throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which is not a field of the type.");
+
+            $because = match (true) {
+                $field->internal => 'is internal, and the path is published',
+                $field->phpType !== 'string' => "is typed {$field->phpType}, and a path is built from strings",
+                ! $field->isRequired() => 'is optional, and a path cannot be built from nothing',
+                /* Every write choosing one would be refused for it. */
+                $field instanceof Select && ($option = $this->unrouted($field)) !== null => "offers \"{$option}\", which is not a path segment",
+                default => null,
+            };
+
+            if ($because !== null) {
+                throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which {$because}.");
+            }
+        }
+    }
+
+    /* A select's first option that cannot be a segment of a path. */
+    private function unrouted(Select $field): ?string
+    {
+        foreach ($field->values() as $value) {
+            if (! preg_match(Route::SLUG, $value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /*
+     | The type as JSON Schema, which phase 11 serves from a discovery endpoint
+     | and writes out as a `.d.ts` -- from here rather than derived twice.
+     |
+     | It describes what a reader is handed, so an internal field is in it
+     | only for a reader who may see those, `$internal`. For any other it is
+     | neither required nor named: a payload the query layer hands such a
+     | reader never holds it, and would fail a schema that required it beside
+     | `additionalProperties: false`, and the schema would tell every consumer
+     | the field is there.
+     */
+    public function schema(string $type, bool $internal = false): array
+    {
+        $fields = array_filter($this->fields($type), fn (Field $field) => $internal || ! $field->internal);
 
         return [
             'type' => 'object',
@@ -113,6 +213,46 @@ class Mainstay
             'required' => array_keys($fields),
             'additionalProperties' => false,
         ];
+    }
+
+    /*
+     | The query layer, reached from here so a template writes
+     | `Mainstay::find(Article::class, where: [...])`. The arguments are
+     | ContentStore's, passed through by name.
+     */
+    public function find(string $type, mixed ...$arguments): Collection
+    {
+        return $this->store()->find($type, ...$arguments);
+    }
+
+    public function findById(string $type, mixed ...$arguments): ?Entry
+    {
+        return $this->store()->findById($type, ...$arguments);
+    }
+
+    public function paginate(string $type, mixed ...$arguments): LengthAwarePaginator
+    {
+        return $this->store()->paginate($type, ...$arguments);
+    }
+
+    public function create(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->create($type, ...$arguments);
+    }
+
+    public function update(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->update($type, ...$arguments);
+    }
+
+    public function delete(string $type, mixed ...$arguments): void
+    {
+        $this->store()->delete($type, ...$arguments);
+    }
+
+    private function store(): ContentStore
+    {
+        return new ContentStore($this);
     }
 
     /* `\App\Article` and `App\Article` are one class and two cache keys -- and
@@ -144,7 +284,7 @@ class Mainstay
          | Base classes first. getProperties() answers with a class's own
          | properties before the ones it inherits, which would file a shared
          | base's title after everything the child adds -- an order the
-         | declaration does not show anywhere, on a list phase 5 draws the form
+         | declaration does not show anywhere, on a list phase 10 draws the form
          | from. A property a child redeclares keeps the base's position and
          | takes the child's attribute -- assignment by name overwrites in
          | place, which is also why a trait's property, seen again on the class
@@ -161,6 +301,13 @@ class Mainstay
                 /* A property without a field attribute is the type's own
                    business, not a field the admin should be drawing. */
                 if ($attributes === []) {
+                    /* Unless it says it is hiding something: a flag with no
+                       field under it hides nothing, and reads as if it does.
+                       A base's field widened here is one to hide. */
+                    if ($property->getAttributes(Internal::class) !== [] && ! $this->fielded($class, $property->getName())) {
+                        throw new InvalidArgumentException("{$type}::\${$property->getName()} is marked #[Internal] and carries no field attribute, so there is no field for it to hide. Put the field attribute beside it.");
+                    }
+
                     continue;
                 }
 
@@ -210,6 +357,19 @@ class Mainstay
         }
 
         return $fields;
+    }
+
+    /* Whether a class this one extends carries a field attribute on the
+       property of that name. */
+    private function fielded(ReflectionClass $class, string $name): bool
+    {
+        for ($parent = $class->getParentClass(); $parent !== false; $parent = $parent->getParentClass()) {
+            if ($parent->hasProperty($name) && $parent->getProperty($name)->getAttributes(Field::class, ReflectionAttribute::IS_INSTANCEOF) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /*

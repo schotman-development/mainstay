@@ -36,6 +36,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Content locales
+    |--------------------------------------------------------------------------
+    |
+    | The languages content is written in, the first being the default. Only
+    | a field declared localized differs between them. This is not the
+    | application's locale: that one follows the visitor, and setLocale()
+    | changes it for the rest of the request.
+    |
+    */
+
+    'locales' => [env('APP_LOCALE', 'en')],
+
+    /*
+    |--------------------------------------------------------------------------
     | Schema sync
     |--------------------------------------------------------------------------
     |

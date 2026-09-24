@@ -5,7 +5,7 @@ namespace Mainstay\Fields;
 use Attribute;
 use ReflectionProperty;
 
-/* Long-form plain text. Rich text is phase 7 and is a different field. */
+/* Long-form plain text. Rich text is phase 5 and is a different field. */
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Textarea extends Field
 {

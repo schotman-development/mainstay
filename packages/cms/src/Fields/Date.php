@@ -112,7 +112,7 @@ class Date extends Field
      |
      | ponytail: an editor typing a naive time into the admin therefore types
      | UTC. The form sends an offset when the editor's zone matters, which is
-     | phase 5's to send.
+     | phase 10's to send.
      */
     protected function from(mixed $value): mixed
     {

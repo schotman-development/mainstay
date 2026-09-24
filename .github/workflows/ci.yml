@@ -29,10 +29,12 @@ jobs:
 
       - run: vendor/bin/phpunit
 
-  # SchemaTest is the only suite a driver changes the answer to: the scratch
-  # comparison reads back whatever the driver calls a type, Postgres casts and
-  # restates an enum its own way, and MySQL refuses foreign keys SQLite waves
-  # through. Run on SQLite alone, the job above passes syncs these refuse.
+  # SchemaTest and ContentTest are the suites a driver changes the answer to:
+  # the scratch comparison reads back whatever the driver calls a type,
+  # Postgres casts and restates an enum its own way, MySQL refuses foreign keys
+  # SQLite waves through, and Postgres abandons a transaction a refused path
+  # was inserted in. Run on SQLite alone, the job above passes what these
+  # refuse.
   schema:
     name: Schema (${{ matrix.db }})
     runs-on: ubuntu-latest
@@ -74,7 +76,7 @@ jobs:
 
       - uses: ramsey/composer-install@v3
 
-      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php
         env:
           MAINSTAY_TEST_DB: ${{ matrix.db }}
           DB_DATABASE: mainstay
@@ -147,7 +149,7 @@ jobs:
         env:
           SA_PASSWORD: 'Mainstay-Passw0rd!'
 
-      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php
         env:
           MAINSTAY_TEST_DB: sqlsrv
           DB_DATABASE: mainstay

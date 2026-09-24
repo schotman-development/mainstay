@@ -1,0 +1,1074 @@
+<?php
+
+namespace Mainstay\Database;
+
+use Carbon\CarbonImmutable;
+use Closure;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Auth\Access\Gate as AccessGate;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Database\Query\JoinClause;
+use Illuminate\Database\RecordNotFoundException;
+use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
+use Mainstay\Content\ContentType;
+use Mainstay\Content\Entry;
+use Mainstay\Content\Route;
+use Mainstay\Fields\Date;
+use Mainstay\Fields\Field;
+use Mainstay\Mainstay;
+use Mainstay\Policies\EntryPolicy;
+use ReflectionClass;
+use ReflectionProperty;
+use RuntimeException;
+
+/*
+ | The query layer: every read and write of content, for templates, seeders,
+ | the admin's form and the HTTP API alike. Payload's Local API -- the call its
+ | REST endpoint takes, run against the database with no HTTP hop -- so one
+ | place decides what an entry looks like as data, and no consumer is handed a
+ | different shape or a weaker check than another.
+ |
+ | The query builder rather than Eloquent. The declared class is the model: an
+ | Eloquent one would hold the row in an attribute bag, a second object beside
+ | the typed properties a template reads. The site and the trash are scoped in
+ | query(), which every read starts from, so no read can be written without
+ | them.
+ */
+class ContentStore
+{
+    /* Data rather than closures, so an HTTP query string can carry the same
+       condition a template passes. */
+    private const OPERATORS = ['=', '!=', '<', '<=', '>', '>=', 'in', 'not_in'];
+
+    /* The columns every main table has beside its fields, by the name a
+       caller filters and sorts on. */
+    private const STAMPS = ['id' => 'id', 'createdAt' => 'created_at', 'updatedAt' => 'updated_at'];
+
+    /*
+     | How often a write runs before a deadlock is the caller's. Two saves
+     | inserting the same path on MySQL each lock it for the duplicate check
+     | and wait on the other's insert; the one the server picks rolls back,
+     | runs again, and is then told the path is taken. Laravel retries only a
+     | transaction of its own, so inside a seeder's the deadlock reaches the
+     | seeder.
+     */
+    private const ATTEMPTS = 3;
+
+    /** @var array<class-string, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
+    private array $reflected = [];
+
+    private ?int $site = null;
+
+    /* The stamp columns, written and read as Date(time: true) writes and
+       reads a moment: in UTC. Unbound, which serialize() and cast() only
+       notice for a blank value, and none reaches it: a write hands it now,
+       and a read and value() take a blank as null first. */
+    private Date $moment;
+
+    public function __construct(private Mainstay $mainstay)
+    {
+        $this->moment = new Date(time: true);
+    }
+
+    /**
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return Collection<int, T>
+     */
+    public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false): Collection
+    {
+        /* Nothing, on three drivers; everything, on SQL Server, whose grammar
+           writes no `top` for it. Refused on all four instead. */
+        if ($limit !== null && $limit < 1) {
+            throw new InvalidArgumentException("A limit reads at least one entry; {$limit} is not one.");
+        }
+
+        $type = $this->entry($type);
+        $locale = $this->locale($locale);
+        $internal = $this->reads($type, $overrideAccess);
+
+        return $this->select($type, $locale, $where, $sort, $internal)
+            ->limit($limit)
+            ->get()
+            ->map(fn (object $row) => $this->hydrate($type, $row, $locale, $internal));
+    }
+
+    /**
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return LengthAwarePaginator<int, T>
+     */
+    public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false): LengthAwarePaginator
+    {
+        if ($perPage < 1) {
+            throw new InvalidArgumentException("A page holds at least one entry; {$perPage} is not one.");
+        }
+
+        $type = $this->entry($type);
+        $locale = $this->locale($locale);
+        $internal = $this->reads($type, $overrideAccess);
+
+        return $this->select($type, $locale, $where, $sort, $internal)
+            ->paginate($perPage, page: $page)
+            ->through(fn (object $row) => $this->hydrate($type, $row, $locale, $internal));
+    }
+
+    /**
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return T|null
+     */
+    public function findById(string $type, int $id, ?string $locale = null, bool $overrideAccess = false): ?Entry
+    {
+        return $this->find($type, where: ['id' => $id], locale: $locale, overrideAccess: $overrideAccess)->first();
+    }
+
+    /**
+     * Writes belong here rather than to the admin, for the reason reads do:
+     * a form, an HTTP call and a seeder save through the same rules, so none
+     * of them can validate differently from the others.
+     *
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return T
+     */
+    public function create(string $type, array $data, ?string $locale = null, bool $overrideAccess = false): Entry
+    {
+        $type = $this->entry($type);
+        $locale = $this->locale($locale);
+
+        [$internal, $reads] = $this->writes($type, 'create', $type, $overrideAccess);
+
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false, $reads);
+
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
+    }
+
+    /**
+     * Only the keys given change; the rest keep what is stored.
+     *
+     * Without a locale, this updates the entry as the request's locale reads
+     * it, and an entry with no row there is not found -- what find() would
+     * say. The request's language never creates content. With a locale
+     * written out that the entry has no row in yet, this adds that
+     * translation, and its required localized fields are then required of
+     * the call, since there is nothing stored for them.
+     *
+     * @template T of Entry
+     *
+     * @param  class-string<T>  $type
+     * @return T
+     */
+    public function update(string $type, int $id, array $data, ?string $locale = null, bool $overrideAccess = false): Entry
+    {
+        $type = $this->entry($type);
+        $asked = $locale !== null;
+        $locale = $this->locale($locale);
+        /* Twice at most. A translation this save found missing, and another
+           added before this one's insert, is refused by the (parent_id,
+           locale) index; the second run finds it there and updates it, as
+           the save would have had it come a moment later. The second run
+           reads the translations with a lock where the first read may have
+           come from a caller's snapshot, which would miss it again. */
+        for ($attempt = 1; ; $attempt++) {
+            [$row, $translations] = $this->load($type, $id, $overrideAccess, $attempt > 1 && $this->snapshotted(0));
+
+            if (! $asked && ! $translations->has($locale)) {
+                throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
+            }
+
+            [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+            try {
+                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
+
+                break;
+            } catch (UniqueConstraintViolationException $exception) {
+                if ($translations->has($locale) || $attempt > 1) {
+                    throw $exception;
+                }
+            }
+        }
+
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
+    }
+
+    /*
+     | Into the trash, every locale at once, and out of the lookup in the same
+     | request: a path left behind would resolve to a row the read scope then
+     | hides.
+     */
+    public function delete(string $type, int $id, bool $overrideAccess = false): void
+    {
+        $type = $this->entry($type);
+        [$row] = $this->load($type, $id, $overrideAccess);
+
+        $this->writes($type, 'delete', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+        DB::transaction(function () use ($type, $id) {
+            $now = $this->stamp(CarbonImmutable::now());
+
+            DB::table($type::handle())->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now, 'updated_at' => $now]);
+
+            /* By entry, which reads the rows as they are now: MySQL answers a
+               plain read inside a caller's transaction from its snapshot, and
+               a path added since would outlive the trash. The gap lock this
+               takes makes a create inserting beside it wait until the commit.
+               Alone that is a wait, not a deadlock; a caller's own
+               transaction that writes a path after the delete can turn it
+               into one, which reaches the caller. */
+            DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | What a write committed, whether or not the caller may read the type. A
+     | public form that may create submissions and not read them would
+     | otherwise commit the row and then be told it failed. A caller that may
+     | not read is handed only what it wrote -- `$only`, the keys it gave --
+     | and never an internal field it may not see. Gone only if a delete
+     | landed after the commit, which is what the caller is then told.
+     */
+    private function readBack(string $type, int $id, string $locale, bool $internal, ?array $only): Entry
+    {
+        $row = $this->select($type, $locale, ['id' => $id], [], $internal)->first();
+
+        return $row === null
+            ? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.")
+            : $this->hydrate($type, $row, $locale, $internal, $only);
+    }
+
+    /*
+     | The class as registered, which is the spelling every other lookup keys
+     | on. Globals and taxonomies are refused rather than read as entries:
+     | one row per site and a term's reverse query are rules this does not
+     | know yet, and reading them as entries would write rows that break them.
+     */
+    private function entry(string $type): string
+    {
+        $registered = is_subclass_of($type, ContentType::class)
+            ? $this->mainstay->registered()[$type::handle()] ?? null
+            : null;
+
+        if ($registered === null || strcasecmp(ltrim($type, '\\'), $registered) !== 0) {
+            throw new InvalidArgumentException("{$type} is not a registered content type. Register it with Mainstay::types().");
+        }
+
+        if (! is_subclass_of($registered, Entry::class)) {
+            throw new InvalidArgumentException("{$registered} is not an entry. The query layer reads and writes entries only; globals and taxonomies are not reachable through it yet.");
+        }
+
+        /* A field kept in the type's JSON column has no column of its own,
+           and sync makes none, so reading or writing it by name would be SQL
+           against a column that is not there. Refused, by name, until blocks
+           bring the JSON column. */
+        foreach ($this->mainstay->fields($registered) as $name => $field) {
+            if ($field->column() === null) {
+                throw new InvalidArgumentException("{$registered}::\${$name} is kept in the type's JSON column, which the query layer does not read or write yet.");
+            }
+        }
+
+        return $registered;
+    }
+
+    /*
+     | The request's locale unless one is passed, so a host's locale
+     | middleware -- or the catch-all -- picks the language a template reads
+     | in. Refused rather than read when it is not a content locale, naming
+     | where it came from: a visitor-locale middleware setting `de` otherwise
+     | reads as every template on the site throwing for no reason.
+     */
+    private function locale(?string $locale): string
+    {
+        $locales = config('mainstay.locales');
+
+        if (in_array($locale ?? App::getLocale(), $locales, true)) {
+            return $locale ?? App::getLocale();
+        }
+
+        throw new InvalidArgumentException(sprintf(
+            '%s, which is not a content locale: mainstay.locales holds %s.',
+            $locale === null ? 'No locale was passed and App::getLocale() is "'.App::getLocale().'"' : "The locale is \"{$locale}\"",
+            implode(', ', $locales),
+        ));
+    }
+
+    /* Whether the caller sees internal fields, after asking whether it may
+       read at all. */
+    private function reads(string $type, bool $overrideAccess): bool
+    {
+        if ($overrideAccess) {
+            return true;
+        }
+
+        $gate = $this->gate($type);
+        $gate->authorize('viewAny', $type);
+
+        return $gate->allows('viewInternal', $type);
+    }
+
+    /*
+     | Gate, asked about Mainstay's own user and never the default guard's: on
+     | a host with members of its own, that would be a site visitor answering
+     | Mainstay's policies.
+     |
+     | EntryPolicy answers for the type unless the host chose another. Found
+     | the way Laravel finds a policy -- Gate::policy() on the type,
+     | #[UsePolicy] on it, Gate::policy() on a class or interface it extends
+     | -- with one step taken out: guessing by name, turned off on the copy
+     | forUser() hands back. Laravel would match App\Policies\PostPolicy to any
+     | class called Post, and a host's Eloquent Post and a content type called
+     | Post are different things: the host's policy, typed for its own users,
+     | would refuse every public read.
+     |
+     | On the copy, so the host's own Gate is left as Laravel would have it.
+     | Looked up on every call, so a policy the host registers later answers.
+     */
+    private function gate(string $type): AccessGate
+    {
+        $gate = Gate::forUser($this->user())->guessPolicyNamesUsing(fn () => []);
+
+        return $gate->getPolicyFor($type) === null ? $gate->policy($type, EntryPolicy::class) : $gate;
+    }
+
+    /*
+     | Whether the caller sees internal fields, and whether it may read the
+     | type, after asking whether it may make this write at all. The entry
+     | Gate is asked about comes as a closure, so a write that skips Gate
+     | never builds it.
+     |
+     | @return array{0: bool, 1: bool}
+     */
+    private function writes(string $type, string $ability, string|Closure $subject, bool $overrideAccess): array
+    {
+        if ($overrideAccess) {
+            return [true, true];
+        }
+
+        $gate = $this->gate($type);
+        $reads = $gate->allows('viewAny', $type);
+        $response = $gate->inspect($ability, $subject instanceof Closure ? $subject() : $subject);
+
+        /* Only where an entry is involved: a refused create has no entry
+           whose being there could leak, and keeps the policy's own words. */
+        if ($response->denied() && ! $reads && $ability !== 'create') {
+            throw $this->refused($type);
+        }
+
+        $response->authorize();
+
+        return [$gate->allows('viewInternal', $type), $reads];
+    }
+
+    /* Nobody until phase 9, which hands over the guard's user here and
+       changes nothing else in this class. */
+    private function user(): ?object
+    {
+        return null;
+    }
+
+    private function select(string $type, string $locale, array $where, string|array $sort, bool $internal): Builder
+    {
+        $query = $this->query($type, $locale);
+
+        foreach ($where as $key => $condition) {
+            $this->where($query, $type, (string) $key, $condition, $internal);
+        }
+
+        /* Refused on every driver because SQL Server refuses it: a column
+           named twice in one ORDER BY is an error there and a second mention
+           the others ignore. */
+        $sorted = array_map(fn (string $key) => ltrim($key, '-'), (array) $sort);
+
+        if (count($sorted) !== count(array_unique($sorted))) {
+            throw new InvalidArgumentException('The sort names '.implode(', ', array_unique(array_diff_assoc($sorted, array_unique($sorted)))).' more than once.');
+        }
+
+        foreach ((array) $sort as $key) {
+            $this->sort($query, $type, $key, $internal);
+        }
+
+        /* Last, so rows that tie on everything asked for keep one order and a
+           page never repeats a row the page before it showed -- unless the
+           sort already names it. */
+        if (in_array('id', $sorted, true)) {
+            return $query;
+        }
+
+        return $query->orderBy($type::handle().'.id');
+    }
+
+    /*
+     | Every read starts here. The row in one locale -- an inner join, so an
+     | entry with no row in that locale is not there, which is what no
+     | fallback means -- and the path it answers to there. Both joins match
+     | one row at most, each by a unique index, which is what keeps
+     | paginate's count honest.
+     |
+     | Only the main row's `deleted_at` is asked about. The sibling has one
+     | too, for trashing a single translation, and nothing sets it yet.
+     */
+    private function query(string $type, string $locale): Builder
+    {
+        $handle = $type::handle();
+        $locales = "{$handle}_locales";
+        [$localized, $shared] = $this->columns($type);
+
+        return DB::table($handle)
+            ->join($locales, fn (JoinClause $join) => $join
+                ->on("{$locales}.parent_id", '=', "{$handle}.id")
+                ->where("{$locales}.locale", $locale))
+            ->leftJoin('uris', fn (JoinClause $join) => $join
+                ->on('uris.entry_id', '=', "{$handle}.id")
+                ->on('uris.site_id', '=', "{$handle}.site_id")
+                ->where('uris.type', $handle)
+                ->where('uris.locale', $locale))
+            ->where("{$handle}.site_id", $this->site())
+            ->whereNull("{$handle}.deleted_at")
+            ->select([
+                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'created_at', 'updated_at', ...array_keys($shared)]),
+                ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
+                'uris.uri',
+            ]);
+    }
+
+    /*
+     | The fields by column, localized ones and the rest, split the way
+     | ContentSchema::tables() splits them onto the two tables.
+     |
+     | @return array{0: array<string, Field>, 1: array<string, Field>}
+     */
+    private function columns(string $type): array
+    {
+        return collect($this->mainstay->fields($type))
+            ->keyBy(fn (Field $field) => Str::snake($field->name))
+            ->partition(fn (Field $field) => $field->localized)
+            ->map->all()
+            ->all();
+    }
+
+    /* The first site, read once for this store. Mainstay makes a store for
+       every call, so nothing is kept past the call -- under Octane either --
+       and phase 12 matches the request's host here. */
+    private function site(): int
+    {
+        return $this->site ??= (int) (DB::table('sites')->orderBy('id')->value('id')
+            ?? throw new RuntimeException('There is no site to hold content. Run php artisan migrate.'));
+    }
+
+    private function where(Builder $query, string $type, string $key, mixed $condition, bool $internal): void
+    {
+        [$column, $field] = $this->column($type, $key, $internal);
+
+        /* A list reads as "any of these" and could as easily mean "all of
+           them"; `in` says which. */
+        if (is_array($condition) && array_is_list($condition)) {
+            throw new InvalidArgumentException("The condition on {$key} is a list. For any one of several values, write ['in' => [...]].");
+        }
+
+        foreach (is_array($condition) ? $condition : ['=' => $condition] as $operator => $value) {
+            if (! in_array($operator, self::OPERATORS, true)) {
+                throw new InvalidArgumentException("{$operator} is not an operator a where takes. It takes ".implode(', ', self::OPERATORS).'.');
+            }
+
+            if ($operator === 'in' || $operator === 'not_in') {
+                $this->within($query, $column, array_map(fn (mixed $one) => $this->value($field, $key, $this->single($key, $operator, $one)), (array) $value), $operator === 'not_in');
+
+                continue;
+            }
+
+            /* Refused as the caller wrote it, before the value becomes what
+               its column holds: a field that cannot hold null would turn it
+               into its empty value, and `featured < null` would quietly
+               compare with false. */
+            if ($value === null && $operator !== '=' && $operator !== '!=') {
+                throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null.");
+            }
+
+            $value = $this->value($field, $key, $this->single($key, $operator, $value));
+
+            /* != and not_in answer as SQL does: a row holding null matches
+               neither, since null is not a value to be unequal to. */
+            match (true) {
+                $value !== null => $query->where($column, $operator, $value),
+                $operator === '=' => $query->whereNull($column),
+                $operator === '!=' => $query->whereNotNull($column),
+                default => throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null."),
+            };
+        }
+    }
+
+    /* in and not_in, with a null among the values meaning what = and !=
+       mean by it. Left to SQL, `in (null)` matches nothing and
+       `not in (..., null)` is never true, so a list stops working the moment
+       it holds one. */
+    private function within(Builder $query, string $column, array $values, bool $not): void
+    {
+        $null = in_array(null, $values, true);
+        $values = array_values(array_filter($values, fn (mixed $one) => $one !== null));
+
+        if ($not) {
+            $query->whereNotIn($column, $values)->when($null, fn (Builder $query) => $query->whereNotNull($column));
+
+            return;
+        }
+
+        $query->where(fn (Builder $any) => $any->whereIn($column, $values)->when($null, fn (Builder $any) => $any->orWhereNull($column)));
+    }
+
+    /* One value, not a list. Laravel compares with a list's first element
+       and drops the rest, which is a condition nobody wrote. */
+    private function single(string $key, string $operator, mixed $value): mixed
+    {
+        if (is_array($value)) {
+            throw new InvalidArgumentException("The condition on {$key} compares {$operator} with a list. Only in and not_in take one, and they take a list of values.");
+        }
+
+        return $value;
+    }
+
+    private function sort(Builder $query, string $type, string $key, bool $internal): void
+    {
+        $descending = str_starts_with($key, '-');
+        $key = $descending ? substr($key, 1) : $key;
+        [$column, $field] = $this->column($type, $key, $internal);
+
+        /* Nulls last whichever way, on every driver. Left to the driver,
+           Postgres puts them last ascending and first descending and the
+           other three the opposite, so `-publishedAt` floats the undated
+           entries to the top on one database only. */
+        if ($field?->nullable ?? $key !== 'id') {
+            $query->orderByRaw('case when '.$query->getGrammar()->wrap($column).' is null then 1 else 0 end');
+        }
+
+        $query->orderBy($column, $descending ? 'desc' : 'asc');
+    }
+
+    /*
+     | The qualified column a caller's key is stored in, and the field that
+     | stores it -- null for a stamp.
+     |
+     | An internal field the caller cannot see is refused in the words an
+     | unknown one is. A refusal of its own would confirm the field exists,
+     | and a filter on it would read its value back off which entries match.
+     |
+     | @return array{0: string, 1: ?Field}
+     */
+    private function column(string $type, string $key, bool $internal): array
+    {
+        $handle = $type::handle();
+
+        if (isset(self::STAMPS[$key])) {
+            return ["{$handle}.".self::STAMPS[$key], null];
+        }
+
+        $field = $this->mainstay->fields($type)[$key] ?? null;
+
+        if ($field === null || ($field->internal && ! $internal)) {
+            throw new InvalidArgumentException("{$type} has no field called {$key} to filter or sort on.");
+        }
+
+        return [($field->localized ? "{$handle}_locales" : $handle).'.'.Str::snake($key), $field];
+    }
+
+    /*
+     | The value as the column holds it, so the database compares like with
+     | like: a date in another zone becomes the UTC string stored, rather than
+     | being formatted in its own zone and compared off by the offset.
+     |
+     | Null too. A field that cannot hold null stores its empty value when
+     | written one, so asking for null asks for that -- `featured => null`
+     | finds what a write left unset, false, rather than rows no write makes.
+     | A field with no empty value, a required select or date, is left null:
+     | its column is NOT NULL, and matching nothing is the right answer.
+     */
+    private function value(?Field $field, string $key, mixed $value): mixed
+    {
+        return match (true) {
+            $field !== null && $value === null => $this->unset($field),
+            $field !== null => $field->serialize($value),
+            $value === null => null,
+            $key === 'id' => (int) $value,
+            /* Blank as a field reads blank: nothing, rather than a stamp. */
+            blank($value) => null,
+            default => $this->stamp($value),
+        };
+    }
+
+    /* What a field stores when it is written null, or null for one with no
+       empty value to store. */
+    private function unset(Field $field): mixed
+    {
+        try {
+            return $field->serialize(null);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    private function stamp(mixed $value): string
+    {
+        return $this->moment->serialize($value);
+    }
+
+    /*
+     | The main row and every locale's row, by locale. Out of the trash and on
+     | this site, or not found -- see missing().
+     |
+     | @return array{0: object, 1: Collection<string, object>}
+     */
+    private function load(string $type, int $id, bool $overrideAccess, bool $lock = false): array
+    {
+        $handle = $type::handle();
+
+        $row = DB::table($handle)
+            ->where('site_id', $this->site())
+            ->whereNull('deleted_at')
+            ->where('id', $id)
+            ->first()
+            ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not there to write.");
+
+        return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->when($lock, fn (Builder $query) => $query->lockForUpdate())->get()->keyBy('locale')];
+    }
+
+    /*
+     | Whether a plain read here answers from a snapshot older than what is
+     | committed: inside a transaction deeper than the `$own` this code opened,
+     | on MySQL or MariaDB, whose REPEATABLE READ keeps one snapshot for the
+     | whole transaction. Postgres and SQL Server read what is committed at
+     | each statement, and a transaction of the layer's own starts its
+     | snapshot at its first plain read, after its writes.
+     */
+    private function snapshotted(int $own): bool
+    {
+        return DB::transactionLevel() > $own && in_array(DB::getDriverName(), ['mysql', 'mariadb'], true);
+    }
+
+    /*
+     | Not found, to a caller that may read the type, which Laravel answers
+     | with a 404; refused, to one that may not. The load comes before Gate,
+     | which is asked about the entry loaded, so a 404 for a missing id beside
+     | a 403 for a present one would let a caller with no rights at all count
+     | the entries and their translations. A reader could find() them anyway.
+     */
+    private function missing(string $type, bool $overrideAccess, string $message): RecordNotFoundException|AuthorizationException
+    {
+        return $overrideAccess || $this->gate($type)->allows('viewAny', $type)
+            ? new RecordNotFoundException($message)
+            : $this->refused($type);
+    }
+
+    /*
+     | The refusal a caller that may not read the type is given for a write to
+     | an entry it may not make, the entry there or not: Gate's default denial,
+     | whatever the policy said. A policy's own message or status for a
+     | present entry, beside a default for a missing one, would tell the two
+     | apart the way a 404 beside a 403 did. Asked for an ability nobody
+     | defines, which is how Gate hands out its default, the host's own
+     | defaultDenialResponse() included.
+     */
+    private function refused(string $type): AuthorizationException
+    {
+        try {
+            $this->gate($type)->inspect('mainstay.refused')->authorize();
+        } catch (AuthorizationException $exception) {
+            return $exception;
+        }
+
+        return new AuthorizationException;
+    }
+
+    /*
+     | What is stored, by property, as the columns hold it. Not through cast():
+     | a translation not written yet has no row, and cast() refuses the null
+     | a required select or date would read as. Its localized keys are left
+     | out instead, which the validator then reports as missing.
+     */
+    private function stored(string $type, object $row, ?object $translation): array
+    {
+        $stored = [];
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            $source = $field->localized ? $translation : $row;
+
+            if ($source !== null) {
+                $stored[$name] = $source->{Str::snake($name)};
+            }
+        }
+
+        return $stored;
+    }
+
+    /*
+     | The entry as it will be stored -- what is there, with what was given
+     | over it -- checked against the declared rules. Every stored value is
+     | checked again, not only the ones given: a row that went in some other
+     | way and breaks a rule refuses the next save, naming the field.
+     |
+     | Only the fields the caller can see. An internal one is not a field to
+     | a caller who may not read it: writing it is refused in the words an
+     | unknown key is, and what is stored in it is not checked, so no error
+     | names it either.
+     */
+    private function validate(string $type, array $data, array $stored, bool $internal): array
+    {
+        $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $internal || ! $field->internal);
+
+        if (($unknown = array_diff_key($data, $fields)) !== []) {
+            throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
+        }
+
+        $values = [...$stored, ...$data];
+
+        /* A field left off a row being inserted -- nothing is stored for it
+           yet -- takes the default its property declares, whoever writes it.
+           An internal one the caller may not see, required and with no
+           default, has nothing valid to hold, and the write is refused as a
+           question of access, which it is, without naming the field. */
+        foreach (array_diff_key($this->mainstay->fields($type), $data, $stored) as $name => $field) {
+            $property = new ReflectionProperty($type, $name);
+
+            if ($property->hasDefaultValue()) {
+                $values[$name] = $property->getDefaultValue();
+            } elseif (! $internal && $field->internal && $field->isRequired()) {
+                throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, make it optional, or write with access to it.');
+            }
+        }
+
+        $routed = $this->placeholders($type);
+        $rules = $messages = [];
+
+        foreach ($fields as $name => $field) {
+            $rules[$name] = $field->rules();
+        }
+
+        foreach ($routed as $name) {
+            $rules[$name][] = 'regex:'.Route::SLUG;
+            $messages["{$name}.regex"] = 'The :attribute field is part of a path: lowercase letters, digits and single hyphens, the way Str::slug() writes one.';
+        }
+
+        Validator::make($values, $rules, $messages)->validate();
+
+        return $values;
+    }
+
+    /*
+     | The row, the locale's row and every locale's path, or none of them.
+     |
+     | A row inserted -- a create, or a locale's first -- gets every column
+     | from the validated values, so a field left off it holds its declared
+     | default, or what its type stores for nothing, rather than whatever the
+     | column defaults to. A row
+     | updated gets only the columns the call was given. The rest were read to
+     | be validated, not to be written: written back, they would put a field
+     | another save changed in the meantime back the way it was.
+     */
+    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads): int
+    {
+        $handle = $type::handle();
+        $site = $this->site();
+        [$localized, $shared] = $this->columns($type);
+        $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->serialize($values[$field->name] ?? null), $fields);
+        $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
+
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed) {
+            $created = $id === null;
+
+            $now = $this->stamp(CarbonImmutable::now());
+
+            if ($id === null) {
+                $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), 'created_at' => $now, 'updated_at' => $now]);
+            } else {
+                /* Only while it is out of the trash, and asked again after. A
+                   delete committed since the load leaves the update nothing
+                   to match, and writing on would give a trashed entry its
+                   paths back. The update holds the row from here, so a delete
+                   arriving later waits for this commit. Asked with a locking
+                   read: inside a caller's own transaction MySQL answers a
+                   plain one from the snapshot taken before the delete. */
+                DB::table($handle)->where('id', $id)->whereNull('deleted_at')->update([...$serialize($changed($shared)), 'updated_at' => $now]);
+
+                if (DB::table($handle)->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->value('id') === null) {
+                    throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
+                }
+            }
+
+            /* An update with no columns compiles to `set  where`, and an
+               upsert with none quietly becomes an insert. A call that changed
+               nothing localized has only the locale's row to add, if that. */
+            if (! $translated) {
+                DB::table("{$handle}_locales")->insert(['parent_id' => $id, 'site_id' => $site, 'locale' => $locale, ...$serialize($localized)]);
+            } elseif (($columns = $changed($localized)) !== []) {
+                DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
+            }
+
+            $this->paths($type, (int) $id, $site, $created, $reads, $this->snapshotted(1));
+
+            return (int) $id;
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | Every locale's path, worked out again after every write rather than
+     | only for the locale written: a shared field in the pattern moves them
+     | all. Only what changed is written, each row by its key. A path left as
+     | it was is not touched, and none is deleted to be put back: on MySQL
+     | deleting by entry takes a gap lock on the lookup, and two saves holding
+     | one each deadlock on the other's insert. A new entry has nothing to
+     | compare with, so it only inserts.
+     |
+     | A path another entry holds is refused on the fields that build it,
+     | never suffixed -- an editor looking at a URL they did not choose is the
+     | outcome the route decision rules out. The unique index is what decides,
+     | rather than a look beforehand, so two saves racing for one path cannot
+     | both win. The violation is rethrown at once: Postgres has abandoned the
+     | transaction, and the next statement in it would fail for that instead.
+     |
+     | The refusal names the path only to a caller that may read the type. A
+     | path spells out the fields it is built from, stored ones the call did
+     | not give and other locales' among them, which is why a write hands
+     | such a caller back no path either.
+     |
+     | Where a plain read answers from a caller's older snapshot -- `$nested`,
+     | see snapshotted() -- what paths are built from is read with a lock, so
+     | a slug another request has changed since does not build the path from
+     | the old one, and a path it added is not missed. Anywhere else the reads
+     | stay plain and take no gap locks to deadlock on.
+     */
+    private function paths(string $type, int $id, int $site, bool $created, bool $reads, bool $nested): void
+    {
+        $handle = $type::handle();
+        $wanted = $this->wanted($type, $id, $reads, $nested);
+        $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)
+            ->when($nested, fn (Builder $query) => $query->lockForUpdate())
+            ->get(['id', 'locale', 'uri']);
+        $held = $rows->keyBy('locale')->only(array_keys($wanted));
+
+        /* The row of a locale whose path went: one the config dropped, or a
+           route the type no longer has. */
+        if (($gone = $rows->pluck('id')->diff($held->pluck('id')))->isNotEmpty()) {
+            DB::table('uris')->whereIn('id', $gone)->delete();
+        }
+
+        foreach ($wanted as $locale => $uri) {
+            $row = $held->get($locale);
+
+            if ($row?->uri === $uri) {
+                continue;
+            }
+
+            try {
+                if ($row === null) {
+                    DB::table('uris')->insert(['site_id' => $site, 'locale' => $locale, 'uri' => $uri, 'type' => $handle, 'entry_id' => $id]);
+                } else {
+                    DB::table('uris')->where('id', $row->id)->update(['uri' => $uri]);
+                }
+            } catch (UniqueConstraintViolationException) {
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), $reads
+                    ? "The path {$uri} is already taken in {$locale}."
+                    : 'The path this builds is already taken.'));
+            }
+        }
+    }
+
+    /*
+     | The path each of the entry's locale rows answers to, by locale. None
+     | for a type with no route, or for a row in a locale that has since left
+     | the config and so has no pattern to be given one by.
+     |
+     | @return array<string, string>
+     */
+    private function wanted(string $type, int $id, bool $reads, bool $nested): array
+    {
+        if (($patterns = $this->patterns($type)) === null) {
+            return [];
+        }
+
+        $handle = $type::handle();
+        $row = DB::table($handle)->where('id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->first();
+        $fields = $this->mainstay->fields($type);
+        $wanted = [];
+
+        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
+            if (! isset($patterns[$translation->locale])) {
+                continue;
+            }
+
+            $uri = preg_replace_callback(
+                '/'.Route::PLACEHOLDER.'/',
+                fn (array $name) => ($fields[$name[1]]->localized ? $translation : $row)->{Str::snake($name[1])},
+                $patterns[$translation->locale],
+            );
+
+            /* The column's width, which the drivers other than SQLite enforce
+               with an error nobody reading a form could act on. */
+            if (mb_strlen($uri) > 255) {
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), $reads
+                    ? "The path {$uri} is longer than the 255 characters a path can be."
+                    : 'The path this builds is longer than the 255 characters a path can be.'));
+            }
+
+            $wanted[$translation->locale] = $uri;
+        }
+
+        return $wanted;
+    }
+
+    /* The fields a refused path is reported on: the ones that build it, or
+       the path itself for a route with none. */
+    private function blamed(string $type): array
+    {
+        return $this->placeholders($type) ?: ['uri'];
+    }
+
+    /*
+     | The type's pattern for each content locale, or null for a type with no
+     | route. A map has to name exactly the configured locales: `nl-NL`
+     | against `nl`, or a locale added to the config and not to the map, is a
+     | path some translation would silently not get.
+     |
+     | @return array<string, string>|null
+     */
+    private function patterns(string $type): ?array
+    {
+        $route = $this->mainstay->route($type);
+        $locales = config('mainstay.locales');
+
+        if (! is_array($route)) {
+            return $route === null ? null : array_fill_keys($locales, $route);
+        }
+
+        if (array_diff(array_keys($route), $locales) !== [] || array_diff($locales, array_keys($route)) !== []) {
+            throw new InvalidArgumentException(sprintf(
+                "%s's #[Route] has patterns for %s, and mainstay.locales holds %s. Give a pattern for every content locale, or one pattern for all of them.",
+                $type,
+                implode(', ', array_keys($route)),
+                implode(', ', $locales),
+            ));
+        }
+
+        return $route;
+    }
+
+    /* The fields a path is built from, in any locale's pattern. */
+    private function placeholders(string $type): array
+    {
+        preg_match_all('/'.Route::PLACEHOLDER.'/', implode(' ', $this->patterns($type) ?? []), $names);
+
+        return array_values(array_unique($names[1]));
+    }
+
+    /*
+     | A row as the declared class. `$locale` is null for the entry a write
+     | asks Gate about, which is the main row alone -- its owner and its
+     | shared fields, what a policy decides on -- so its locale, its path and
+     | its localized fields are not set.
+     */
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null): Entry
+    {
+        [$class, $properties] = $this->reflection($type);
+        $entry = $class->newInstanceWithoutConstructor();
+
+        /*
+         | Every field starts absent, and only what was read is set. Absent
+         | rather than null, since null is a value a field holds, and a template
+         | printing a note it was not given should fail where it reads it rather
+         | than print nothing. A default the declaration gave would be a value
+         | nobody stored -- an internal note for a reader who may not see it, a
+         | localized field on the entry Gate is shown, which the main row does
+         | not carry -- so it goes too.
+         */
+        foreach ($properties as $property) {
+            $this->absent($entry, $property);
+        }
+
+        $entry->id = (int) $row->id;
+
+        /* A caller that may not read the type is handed the id and nothing it
+           did not write: not the owner, not the stamps, and not the path,
+           which spells out the fields it is built from. */
+        if ($only === null) {
+            $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
+            $entry->createdAt = blank($row->created_at) ? null : $this->moment->cast($row->created_at);
+            $entry->updatedAt = blank($row->updated_at) ? null : $this->moment->cast($row->updated_at);
+        }
+
+        if ($locale !== null) {
+            $entry->locale = $locale;
+
+            if ($only === null) {
+                $entry->uri = $row->uri;
+            }
+        }
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            $column = Str::snake($name);
+
+            if (! property_exists($row, $column) || ($field->internal && ! $internal) || ($only !== null && ! in_array($name, $only, true))) {
+                continue;
+            }
+
+            /* Through reflection, which initializes a readonly property from
+               outside its class where assignment cannot.
+
+               The entry a write asks Gate about is built before Gate has
+               answered, so a stored value its field cannot read -- a blank
+               select, put there from outside the layer -- is left out of it,
+               rather than refusing the caller in that field's name. A read
+               still fails on it, naming the declaration. */
+            try {
+                $properties[$name]->setValue($entry, $field->cast($row->{$column}));
+            } catch (InvalidArgumentException $exception) {
+                if ($locale !== null) {
+                    throw $exception;
+                }
+            }
+        }
+
+        return $entry;
+    }
+
+    /*
+     | The class and its fields' properties, reflected once per type for as
+     | long as this store lives -- one call -- so a find of a hundred rows
+     | builds one of each rather than one per row.
+     |
+     | @return array{0: ReflectionClass, 1: array<string, ReflectionProperty>}
+     */
+    private function reflection(string $type): array
+    {
+        return $this->reflected[$type] ??= [
+            new ReflectionClass($type),
+            array_map(fn (Field $field) => new ReflectionProperty($type, $field->name), $this->mainstay->fields($type)),
+        ];
+    }
+
+    /* Unset from the declaring class, where a `protected(set)` property
+       allows it; a readonly one has no default to take away. A hooked one
+       cannot be unset at all, so one the caller is not handed keeps the
+       default its declaration gave: declared rather than stored, so nothing
+       read leaks through it. */
+    private function absent(Entry $entry, ReflectionProperty $property): void
+    {
+        if ($property->isInitialized($entry) && ! (method_exists($property, 'hasHooks') && $property->hasHooks())) {
+            $name = $property->getName();
+
+            Closure::bind(function () use ($name) {
+                unset($this->{$name});
+            }, $entry, $property->class)();
+        }
+    }
+}
