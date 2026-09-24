@@ -19,10 +19,11 @@ use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
-use Mainstay\Tests\Fixtures\Policies\FormPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
+use Mainstay\Tests\Fixtures\Submission;
+use Mainstay\Tests\Fixtures\Ticket;
 use PHPUnit\Framework\Attributes\Test;
 use ReflectionProperty;
 
@@ -45,7 +46,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Memo::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, SiteSettings::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -406,14 +407,30 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_caller_that_may_write_and_not_read_is_handed_what_it_wrote(): void
     {
-        Gate::policy(Memo::class, FormPolicy::class);
+        $sent = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en');
 
-        $memo = Mainstay::create(Memo::class, ['title' => 'Printer'], locale: 'en');
+        $this->assertSame('Ann', $sent->name);
+        $this->assertFalse((new ReflectionProperty($sent, 'message'))->isInitialized($sent), 'Not written, so not handed back.');
+        $this->assertFalse((new ReflectionProperty($sent, 'state'))->isInitialized($sent), 'Internal, to a caller who may not see it.');
+        $this->assertSame(['Ann', 'new'], [DB::table('submission')->value('name'), DB::table('submission')->value('state')]);
+        $this->assertThrows(fn () => Mainstay::find(Submission::class), AuthorizationException::class);
 
-        $this->assertSame('Printer', $memo->title);
-        $this->assertFalse((new ReflectionProperty($memo, 'note'))->isInitialized($memo), 'Internal, to a caller who may not see it.');
-        $this->assertSame(1, DB::table('memo')->count());
-        $this->assertThrows(fn () => Mainstay::find(Memo::class), AuthorizationException::class);
+        Mainstay::update(Submission::class, $sent->id, ['message' => 'Hello'], locale: 'en', overrideAccess: true);
+        $amended = Mainstay::update(Submission::class, $sent->id, ['message' => 'Hello again'], locale: 'en');
+
+        $this->assertSame('Hello again', $amended->message);
+        $this->assertFalse((new ReflectionProperty($amended, 'name'))->isInitialized($amended), 'Stored, but not written by this call.');
+    }
+
+    #[Test]
+    public function a_field_the_writer_may_not_see_and_has_no_default_refuses_the_write_unnamed(): void
+    {
+        $this->assertThrows(
+            fn () => Mainstay::create(Ticket::class, ['name' => 'Ann'], locale: 'en'),
+            AuthorizationException::class,
+            'Writing a Ticket needs a field this caller may not see. Give it a default in the declaration, or write with access to it.',
+        );
+        $this->assertSame(0, DB::table('ticket')->count());
     }
 
     #[Test]
@@ -465,21 +482,6 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_seeders_own_transaction_survives_a_path_it_was_refused(): void
-    {
-        /* The refused insert is rolled back to a savepoint, which is what
-           keeps Postgres, having abandoned the statement, accepting the next
-           one. */
-        DB::transaction(function () {
-            $this->writePost();
-            $this->refusal(fn () => $this->writePost(['title' => 'Another']));
-            $this->writePost(['slug' => 'another']);
-        });
-
-        $this->assertSame(['hello', 'another'], Mainstay::find(Post::class)->pluck('slug')->all());
-    }
-
-    #[Test]
     public function an_update_moving_onto_a_taken_path_is_refused_and_writes_nothing(): void
     {
         $this->writePost();
@@ -503,6 +505,21 @@ class ContentTest extends DatabaseTestCase
 
         $this->assertSame(1, DB::table('uris')->count());
         $this->assertSame([$id], $this->ids(Mainstay::find(Post::class)));
+    }
+
+    #[Test]
+    public function a_seeders_own_transaction_survives_a_path_it_was_refused(): void
+    {
+        /* The refused insert is rolled back to a savepoint, which is what
+           keeps Postgres, having abandoned the statement, accepting the next
+           one. */
+        DB::transaction(function () {
+            $this->writePost();
+            $this->refusal(fn () => $this->writePost(['title' => 'Another']));
+            $this->writePost(['slug' => 'another']);
+        });
+
+        $this->assertSame(['hello', 'another'], Mainstay::find(Post::class)->pluck('slug')->all());
     }
 
     #[Test]
@@ -645,27 +662,11 @@ class ContentTest extends DatabaseTestCase
         try {
             $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class);
         } finally {
-            DB::rollBack();
+            DB::commit();
         }
 
         $this->assertSame('Hello', DB::table('post_locales')->value('title'));
         $this->assertSame(0, DB::table('uris')->count());
-    }
-
-    #[Test]
-    public function an_update_leaves_a_path_it_did_not_move_alone(): void
-    {
-        $id = $this->writePost()->id;
-        $row = DB::table('uris')->first();
-
-        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
-
-        $this->assertEquals($row, DB::table('uris')->first(), 'Not deleted and put back.');
-
-        Mainstay::update(Post::class, $id, ['slug' => 'moved'], locale: 'en', overrideAccess: true);
-
-        $this->assertSame([$row->id, '/blog/moved'], [DB::table('uris')->value('id'), DB::table('uris')->value('uri')]);
-        $this->assertSame(1, DB::table('uris')->count());
     }
 
     #[Test]
@@ -688,6 +689,22 @@ class ContentTest extends DatabaseTestCase
         DB::commit();
 
         $this->assertSame(0, DB::table('uris')->count(), 'No path outlives the trash.');
+    }
+
+    #[Test]
+    public function an_update_leaves_a_path_it_did_not_move_alone(): void
+    {
+        $id = $this->writePost()->id;
+        $row = DB::table('uris')->first();
+
+        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
+
+        $this->assertEquals($row, DB::table('uris')->first(), 'Not deleted and put back.');
+
+        Mainstay::update(Post::class, $id, ['slug' => 'moved'], locale: 'en', overrideAccess: true);
+
+        $this->assertSame([$row->id, '/blog/moved'], [DB::table('uris')->value('id'), DB::table('uris')->value('uri')]);
+        $this->assertSame(1, DB::table('uris')->count());
     }
 
     #[Test]

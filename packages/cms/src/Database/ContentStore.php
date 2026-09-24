@@ -5,6 +5,7 @@ namespace Mainstay\Database;
 use Carbon\CarbonImmutable;
 use Closure;
 use DateTimeInterface;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\Access\Gate as AccessGate;
 use Illuminate\Database\Eloquent\Attributes\UsePolicy;
 use Illuminate\Database\Query\Builder;
@@ -139,11 +140,11 @@ class ContentStore
         $type = $this->entry($type);
         $locale = $this->locale($locale);
 
-        $internal = $this->writes($type, 'create', $type, $overrideAccess);
+        [$internal, $reads] = $this->writes($type, 'create', $type, $overrideAccess);
 
         $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false);
 
-        return $this->readBack($type, $id, $locale, $internal);
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
     }
 
     /**
@@ -172,11 +173,11 @@ class ContentStore
             throw new RecordNotFoundException("{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
         }
 
-        $internal = $this->writes($type, 'update', $this->hydrate($type, $row, null, true), $overrideAccess);
+        [$internal, $reads] = $this->writes($type, 'update', $this->hydrate($type, $row, null, true), $overrideAccess);
 
         $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale));
 
-        return $this->readBack($type, $id, $locale, $internal);
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
     }
 
     /*
@@ -208,19 +209,20 @@ class ContentStore
     }
 
     /*
-     | What a write committed, whether or not the caller may read the type: it
-     | supplied what it wrote, and a public form that may create submissions
-     | and not read them would otherwise commit the row and then be told it
-     | failed. Internal fields only if the caller may see them. Gone only if a
-     | delete landed after the commit, which is what the caller is then told.
+     | What a write committed, whether or not the caller may read the type. A
+     | public form that may create submissions and not read them would
+     | otherwise commit the row and then be told it failed. A caller that may
+     | not read is handed only what it wrote -- `$only`, the keys it gave --
+     | and never an internal field it may not see. Gone only if a delete
+     | landed after the commit, which is what the caller is then told.
      */
-    private function readBack(string $type, int $id, string $locale, bool $internal): Entry
+    private function readBack(string $type, int $id, string $locale, bool $internal, ?array $only): Entry
     {
         $row = $this->select($type, $locale, ['id' => $id], [], $internal)->first();
 
         return $row === null
             ? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.")
-            : $this->hydrate($type, $row, $locale, $internal);
+            : $this->hydrate($type, $row, $locale, $internal, $only);
     }
 
     /*
@@ -320,18 +322,22 @@ class ContentStore
         return $gate->policy($type, EntryPolicy::class);
     }
 
-    /* Whether the caller sees internal fields, after asking whether it may
-       make this write at all. */
-    private function writes(string $type, string $ability, string|Entry $subject, bool $overrideAccess): bool
+    /*
+     | Whether the caller sees internal fields, and whether it may read the
+     | type, after asking whether it may make this write at all.
+     |
+     | @return array{0: bool, 1: bool}
+     */
+    private function writes(string $type, string $ability, string|Entry $subject, bool $overrideAccess): array
     {
         if ($overrideAccess) {
-            return true;
+            return [true, true];
         }
 
         $gate = $this->gate($type);
         $gate->authorize($ability, $subject);
 
-        return $gate->allows('viewInternal', $type);
+        return [$gate->allows('viewInternal', $type), $gate->allows('viewAny', $type)];
     }
 
     /* Nobody until phase 9, which hands over the guard's user here and
@@ -599,6 +605,22 @@ class ContentStore
         }
 
         $values = [...$stored, ...$data];
+
+        /* An internal field the caller may not see, on a row being inserted
+           -- nothing is stored for it yet -- takes the default its property
+           declares. Without one, a required field has nothing valid to hold,
+           and the write is refused as a question of access, which it is,
+           without naming the field. */
+        foreach ($internal ? [] : array_diff_key($this->mainstay->fields($type), $fields, $stored) as $name => $field) {
+            $property = new ReflectionProperty($type, $name);
+
+            if ($property->hasDefaultValue()) {
+                $values[$name] = $property->getDefaultValue();
+            } elseif ($field->isRequired()) {
+                throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, or write with access to it.');
+            }
+        }
+
         $routed = $this->placeholders($type);
         $rules = $messages = [];
 
@@ -811,7 +833,7 @@ class ContentStore
      | shared fields, what a policy decides on -- so its locale, its path and
      | its localized fields are not set.
      */
-    private function hydrate(string $type, object $row, ?string $locale, bool $internal): Entry
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null): Entry
     {
         $entry = (new ReflectionClass($type))->newInstanceWithoutConstructor();
 
@@ -837,8 +859,10 @@ class ContentStore
                reads it rather than print nothing. A default the declaration
                gave goes for the same reason, unset from the declaring class,
                where a `protected(set)` property allows it; a readonly one has
-               no default to take away. */
-            if ($field->internal && ! $internal) {
+               no default to take away. The same goes for a field outside
+               `$only`, which a write hands back to a caller that may not
+               read the type. */
+            if (($field->internal && ! $internal) || ($only !== null && ! in_array($name, $only, true))) {
                 if ($property->isInitialized($entry)) {
                     Closure::bind(function () use ($name) {
                         unset($this->{$name});

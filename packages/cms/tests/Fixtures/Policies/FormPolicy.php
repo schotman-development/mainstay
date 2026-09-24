@@ -2,7 +2,7 @@
 
 namespace Mainstay\Tests\Fixtures\Policies;
 
-/* A public form's: anyone may create, nobody may read. */
+/* A public form's: anyone may send and amend, nobody may read. */
 class FormPolicy
 {
     public function viewAny(?object $user): bool
@@ -16,6 +16,11 @@ class FormPolicy
     }
 
     public function create(?object $user): bool
+    {
+        return true;
+    }
+
+    public function update(?object $user, object $entry): bool
     {
         return true;
     }
