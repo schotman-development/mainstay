@@ -191,7 +191,13 @@ class ContentStore
             $now = $this->stamp(CarbonImmutable::now());
 
             DB::table($type::handle())->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now, 'updated_at' => $now]);
-            DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->delete();
+
+            /* By key, for the reason paths() writes that way. */
+            $paths = DB::table('uris')->where('type', $type::handle())->where('entry_id', $id)->pluck('id');
+
+            if ($paths->isNotEmpty()) {
+                DB::table('uris')->whereIn('id', $paths)->delete();
+            }
         }, self::ATTEMPTS);
     }
 
@@ -586,6 +592,8 @@ class ContentStore
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
 
         return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $localized, $shared, $serialize, $changed) {
+            $created = $id === null;
+
             $now = $this->stamp(CarbonImmutable::now());
 
             if ($id === null) {
@@ -595,10 +603,12 @@ class ContentStore
                    delete committed since the load leaves the update nothing
                    to match, and writing on would give a trashed entry its
                    paths back. The update holds the row from here, so a delete
-                   arriving later waits for this commit. */
+                   arriving later waits for this commit. Asked with a locking
+                   read: inside a caller's own transaction MySQL answers a
+                   plain one from the snapshot taken before the delete. */
                 DB::table($handle)->where('id', $id)->whereNull('deleted_at')->update([...$serialize($changed($shared)), 'updated_at' => $now]);
 
-                if (! DB::table($handle)->where('id', $id)->whereNull('deleted_at')->exists()) {
+                if (DB::table($handle)->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->value('id') === null) {
                     throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
                 }
             }
@@ -612,15 +622,20 @@ class ContentStore
                 DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
             }
 
-            $this->paths($type, (int) $id, $site);
+            $this->paths($type, (int) $id, $site, $created);
 
             return (int) $id;
         }, self::ATTEMPTS);
     }
 
     /*
-     | Every locale's path, rebuilt after every write rather than only the
-     | locale written: a shared field in the pattern moves them all.
+     | Every locale's path, worked out again after every write rather than
+     | only for the locale written: a shared field in the pattern moves them
+     | all. Only what changed is written, each row by its key. A path left as
+     | it was is not touched, and none is deleted to be put back: on MySQL
+     | deleting by entry takes a gap lock on the lookup, and two saves holding
+     | one each deadlock on the other's insert. A new entry has nothing to
+     | compare with, so it only inserts.
      |
      | A path another entry holds is refused on the fields that build it,
      | never suffixed -- an editor looking at a URL they did not choose is the
@@ -629,23 +644,56 @@ class ContentStore
      | both win. The violation is rethrown at once: Postgres has abandoned the
      | transaction, and the next statement in it would fail for that instead.
      */
-    private function paths(string $type, int $id, int $site): void
+    private function paths(string $type, int $id, int $site, bool $created): void
     {
         $handle = $type::handle();
+        $wanted = $this->wanted($type, $id);
+        $held = $created
+            ? collect()
+            : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri'])->keyBy('locale');
 
-        DB::table('uris')->where('type', $handle)->where('entry_id', $id)->delete();
-
-        if (($patterns = $this->patterns($type)) === null) {
-            return;
+        if (($gone = $held->diffKeys($wanted)->pluck('id'))->isNotEmpty()) {
+            DB::table('uris')->whereIn('id', $gone)->delete();
         }
 
+        foreach ($wanted as $locale => $uri) {
+            $row = $held->get($locale);
+
+            if ($row?->uri === $uri) {
+                continue;
+            }
+
+            try {
+                if ($row === null) {
+                    DB::table('uris')->insert(['site_id' => $site, 'locale' => $locale, 'uri' => $uri, 'type' => $handle, 'entry_id' => $id]);
+                } else {
+                    DB::table('uris')->where('id', $row->id)->update(['uri' => $uri]);
+                }
+            } catch (UniqueConstraintViolationException) {
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), "The path {$uri} is already taken in {$locale}."));
+            }
+        }
+    }
+
+    /*
+     | The path each of the entry's locale rows answers to, by locale. None
+     | for a type with no route, or for a row in a locale that has since left
+     | the config and so has no pattern to be given one by.
+     |
+     | @return array<string, string>
+     */
+    private function wanted(string $type, int $id): array
+    {
+        if (($patterns = $this->patterns($type)) === null) {
+            return [];
+        }
+
+        $handle = $type::handle();
         $row = DB::table($handle)->where('id', $id)->first();
         $fields = $this->mainstay->fields($type);
-        $blamed = $this->placeholders($type) ?: ['uri'];
+        $wanted = [];
 
         foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->get() as $translation) {
-            /* A row in a locale that has since left the config has no
-               pattern to be given a path by. */
             if (! isset($patterns[$translation->locale])) {
                 continue;
             }
@@ -659,17 +707,20 @@ class ContentStore
             /* The column's width, which the drivers other than SQLite enforce
                with an error nobody reading a form could act on. */
             if (mb_strlen($uri) > 255) {
-                throw ValidationException::withMessages(array_fill_keys($blamed, "The path {$uri} is longer than the 255 characters a path can be."));
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), "The path {$uri} is longer than the 255 characters a path can be."));
             }
 
-            try {
-                DB::table('uris')->insert([
-                    'site_id' => $site, 'locale' => $translation->locale, 'uri' => $uri, 'type' => $handle, 'entry_id' => $id,
-                ]);
-            } catch (UniqueConstraintViolationException) {
-                throw ValidationException::withMessages(array_fill_keys($blamed, "The path {$uri} is already taken in {$translation->locale}."));
-            }
+            $wanted[$translation->locale] = $uri;
         }
+
+        return $wanted;
+    }
+
+    /* The fields a refused path is reported on: the ones that build it, or
+       the path itself for a route with none. */
+    private function blamed(string $type): array
+    {
+        return $this->placeholders($type) ?: ['uri'];
     }
 
     /*

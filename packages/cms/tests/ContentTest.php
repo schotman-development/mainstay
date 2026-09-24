@@ -532,6 +532,50 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function an_update_inside_a_callers_transaction_sees_a_delete_committed_since(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
+        }
+
+        config()->set('database.connections.beside', config('database.connections.testing'));
+        $id = $this->writePost()->id;
+
+        /* The caller's transaction reads first, which is where MySQL takes the
+           snapshot every plain read in it then answers from. */
+        DB::beginTransaction();
+        DB::table('post')->count();
+
+        DB::connection('beside')->table('post')->where('id', $id)->update(['deleted_at' => '2026-09-24 00:00:00']);
+        DB::connection('beside')->table('uris')->where('entry_id', $id)->delete();
+
+        try {
+            $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en', overrideAccess: true), RecordNotFoundException::class);
+        } finally {
+            DB::rollBack();
+        }
+
+        $this->assertSame('Hello', DB::table('post_locales')->value('title'));
+        $this->assertSame(0, DB::table('uris')->count());
+    }
+
+    #[Test]
+    public function an_update_leaves_a_path_it_did_not_move_alone(): void
+    {
+        $id = $this->writePost()->id;
+        $row = DB::table('uris')->first();
+
+        Mainstay::update(Post::class, $id, ['featured' => true], locale: 'en', overrideAccess: true);
+
+        $this->assertEquals($row, DB::table('uris')->first(), 'Not deleted and put back.');
+
+        Mainstay::update(Post::class, $id, ['slug' => 'moved'], locale: 'en', overrideAccess: true);
+
+        $this->assertSame([$row->id, '/blog/moved'], [DB::table('uris')->value('id'), DB::table('uris')->value('uri')]);
+        $this->assertSame(1, DB::table('uris')->count());
+    }
+
+    #[Test]
     public function a_shared_field_in_the_pattern_moves_every_locales_path(): void
     {
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
