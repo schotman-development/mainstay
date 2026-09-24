@@ -484,6 +484,49 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_caller_with_no_rights_cannot_tell_a_missing_entry_from_a_present_one(): void
+    {
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+
+        /* Page's policy refuses everything, reads included. */
+        foreach ([
+            fn () => Mainstay::update(Page::class, 999, ['slug' => 'x'], locale: 'en'),
+            fn () => Mainstay::update(Page::class, $id, ['slug' => 'x'], locale: 'en'),
+            fn () => Mainstay::delete(Page::class, 999),
+            fn () => Mainstay::delete(Page::class, $id),
+        ] as $write) {
+            $this->assertThrows($write, AuthorizationException::class);
+        }
+
+        /* Nor which translations it has. */
+        App::setLocale('nl');
+        $this->assertThrows(fn () => Mainstay::update(Page::class, $id, ['slug' => 'x']), AuthorizationException::class);
+
+        /* A caller that may read is told, since it could find() the same. */
+        App::setLocale('en');
+        $this->assertThrows(fn () => Mainstay::update(Post::class, 999, ['title' => 'x'], locale: 'en'), RecordNotFoundException::class);
+    }
+
+    #[Test]
+    public function a_refused_path_is_not_spelled_out_to_a_caller_that_may_not_read(): void
+    {
+        Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'team'], locale: 'en', overrideAccess: true);
+        $other = Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'other'], locale: 'en', overrideAccess: true)->id;
+        Gate::policy(Page::class, FormPolicy::class);
+
+        /* The path would give away the stored section, which this call did
+           not write and may not read. */
+        $this->assertSame(
+            ['The path this builds is already taken.'],
+            array_unique(array_merge(...array_values($this->refusal(fn () => Mainstay::update(Page::class, $other, ['slug' => 'team'], locale: 'en'))))),
+        );
+        $this->assertSame(
+            ['The path this builds is longer than the 255 characters a path can be.'],
+            array_unique(array_merge(...array_values($this->refusal(fn () => Mainstay::update(Page::class, $other, ['slug' => str_repeat('a', 250)], locale: 'en'))))),
+        );
+    }
+
+    #[Test]
     public function a_declared_default_fills_a_field_left_off_whoever_writes(): void
     {
         $this->assertSame('new', Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true)->state);

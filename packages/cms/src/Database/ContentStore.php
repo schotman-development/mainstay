@@ -142,7 +142,7 @@ class ContentStore
 
         [$internal, $reads] = $this->writes($type, 'create', $type, $overrideAccess);
 
-        $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false);
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false, $reads);
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
     }
@@ -167,15 +167,15 @@ class ContentStore
         $type = $this->entry($type);
         $asked = $locale !== null;
         $locale = $this->locale($locale);
-        [$row, $translations] = $this->load($type, $id);
+        [$row, $translations] = $this->load($type, $id, $overrideAccess);
 
         if (! $asked && ! $translations->has($locale)) {
-            throw new RecordNotFoundException("{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
+            throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
         }
 
         [$internal, $reads] = $this->writes($type, 'update', $this->hydrate($type, $row, null, true), $overrideAccess);
 
-        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale));
+        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
     }
@@ -188,7 +188,7 @@ class ContentStore
     public function delete(string $type, int $id, bool $overrideAccess = false): void
     {
         $type = $this->entry($type);
-        [$row] = $this->load($type, $id);
+        [$row] = $this->load($type, $id, $overrideAccess);
 
         if (! $overrideAccess) {
             $this->gate($type)->authorize('delete', $this->hydrate($type, $row, null, true));
@@ -549,11 +549,11 @@ class ContentStore
 
     /*
      | The main row and every locale's row, by locale. Out of the trash and on
-     | this site, or RecordNotFoundException, which Laravel answers with a 404.
+     | this site, or not found -- see missing().
      |
      | @return array{0: object, 1: Collection<string, object>}
      */
-    private function load(string $type, int $id): array
+    private function load(string $type, int $id, bool $overrideAccess): array
     {
         $handle = $type::handle();
 
@@ -561,9 +561,24 @@ class ContentStore
             ->where('site_id', $this->site())
             ->whereNull('deleted_at')
             ->where('id', $id)
-            ->firstOrFail();
+            ->first()
+            ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not there to write.");
 
         return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->get()->keyBy('locale')];
+    }
+
+    /*
+     | Not found, to a caller that may read the type, which Laravel answers
+     | with a 404; refused, to one that may not. The load comes before Gate,
+     | which is asked about the entry loaded, so a 404 for a missing id beside
+     | a 403 for a present one would let a caller with no rights at all count
+     | the entries and their translations. A reader could find() them anyway.
+     */
+    private function missing(string $type, bool $overrideAccess, string $message): RecordNotFoundException|AuthorizationException
+    {
+        return $overrideAccess || $this->gate($type)->allows('viewAny', $type)
+            ? new RecordNotFoundException($message)
+            : new AuthorizationException;
     }
 
     /*
@@ -651,7 +666,7 @@ class ContentStore
      | be validated, not to be written: written back, they would put a field
      | another save changed in the meantime back the way it was.
      */
-    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated): int
+    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads): int
     {
         $handle = $type::handle();
         $site = $this->site();
@@ -659,7 +674,7 @@ class ContentStore
         $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->serialize($values[$field->name] ?? null), $fields);
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
 
-        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $localized, $shared, $serialize, $changed) {
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed) {
             $created = $id === null;
 
             $now = $this->stamp(CarbonImmutable::now());
@@ -690,7 +705,7 @@ class ContentStore
                 DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
             }
 
-            $this->paths($type, (int) $id, $site, $created);
+            $this->paths($type, (int) $id, $site, $created, $reads);
 
             return (int) $id;
         }, self::ATTEMPTS);
@@ -711,11 +726,16 @@ class ContentStore
      | rather than a look beforehand, so two saves racing for one path cannot
      | both win. The violation is rethrown at once: Postgres has abandoned the
      | transaction, and the next statement in it would fail for that instead.
+     |
+     | The refusal names the path only to a caller that may read the type. A
+     | path spells out the fields it is built from, stored ones the call did
+     | not give and other locales' among them, which is why a write hands
+     | such a caller back no path either.
      */
-    private function paths(string $type, int $id, int $site, bool $created): void
+    private function paths(string $type, int $id, int $site, bool $created, bool $reads): void
     {
         $handle = $type::handle();
-        $wanted = $this->wanted($type, $id);
+        $wanted = $this->wanted($type, $id, $reads);
         $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri']);
         $held = $rows->keyBy('locale')->only(array_keys($wanted));
 
@@ -740,7 +760,9 @@ class ContentStore
                     DB::table('uris')->where('id', $row->id)->update(['uri' => $uri]);
                 }
             } catch (UniqueConstraintViolationException) {
-                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), "The path {$uri} is already taken in {$locale}."));
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), $reads
+                    ? "The path {$uri} is already taken in {$locale}."
+                    : 'The path this builds is already taken.'));
             }
         }
     }
@@ -752,7 +774,7 @@ class ContentStore
      |
      | @return array<string, string>
      */
-    private function wanted(string $type, int $id): array
+    private function wanted(string $type, int $id, bool $reads): array
     {
         if (($patterns = $this->patterns($type)) === null) {
             return [];
@@ -777,7 +799,9 @@ class ContentStore
             /* The column's width, which the drivers other than SQLite enforce
                with an error nobody reading a form could act on. */
             if (mb_strlen($uri) > 255) {
-                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), "The path {$uri} is longer than the 255 characters a path can be."));
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), $reads
+                    ? "The path {$uri} is longer than the 255 characters a path can be."
+                    : 'The path this builds is longer than the 255 characters a path can be.'));
             }
 
             $wanted[$translation->locale] = $uri;
