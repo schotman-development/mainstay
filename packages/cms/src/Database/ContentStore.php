@@ -5,7 +5,7 @@ namespace Mainstay\Database;
 use Carbon\CarbonImmutable;
 use Closure;
 use DateTimeInterface;
-use Illuminate\Contracts\Auth\Access\Gate as GateContract;
+use Illuminate\Auth\Access\Gate as AccessGate;
 use Illuminate\Database\Eloquent\Attributes\UsePolicy;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
@@ -22,6 +22,7 @@ use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\Route;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
 use Mainstay\Policies\EntryPolicy;
@@ -52,8 +53,8 @@ class ContentStore
        caller filters and sorts on. */
     private const STAMPS = ['id' => 'id', 'createdAt' => 'created_at', 'updatedAt' => 'updated_at'];
 
-    /* What Str::slug() writes, and the only thing a routed field holds. */
-    private const SLUG = '/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/';
+    /* The only thing a routed field holds. */
+    private const SLUG = '/\A'.Route::SEGMENT.'\z/';
 
     /*
      | How often a write runs before a deadlock is the caller's. MySQL takes a
@@ -299,7 +300,7 @@ class ContentStore
      | host registers later is honoured, and what the host's own Gate says
      | about the type is left as Laravel would say it.
      */
-    private function gate(string $type): GateContract
+    private function gate(string $type): AccessGate
     {
         $gate = Gate::forUser($this->user());
         $policies = $gate->policies();
@@ -443,12 +444,12 @@ class ContentStore
             }
 
             if ($operator === 'in' || $operator === 'not_in') {
-                $query->whereIn($column, array_map(fn (mixed $one) => $this->value($field, $key, $one), (array) $value), not: $operator === 'not_in');
+                $query->whereIn($column, array_map(fn (mixed $one) => $this->value($field, $key, $this->single($key, $operator, $one)), (array) $value), not: $operator === 'not_in');
 
                 continue;
             }
 
-            $value = $this->value($field, $key, $value);
+            $value = $this->value($field, $key, $this->single($key, $operator, $value));
 
             /* != and not_in answer as SQL does: a row holding null matches
                neither, since null is not a value to be unequal to. */
@@ -459,6 +460,17 @@ class ContentStore
                 default => throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null."),
             };
         }
+    }
+
+    /* One value, not a list. Laravel compares with a list's first element
+       and drops the rest, which is a condition nobody wrote. */
+    private function single(string $key, string $operator, mixed $value): mixed
+    {
+        if (is_array($value)) {
+            throw new InvalidArgumentException("The condition on {$key} compares {$operator} with a list. Only in and not_in take one, and they take a list of values.");
+        }
+
+        return $value;
     }
 
     private function sort(Builder $query, string $type, string $key, bool $internal): void

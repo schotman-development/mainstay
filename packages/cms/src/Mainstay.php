@@ -11,6 +11,7 @@ use Mainstay\Content\Route;
 use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
+use Mainstay\Fields\Select;
 use ReflectionAttribute;
 use ReflectionClass;
 use stdClass;
@@ -140,7 +141,7 @@ class Mainstay
 
     private function pattern(string $type, mixed $pattern): void
     {
-        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:[a-z0-9]+(?:-[a-z0-9]+)*|\{\w+\}))+\z#', $pattern))) {
+        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:'.Route::SEGMENT.'|\{\w+\}))+\z#', $pattern))) {
             throw new InvalidArgumentException(sprintf(
                 "%s's #[Route] pattern %s is not a path Mainstay can store: it starts with /, has no trailing slash, and each segment is a lowercase slug or one {field}.",
                 $type,
@@ -157,6 +158,8 @@ class Mainstay
                 $field->internal => 'is internal, and the path is published',
                 $field->phpType !== 'string' => "is typed {$field->phpType}, and a path is built from strings",
                 ! $field->isRequired() => 'is optional, and a path cannot be built from nothing',
+                /* Every write choosing one would be refused for it. */
+                $field instanceof Select && ($option = $this->unrouted($field)) !== null => "offers \"{$option}\", which is not a path segment",
                 default => null,
             };
 
@@ -164,6 +167,18 @@ class Mainstay
                 throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which {$because}.");
             }
         }
+    }
+
+    /* A select's first option that cannot be a segment of a path. */
+    private function unrouted(Select $field): ?string
+    {
+        foreach ($field->values() as $value) {
+            if (! preg_match('/\A'.Route::SEGMENT.'\z/', $value)) {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     /* The type as JSON Schema, which phase 11 serves from a discovery endpoint

@@ -5,6 +5,7 @@ namespace Mainstay\Tests;
 use Mainstay\Mainstay;
 use Mainstay\MainstayServiceProvider;
 use Orchestra\Testbench\TestCase;
+use RuntimeException;
 
 /*
  | SQLite in memory by default. MAINSTAY_TEST_DB=pgsql or mysql runs the same
@@ -32,6 +33,12 @@ abstract class DatabaseTestCase extends TestCase
     protected function defineEnvironment($app): void
     {
         $driver = env('MAINSTAY_TEST_DB', 'sqlite');
+
+        /* The suite runs migrate:fresh. Left to the driver's default port, it
+           runs it on whatever server answers there. */
+        if ($driver !== 'sqlite' && env('DB_PORT') === null) {
+            throw new RuntimeException("MAINSTAY_TEST_DB={$driver} needs DB_PORT: the suite empties the database it reaches.");
+        }
 
         $app['config']->set('database.default', 'testing');
         $app['config']->set('database.connections.testing', $driver === 'sqlite'

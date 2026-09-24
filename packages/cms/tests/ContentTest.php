@@ -283,6 +283,8 @@ class ContentTest extends DatabaseTestCase
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['status' => ['draft', 'live']]), InvalidArgumentException::class, "write ['in' => [...]]");
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['like' => '%Hel%']]), InvalidArgumentException::class, 'like is not an operator a where takes');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['publishedAt' => ['<' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
+        $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['=' => ['B', 'A']]]), InvalidArgumentException::class, 'compares = with a list');
+        $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['in' => [['B']]]]), InvalidArgumentException::class, 'compares in with a list');
     }
 
     #[Test]

@@ -229,6 +229,13 @@ class DeclarationTest extends TestCase
                     public int $slug;
                 },
             ],
+            'names {kind}, which offers "In review", which is not a path segment' => [
+                new #[Route('/{kind}')] class extends Entry
+                {
+                    #[Select(options: ['draft', 'In review'], required: true)]
+                    public string $kind;
+                },
+            ],
             'names {slug}, which is optional, and a path cannot be built from nothing' => [
                 new #[Route('/blog/{slug}')] class extends Entry
                 {

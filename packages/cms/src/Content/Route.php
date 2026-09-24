@@ -18,5 +18,10 @@ use Attribute;
 #[Attribute(Attribute::TARGET_CLASS)]
 class Route
 {
+    /* One segment of a path: what Str::slug() writes. The pattern's literal
+       segments, a routed field's values and a routed select's options are all
+       held to it. */
+    public const SEGMENT = '[a-z0-9]+(?:-[a-z0-9]+)*';
+
     public function __construct(public readonly string|array $pattern) {}
 }
