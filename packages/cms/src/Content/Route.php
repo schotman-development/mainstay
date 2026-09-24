@@ -23,5 +23,11 @@ class Route
        held to it. */
     public const SEGMENT = '[a-z0-9]+(?:-[a-z0-9]+)*';
 
+    /* A value that is one segment and nothing else. */
+    public const SLUG = '/\A'.self::SEGMENT.'\z/';
+
+    /* A `{field}` in a pattern, capturing the field's name. */
+    public const PLACEHOLDER = '\{(\w+)\}';
+
     public function __construct(public readonly string|array $pattern) {}
 }

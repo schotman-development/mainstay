@@ -294,6 +294,31 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_blank_stamp_is_read_as_nothing(): void
+    {
+        $unstamped = $this->insert();
+        $this->writePost(['slug' => 'stamped']);
+
+        $this->assertSame([$unstamped], $this->ids(Mainstay::find(Post::class, where: ['createdAt' => ''])));
+        $this->assertSame([$unstamped], $this->ids(Mainstay::find(Post::class, where: ['createdAt' => ['in' => ['  ']]])));
+    }
+
+    #[Test]
+    public function a_blank_stamp_column_reads_as_nothing(): void
+    {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Only SQLite stores a blank in a datetime column.');
+        }
+
+        $id = $this->insert(['created_at' => '', 'updated_at' => ' ']);
+
+        $post = Mainstay::findById(Post::class, $id);
+
+        $this->assertNull($post->createdAt);
+        $this->assertNull($post->updatedAt);
+    }
+
+    #[Test]
     public function null_asks_a_field_that_cannot_hold_it_for_what_a_write_of_null_stored(): void
     {
         $unset = $this->writePost()->id;
@@ -311,6 +336,7 @@ class ContentTest extends DatabaseTestCase
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['publishedAt' => ['<' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['featured' => ['>' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['status' => ['<=' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
+        $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['createdAt' => ['>' => '  ']]), InvalidArgumentException::class, 'Only = and != take null.');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['=' => ['B', 'A']]]), InvalidArgumentException::class, 'compares = with a list');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['in' => [['B']]]]), InvalidArgumentException::class, 'compares in with a list');
     }

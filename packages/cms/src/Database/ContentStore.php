@@ -4,10 +4,8 @@ namespace Mainstay\Database;
 
 use Carbon\CarbonImmutable;
 use Closure;
-use DateTimeInterface;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\Access\Gate as AccessGate;
-use Illuminate\Database\Eloquent\Attributes\UsePolicy;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Database\RecordNotFoundException;
@@ -24,6 +22,7 @@ use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
 use Mainstay\Content\Route;
+use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
 use Mainstay\Policies\EntryPolicy;
@@ -54,9 +53,6 @@ class ContentStore
        caller filters and sorts on. */
     private const STAMPS = ['id' => 'id', 'createdAt' => 'created_at', 'updatedAt' => 'updated_at'];
 
-    /* The only thing a routed field holds. */
-    private const SLUG = '/\A'.Route::SEGMENT.'\z/';
-
     /*
      | How often a write runs before a deadlock is the caller's. Two saves
      | inserting the same path on MySQL each lock it for the duplicate check
@@ -70,7 +66,18 @@ class ContentStore
     /** @var array<class-string, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
     private array $reflected = [];
 
-    public function __construct(private Mainstay $mainstay) {}
+    private ?int $site = null;
+
+    /* The stamp columns, written and read as Date(time: true) writes and
+       reads a moment: in UTC. Unbound, which serialize() and cast() only
+       notice for a blank value, and none reaches it: a write hands it now,
+       and a read and value() take a blank as null first. */
+    private Date $moment;
+
+    public function __construct(private Mainstay $mainstay)
+    {
+        $this->moment = new Date(time: true);
+    }
 
     /**
      * @template T of Entry
@@ -320,37 +327,23 @@ class ContentStore
      | a host with members of its own, that would be a site visitor answering
      | Mainstay's policies.
      |
-     | EntryPolicy answers for the type unless the host chose another, the
-     | way Laravel reads a choice: Gate::policy() on the type, #[UsePolicy]
-     | on it, or Gate::policy() on a class or interface it extends. Chosen,
-     | not guessed: Laravel matches App\Policies\PostPolicy to any class called
-     | Post before it looks at what a class extends, and a host's Eloquent
-     | Post and a content type called Post are different things -- the host's
-     | policy, typed for its own users, would refuse every public read.
+     | EntryPolicy answers for the type unless the host chose another. Found
+     | the way Laravel finds a policy -- Gate::policy() on the type,
+     | #[UsePolicy] on it, Gate::policy() on a class or interface it extends
+     | -- with one step taken out: guessing by name, turned off on the copy
+     | forUser() hands back. Laravel would match App\Policies\PostPolicy to any
+     | class called Post, and a host's Eloquent Post and a content type called
+     | Post are different things: the host's policy, typed for its own users,
+     | would refuse every public read.
      |
-     | So the answer is pinned to the exact type, on the copy forUser() hands
-     | back and not on the host's Gate. Resolved on every call, a policy the
-     | host registers later is honoured, and what the host's own Gate says
-     | about the type is left as Laravel would say it.
+     | On the copy, so the host's own Gate is left as Laravel would have it.
+     | Looked up on every call, so a policy the host registers later answers.
      */
     private function gate(string $type): AccessGate
     {
-        $gate = Gate::forUser($this->user());
-        $policies = $gate->policies();
+        $gate = Gate::forUser($this->user())->guessPolicyNamesUsing(fn () => []);
 
-        if (array_key_exists($type, $policies) || (new ReflectionClass($type))->getAttributes(UsePolicy::class) !== []) {
-            return $gate;
-        }
-
-        /* Laravel's own fallback, in its order: the first registered that
-           the type extends or implements. */
-        foreach ($policies as $expected => $policy) {
-            if (is_subclass_of($type, $expected)) {
-                return $gate->policy($type, $policy);
-            }
-        }
-
-        return $gate->policy($type, EntryPolicy::class);
+        return $gate->getPolicyFor($type) === null ? $gate->policy($type, EntryPolicy::class) : $gate;
     }
 
     /*
@@ -460,11 +453,12 @@ class ContentStore
             ->all();
     }
 
-    /* The first site, read on every call rather than kept: this outlives a
-       request under Octane, and phase 12 matches the request's host here. */
+    /* The first site, read once for this store. Mainstay makes a store for
+       every call, so nothing is kept past the call -- under Octane either --
+       and phase 12 matches the request's host here. */
     private function site(): int
     {
-        return (int) (DB::table('sites')->orderBy('id')->value('id')
+        return $this->site ??= (int) (DB::table('sites')->orderBy('id')->value('id')
             ?? throw new RuntimeException('There is no site to hold content. Run php artisan migrate.'));
     }
 
@@ -601,6 +595,8 @@ class ContentStore
             $field !== null => $field->serialize($value),
             $value === null => null,
             $key === 'id' => (int) $value,
+            /* Blank as a field reads blank: nothing, rather than a stamp. */
+            blank($value) => null,
             default => $this->stamp($value),
         };
     }
@@ -616,13 +612,9 @@ class ContentStore
         }
     }
 
-    /* A moment as the stamp columns hold one: UTC, as Date(time: true) writes
-       it and for the same reason. */
     private function stamp(mixed $value): string
     {
-        $moment = $value instanceof DateTimeInterface ? CarbonImmutable::instance($value) : CarbonImmutable::parse($value, 'UTC');
-
-        return $moment->utc()->format('Y-m-d H:i:s');
+        return $this->moment->serialize($value);
     }
 
     /*
@@ -737,7 +729,7 @@ class ContentStore
         }
 
         foreach ($routed as $name) {
-            $rules[$name][] = 'regex:'.self::SLUG;
+            $rules[$name][] = 'regex:'.Route::SLUG;
             $messages["{$name}.regex"] = 'The :attribute field is part of a path: lowercase letters, digits and single hyphens, the way Str::slug() writes one.';
         }
 
@@ -889,7 +881,7 @@ class ContentStore
             }
 
             $uri = preg_replace_callback(
-                '/\{(\w+)\}/',
+                '/'.Route::PLACEHOLDER.'/',
                 fn (array $name) => ($fields[$name[1]]->localized ? $translation : $row)->{Str::snake($name[1])},
                 $patterns[$translation->locale],
             );
@@ -947,7 +939,7 @@ class ContentStore
     /* The fields a path is built from, in any locale's pattern. */
     private function placeholders(string $type): array
     {
-        preg_match_all('/\{(\w+)\}/', implode(' ', $this->patterns($type) ?? []), $names);
+        preg_match_all('/'.Route::PLACEHOLDER.'/', implode(' ', $this->patterns($type) ?? []), $names);
 
         return array_values(array_unique($names[1]));
     }
@@ -983,8 +975,8 @@ class ContentStore
            which spells out the fields it is built from. */
         if ($only === null) {
             $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
-            $entry->createdAt = $row->created_at === null ? null : CarbonImmutable::parse($row->created_at, 'UTC');
-            $entry->updatedAt = $row->updated_at === null ? null : CarbonImmutable::parse($row->updated_at, 'UTC');
+            $entry->createdAt = blank($row->created_at) ? null : $this->moment->cast($row->created_at);
+            $entry->updatedAt = blank($row->updated_at) ? null : $this->moment->cast($row->updated_at);
         }
 
         if ($locale !== null) {

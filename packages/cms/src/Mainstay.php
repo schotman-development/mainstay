@@ -141,7 +141,7 @@ class Mainstay
 
     private function pattern(string $type, mixed $pattern): void
     {
-        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:'.Route::SEGMENT.'|\{\w+\}))+\z#', $pattern))) {
+        if (! is_string($pattern) || ($pattern !== '/' && ! preg_match('#\A(?:/(?:'.Route::SEGMENT.'|'.Route::PLACEHOLDER.'))+\z#', $pattern))) {
             throw new InvalidArgumentException(sprintf(
                 "%s's #[Route] pattern %s is not a path Mainstay can store: it starts with /, has no trailing slash, and each segment is a lowercase slug or one {field}.",
                 $type,
@@ -149,7 +149,7 @@ class Mainstay
             ));
         }
 
-        preg_match_all('/\{(\w+)\}/', $pattern, $names);
+        preg_match_all('/'.Route::PLACEHOLDER.'/', $pattern, $names);
 
         foreach ($names[1] as $name) {
             $field = $this->fields($type)[$name] ?? throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" names {{$name}}, which is not a field of the type.");
@@ -173,7 +173,7 @@ class Mainstay
     private function unrouted(Select $field): ?string
     {
         foreach ($field->values() as $value) {
-            if (! preg_match('/\A'.Route::SEGMENT.'\z/', $value)) {
+            if (! preg_match(Route::SLUG, $value)) {
                 return $value;
             }
         }
