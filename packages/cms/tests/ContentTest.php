@@ -898,6 +898,100 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_translation_another_save_added_first_is_updated_rather_than_refused(): void
+    {
+        $id = $this->writePost()->id;
+
+        /* The other save's Dutch row lands once this one has found none. */
+        $raced = false;
+        DB::listen(function ($query) use ($id, &$raced) {
+            $sql = strtolower($query->sql);
+
+            if (! $raced && str_starts_with($sql, 'select') && str_contains($sql, 'post_locales') && ! str_contains($sql, 'join')) {
+                $raced = true;
+                DB::table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Eerder', 'slug' => 'eerder', 'status' => 'draft']);
+            }
+        });
+
+        $dutch = Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live'], locale: 'nl', overrideAccess: true);
+
+        $this->assertTrue($raced);
+        $this->assertSame(['Hallo', '/nieuws/hallo'], [$dutch->title, $dutch->uri]);
+        $this->assertSame(1, DB::table('post_locales')->where('locale', 'nl')->count());
+    }
+
+    #[Test]
+    public function a_save_inside_a_callers_transaction_builds_paths_from_what_is_stored_now(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
+        }
+
+        config()->set('database.connections.beside', config('database.connections.testing'));
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Page::class, $id, ['slug' => 'a'], locale: 'nl', overrideAccess: true);
+
+        DB::beginTransaction();
+        DB::table('page')->count();
+
+        /* Another request renames the Dutch slug, path and all. */
+        DB::connection('beside')->table('page_locales')->where('parent_id', $id)->where('locale', 'nl')->update(['slug' => 'b']);
+        DB::connection('beside')->table('uris')->where('entry_id', $id)->where('locale', 'nl')->update(['uri' => '/about/b']);
+
+        Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
+        DB::commit();
+
+        $this->assertSame('/work/b', DB::table('uris')->where('locale', 'nl')->value('uri'), 'Built from the slug stored now, not the one in the snapshot.');
+    }
+
+    #[Test]
+    public function a_save_inside_a_callers_transaction_sees_a_path_added_since(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
+        }
+
+        config()->set('database.connections.beside', config('database.connections.testing'));
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+
+        DB::beginTransaction();
+        DB::table('page')->count();
+
+        /* Another request adds the Dutch translation, path and all. */
+        DB::connection('beside')->table('page_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'slug' => 'ploeg', 'tagline' => 'Welkom']);
+        DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/about/ploeg', 'type' => 'page', 'entry_id' => $id]);
+
+        /* A shared field in the pattern moves both paths, the Dutch one only
+           if the save sees the translation and the path it already has. */
+        Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
+        DB::commit();
+
+        $this->assertSame(['/work/team', '/work/ploeg'], DB::table('uris')->orderBy('locale')->pluck('uri')->all());
+    }
+
+    #[Test]
+    public function a_translation_added_beside_a_callers_transaction_is_updated_rather_than_refused(): void
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite in memory is one connection, so nothing can commit beside it.');
+        }
+
+        config()->set('database.connections.beside', config('database.connections.testing'));
+        $id = $this->writePost()->id;
+
+        DB::beginTransaction();
+        DB::table('post')->count();
+
+        DB::connection('beside')->table('post_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Eerder', 'slug' => 'eerder', 'status' => 'draft']);
+
+        $dutch = Mainstay::update(Post::class, $id, ['title' => 'Hallo', 'slug' => 'hallo', 'status' => 'live'], locale: 'nl', overrideAccess: true);
+        DB::commit();
+
+        $this->assertSame('Hallo', $dutch->title);
+        $this->assertSame(1, DB::table('post_locales')->where('locale', 'nl')->count());
+    }
+
+    #[Test]
     public function a_shared_field_in_the_pattern_moves_every_locales_path(): void
     {
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;

@@ -170,15 +170,31 @@ class ContentStore
         $type = $this->entry($type);
         $asked = $locale !== null;
         $locale = $this->locale($locale);
-        [$row, $translations] = $this->load($type, $id, $overrideAccess);
+        /* Twice at most. A translation this save found missing, and another
+           added before this one's insert, is refused by the (parent_id,
+           locale) index; the second run finds it there and updates it, as
+           the save would have had it come a moment later. The second run
+           reads the translations with a lock where the first read may have
+           come from a caller's snapshot, which would miss it again. */
+        for ($attempt = 1; ; $attempt++) {
+            [$row, $translations] = $this->load($type, $id, $overrideAccess, $attempt > 1 && $this->snapshotted(0));
 
-        if (! $asked && ! $translations->has($locale)) {
-            throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
+            if (! $asked && ! $translations->has($locale)) {
+                throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
+            }
+
+            [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+            try {
+                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
+
+                break;
+            } catch (UniqueConstraintViolationException $exception) {
+                if ($translations->has($locale) || $attempt > 1) {
+                    throw $exception;
+                }
+            }
         }
-
-        [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
-
-        $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
     }
@@ -615,7 +631,7 @@ class ContentStore
      |
      | @return array{0: object, 1: Collection<string, object>}
      */
-    private function load(string $type, int $id, bool $overrideAccess): array
+    private function load(string $type, int $id, bool $overrideAccess, bool $lock = false): array
     {
         $handle = $type::handle();
 
@@ -626,7 +642,20 @@ class ContentStore
             ->first()
             ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not there to write.");
 
-        return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->get()->keyBy('locale')];
+        return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->when($lock, fn (Builder $query) => $query->lockForUpdate())->get()->keyBy('locale')];
+    }
+
+    /*
+     | Whether a plain read here answers from a snapshot older than what is
+     | committed: inside a transaction deeper than the `$own` this code opened,
+     | on MySQL or MariaDB, whose REPEATABLE READ keeps one snapshot for the
+     | whole transaction. Postgres and SQL Server read what is committed at
+     | each statement, and a transaction of the layer's own starts its
+     | snapshot at its first plain read, after its writes.
+     */
+    private function snapshotted(int $own): bool
+    {
+        return DB::transactionLevel() > $own && in_array(DB::getDriverName(), ['mysql', 'mariadb'], true);
     }
 
     /*
@@ -767,7 +796,7 @@ class ContentStore
                 DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
             }
 
-            $this->paths($type, (int) $id, $site, $created, $reads);
+            $this->paths($type, (int) $id, $site, $created, $reads, $this->snapshotted(1));
 
             return (int) $id;
         }, self::ATTEMPTS);
@@ -793,12 +822,20 @@ class ContentStore
      | path spells out the fields it is built from, stored ones the call did
      | not give and other locales' among them, which is why a write hands
      | such a caller back no path either.
+     |
+     | Where a plain read answers from a caller's older snapshot -- `$nested`,
+     | see snapshotted() -- what paths are built from is read with a lock, so
+     | a slug another request has changed since does not build the path from
+     | the old one, and a path it added is not missed. Anywhere else the reads
+     | stay plain and take no gap locks to deadlock on.
      */
-    private function paths(string $type, int $id, int $site, bool $created, bool $reads): void
+    private function paths(string $type, int $id, int $site, bool $created, bool $reads, bool $nested): void
     {
         $handle = $type::handle();
-        $wanted = $this->wanted($type, $id, $reads);
-        $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)->get(['id', 'locale', 'uri']);
+        $wanted = $this->wanted($type, $id, $reads, $nested);
+        $rows = $created ? collect() : DB::table('uris')->where('type', $handle)->where('entry_id', $id)
+            ->when($nested, fn (Builder $query) => $query->lockForUpdate())
+            ->get(['id', 'locale', 'uri']);
         $held = $rows->keyBy('locale')->only(array_keys($wanted));
 
         /* The row of a locale whose path went: one the config dropped, or a
@@ -835,18 +872,18 @@ class ContentStore
      |
      | @return array<string, string>
      */
-    private function wanted(string $type, int $id, bool $reads): array
+    private function wanted(string $type, int $id, bool $reads, bool $nested): array
     {
         if (($patterns = $this->patterns($type)) === null) {
             return [];
         }
 
         $handle = $type::handle();
-        $row = DB::table($handle)->where('id', $id)->first();
+        $row = DB::table($handle)->where('id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->first();
         $fields = $this->mainstay->fields($type);
         $wanted = [];
 
-        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->get() as $translation) {
+        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
             if (! isset($patterns[$translation->locale])) {
                 continue;
             }
