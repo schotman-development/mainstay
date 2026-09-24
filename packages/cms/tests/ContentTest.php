@@ -17,6 +17,7 @@ use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
+use Mainstay\Tests\Fixtures\Notebook;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
@@ -48,7 +49,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Notebook::class, SiteSettings::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -960,6 +961,17 @@ class ContentTest extends DatabaseTestCase
             InvalidArgumentException::class,
             '#[Route] has patterns for en, nl, and mainstay.locales holds en, nl, de.',
         );
+    }
+
+    #[Test]
+    public function a_type_with_a_field_kept_in_json_is_refused_by_name(): void
+    {
+        foreach ([
+            fn () => Mainstay::find(Notebook::class),
+            fn () => Mainstay::create(Notebook::class, ['title' => 'Ideas'], locale: 'en', overrideAccess: true),
+        ] as $call) {
+            $this->assertThrows($call, InvalidArgumentException::class, 'Notebook::$jottings is kept in the type\'s JSON column, which the query layer does not read or write yet.');
+        }
     }
 
     #[Test]

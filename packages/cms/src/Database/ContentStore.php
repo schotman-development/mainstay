@@ -250,6 +250,16 @@ class ContentStore
             throw new InvalidArgumentException("{$registered} is not an entry. The query layer reads and writes entries only; globals and taxonomies are not reachable through it yet.");
         }
 
+        /* A field kept in the type's JSON column has no column of its own,
+           and sync makes none, so reading or writing it by name would be SQL
+           against a column that is not there. Refused, by name, until blocks
+           bring the JSON column. */
+        foreach ($this->mainstay->fields($registered) as $name => $field) {
+            if ($field->column() === null) {
+                throw new InvalidArgumentException("{$registered}::\${$name} is kept in the type's JSON column, which the query layer does not read or write yet.");
+            }
+        }
+
         return $registered;
     }
 
