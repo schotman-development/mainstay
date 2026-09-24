@@ -428,6 +428,62 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_caller_that_may_not_read_is_not_handed_the_path_its_update_did_not_write(): void
+    {
+        $id = $this->writePost()->id;
+        Gate::policy(Post::class, FormPolicy::class);
+
+        $post = Mainstay::update(Post::class, $id, ['title' => 'Changed'], locale: 'en');
+
+        $this->assertSame('Changed', $post->title);
+
+        /* The path spells out the slug, which this call did not write. */
+        foreach (['slug', 'uri'] as $unwritten) {
+            $this->assertFalse((new ReflectionProperty($post, $unwritten))->isInitialized($post), "{$unwritten} was not written by this call.");
+        }
+    }
+
+    #[Test]
+    public function a_field_left_off_is_refused_by_its_rules_unless_the_writer_cannot_see_it(): void
+    {
+        /* Visible to the form, so its own rule answers, not access. */
+        $this->assertSame(['name'], array_keys($this->refusal(fn () => Mainstay::create(Submission::class, [], locale: 'en'))));
+
+        /* Hidden from nobody here, so the same. */
+        $this->assertSame(['state'], array_keys($this->refusal(fn () => Mainstay::create(Ticket::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true))));
+    }
+
+    #[Test]
+    public function a_translations_first_row_takes_the_declared_defaults(): void
+    {
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Page::class, $id, ['tagline' => 'Meet us'], locale: 'en', overrideAccess: true);
+
+        $dutch = Mainstay::update(Page::class, $id, ['slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
+
+        $this->assertSame('Welcome', $dutch->tagline);
+        $this->assertSame('Meet us', Mainstay::findById(Page::class, $id, locale: 'en', overrideAccess: true)->tagline, 'The translation that was there keeps its own.');
+    }
+
+    #[Test]
+    public function gate_is_shown_an_unreadable_stored_value_as_absent_and_a_read_still_fails_on_it(): void
+    {
+        $id = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en')->id;
+        DB::table('submission')->update(['state' => '']);
+
+        $shown = null;
+        Gate::before(function (?object $user, string $ability, array $arguments) use (&$shown) {
+            $shown = $ability === 'update' ? $arguments[0] : $shown;
+        });
+
+        Mainstay::update(Submission::class, $id, ['message' => 'Hello'], locale: 'en');
+
+        $this->assertInstanceOf(Submission::class, $shown);
+        $this->assertFalse((new ReflectionProperty($shown, 'state'))->isInitialized($shown), 'Not the declared default in place of what is stored.');
+        $this->assertThrows(fn () => Mainstay::find(Submission::class, overrideAccess: true), InvalidArgumentException::class, 'state is empty');
+    }
+
+    #[Test]
     public function a_declared_default_fills_a_field_left_off_whoever_writes(): void
     {
         $this->assertSame('new', Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true)->state);
