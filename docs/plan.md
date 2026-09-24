@@ -116,11 +116,12 @@ arguments, so adding them breaks no caller.
 Writes belong to the layer rather than to the admin, for the same reason reads do. A save validates
 the entry as it will be stored from the declared rules, writes the row and its `_locales` sibling in
 one transaction, and rebuilds every locale's URI lookup from the type's `#[Route]`: one pattern, or
-one per locale where a segment is translated. An update in a locale with no row yet adds that
-translation. A slug colliding with a URI another entry holds is a validation error on the field, not
-a silent suffix, and the lookup's unique index decides it. A routed field holds what `Str::slug`
-writes, since that index folds case on MySQL and SQL Server and not on the others; deriving it from
-the title is a convenience for someone typing, and waits for the admin. Delete sets `deleted_at` and
+one per locale where a segment is translated. An update naming a locale the entry has no row in adds
+that translation; one taking the request's locale finds the entry absent there, as a read would. A
+slug colliding with a URI another entry holds is a validation error on the field, not a silent
+suffix, and the lookup's unique index decides it. A routed field holds what `Str::slug` writes,
+since that index folds case on MySQL and SQL Server and not on the others; deriving it from the
+title is a convenience for someone typing, and waits for the admin. Delete sets `deleted_at` and
 really deletes the lookup rows, so the path stops resolving in the same request. The admin's form
 and any write over HTTP are transports over this, and cannot validate differently from a seeder.
 

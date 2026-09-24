@@ -468,6 +468,30 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function only_a_locale_written_out_adds_a_translation(): void
+    {
+        $post = $this->writePost();
+        $memo = Mainstay::create(Memo::class, ['note' => 'Call back', 'title' => 'Printer'], locale: 'en', overrideAccess: true);
+
+        /* A Dutch visitor's request, and an edit that names no locale. */
+        App::setLocale('nl');
+
+        $this->assertThrows(
+            fn () => Mainstay::update(Post::class, $post->id, ['featured' => true], overrideAccess: true),
+            RecordNotFoundException::class,
+            "has no nl translation to update. Pass locale: 'nl' to add one.",
+        );
+        $this->assertThrows(fn () => Mainstay::update(Memo::class, $memo->id, ['title' => 'Plotter'], overrideAccess: true), RecordNotFoundException::class);
+        $this->assertSame(0, DB::table('memo_locales')->where('locale', 'nl')->count());
+        $this->assertFalse((bool) DB::table('post')->value('featured'));
+
+        $this->assertSame('Plotter', Mainstay::update(Memo::class, $memo->id, ['title' => 'Plotter'], locale: 'nl', overrideAccess: true)->title);
+
+        App::setLocale('en');
+        $this->assertTrue(Mainstay::update(Post::class, $post->id, ['featured' => true], overrideAccess: true)->featured);
+    }
+
+    #[Test]
     public function an_update_changes_what_it_is_given_and_keeps_every_locales_path(): void
     {
         $id = $this->writePost()->id;

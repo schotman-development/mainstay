@@ -148,10 +148,14 @@ class ContentStore
     }
 
     /**
-     * Only the keys given change; the rest keep what is stored. In a locale
-     * the entry has no row in yet, this writes that row: an update is how a
-     * translation is added. Its required localized fields are then required
-     * of the call, since there is nothing stored for them.
+     * Only the keys given change; the rest keep what is stored.
+     *
+     * Without a locale, this updates the entry as the request's locale reads
+     * it, and an entry with no row there is not found -- what find() would
+     * say. The request's language never creates content. With a locale
+     * written out that the entry has no row in yet, this adds that
+     * translation, and its required localized fields are then required of
+     * the call, since there is nothing stored for them.
      *
      * @template T of Entry
      *
@@ -161,8 +165,13 @@ class ContentStore
     public function update(string $type, int $id, array $data, ?string $locale = null, bool $overrideAccess = false): Entry
     {
         $type = $this->entry($type);
+        $asked = $locale !== null;
         $locale = $this->locale($locale);
         [$row, $translations] = $this->load($type, $id);
+
+        if (! $asked && ! $translations->has($locale)) {
+            throw new RecordNotFoundException("{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
+        }
 
         if (! $overrideAccess) {
             $this->gate($type)->authorize('update', $this->hydrate($type, $row, null, true));
