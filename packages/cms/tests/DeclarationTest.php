@@ -115,6 +115,19 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function the_schema_leaves_out_internal_fields_unless_asked_for_them(): void
+    {
+        $public = $this->mainstay->schema(Fixtures\Post::class);
+        $internal = $this->mainstay->schema(Fixtures\Post::class, internal: true);
+
+        $this->assertArrayNotHasKey('editorNote', $public['properties']);
+        $this->assertNotContains('editorNote', $public['required']);
+        $this->assertArrayHasKey('editorNote', $internal['properties']);
+        $this->assertContains('editorNote', $internal['required']);
+        $this->assertSame(array_keys($public['properties']), $public['required']);
+    }
+
+    #[Test]
     public function a_nullable_select_admits_null_in_its_enum_as_well_as_its_type(): void
     {
         $this->assertSame(

@@ -181,11 +181,20 @@ class Mainstay
         return null;
     }
 
-    /* The type as JSON Schema, which phase 11 serves from a discovery endpoint
-       and writes out as a `.d.ts` -- from here rather than derived twice. */
-    public function schema(string $type): array
+    /*
+     | The type as JSON Schema, which phase 11 serves from a discovery endpoint
+     | and writes out as a `.d.ts` -- from here rather than derived twice.
+     |
+     | It describes what a reader is handed, so an internal field is in it
+     | only for a reader who may see those, `$internal`. For any other it is
+     | neither required nor named: a payload the query layer hands such a
+     | reader never holds it, and would fail a schema that required it beside
+     | `additionalProperties: false`, and the schema would tell every consumer
+     | the field is there.
+     */
+    public function schema(string $type, bool $internal = false): array
     {
-        $fields = $this->fields($type);
+        $fields = array_filter($this->fields($type), fn (Field $field) => $internal || ! $field->internal);
 
         return [
             'type' => 'object',
