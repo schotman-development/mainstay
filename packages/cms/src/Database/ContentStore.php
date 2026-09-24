@@ -458,9 +458,17 @@ class ContentStore
             }
 
             if ($operator === 'in' || $operator === 'not_in') {
-                $query->whereIn($column, array_map(fn (mixed $one) => $this->value($field, $key, $this->single($key, $operator, $one)), (array) $value), not: $operator === 'not_in');
+                $this->within($query, $column, array_map(fn (mixed $one) => $this->value($field, $key, $this->single($key, $operator, $one)), (array) $value), $operator === 'not_in');
 
                 continue;
+            }
+
+            /* Refused as the caller wrote it, before the value becomes what
+               its column holds: a field that cannot hold null would turn it
+               into its empty value, and `featured < null` would quietly
+               compare with false. */
+            if ($value === null && $operator !== '=' && $operator !== '!=') {
+                throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null.");
             }
 
             $value = $this->value($field, $key, $this->single($key, $operator, $value));
@@ -474,6 +482,24 @@ class ContentStore
                 default => throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null."),
             };
         }
+    }
+
+    /* in and not_in, with a null among the values meaning what = and !=
+       mean by it. Left to SQL, `in (null)` matches nothing and
+       `not in (..., null)` is never true, so a list stops working the moment
+       it holds one. */
+    private function within(Builder $query, string $column, array $values, bool $not): void
+    {
+        $null = in_array(null, $values, true);
+        $values = array_values(array_filter($values, fn (mixed $one) => $one !== null));
+
+        if ($not) {
+            $query->whereNotIn($column, $values)->when($null, fn (Builder $query) => $query->whereNotNull($column));
+
+            return;
+        }
+
+        $query->where(fn (Builder $any) => $any->whereIn($column, $values)->when($null, fn (Builder $any) => $any->orWhereNull($column)));
     }
 
     /* One value, not a list. Laravel compares with a list's first element
@@ -531,17 +557,37 @@ class ContentStore
         return [($field->localized ? "{$handle}_locales" : $handle).'.'.Str::snake($key), $field];
     }
 
-    /* The value as the column holds it, so the database compares like with
-       like: a date in another zone becomes the UTC string stored, rather than
-       being formatted in its own zone and compared off by the offset. */
+    /*
+     | The value as the column holds it, so the database compares like with
+     | like: a date in another zone becomes the UTC string stored, rather than
+     | being formatted in its own zone and compared off by the offset.
+     |
+     | Null too. A field that cannot hold null stores its empty value when
+     | written one, so asking for null asks for that -- `featured => null`
+     | finds what a write left unset, false, rather than rows no write makes.
+     | A field with no empty value, a required select or date, is left null:
+     | its column is NOT NULL, and matching nothing is the right answer.
+     */
     private function value(?Field $field, string $key, mixed $value): mixed
     {
         return match (true) {
-            $value === null => null,
+            $field !== null && $value === null => $this->unset($field),
             $field !== null => $field->serialize($value),
+            $value === null => null,
             $key === 'id' => (int) $value,
             default => $this->stamp($value),
         };
+    }
+
+    /* What a field stores when it is written null, or null for one with no
+       empty value to store. */
+    private function unset(Field $field): mixed
+    {
+        try {
+            return $field->serialize(null);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
     }
 
     /* A moment as the stamp columns hold one: UTC, as Date(time: true) writes

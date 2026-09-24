@@ -281,11 +281,35 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function null_in_a_list_means_what_it_means_to_equals(): void
+    {
+        $undated = $this->insert([], ['en' => ['slug' => 'undated', 'status' => 'draft']]);
+        $dated = $this->insert(['published_at' => '2026-09-10 06:30:00'], ['en' => ['slug' => 'dated']]);
+
+        $this->assertSame([$undated], $this->ids(Mainstay::find(Post::class, where: ['publishedAt' => ['in' => [null]]])));
+        $this->assertSame([$dated], $this->ids(Mainstay::find(Post::class, where: ['publishedAt' => ['not_in' => [null]]])));
+        $this->assertSame([$dated], $this->ids(Mainstay::find(Post::class, where: ['status' => ['not_in' => ['draft', null]]])));
+        $this->assertSame([$undated, $dated], $this->ids(Mainstay::find(Post::class, where: ['publishedAt' => ['in' => ['2026-09-10 06:30:00', null]]])));
+    }
+
+    #[Test]
+    public function null_asks_a_field_that_cannot_hold_it_for_what_a_write_of_null_stored(): void
+    {
+        $unset = $this->writePost()->id;
+        $this->writePost(['slug' => 'featured', 'featured' => true]);
+
+        $this->assertSame([$unset], $this->ids(Mainstay::find(Post::class, where: ['featured' => null])));
+        $this->assertSame([$unset], $this->ids(Mainstay::find(Post::class, where: ['featured' => ['in' => [null]]])));
+    }
+
+    #[Test]
     public function where_refuses_a_bare_list_and_an_operator_it_does_not_take(): void
     {
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['status' => ['draft', 'live']]), InvalidArgumentException::class, "write ['in' => [...]]");
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['like' => '%Hel%']]), InvalidArgumentException::class, 'like is not an operator a where takes');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['publishedAt' => ['<' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
+        $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['featured' => ['>' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
+        $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['status' => ['<=' => null]]), InvalidArgumentException::class, 'Only = and != take null.');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['=' => ['B', 'A']]]), InvalidArgumentException::class, 'compares = with a list');
         $this->assertThrows(fn () => Mainstay::find(Post::class, where: ['title' => ['in' => [['B']]]]), InvalidArgumentException::class, 'compares in with a list');
     }
