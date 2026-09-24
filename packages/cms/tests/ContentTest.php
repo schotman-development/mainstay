@@ -4,6 +4,7 @@ namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Auth\Access\Response;
 use Illuminate\Auth\GenericUser;
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -23,6 +24,7 @@ use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
 use Mainstay\Tests\Fixtures\Policies\FormPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
+use Mainstay\Tests\Fixtures\Policies\OwnerPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use Mainstay\Tests\Fixtures\Submission;
@@ -557,6 +559,38 @@ class ContentTest extends DatabaseTestCase
         /* A caller that may read is told, since it could find() the same. */
         App::setLocale('en');
         $this->assertThrows(fn () => Mainstay::update(Post::class, 999, ['title' => 'x'], locale: 'en'), RecordNotFoundException::class);
+    }
+
+    #[Test]
+    public function a_caller_with_no_rights_gets_one_refusal_whatever_the_policy_says(): void
+    {
+        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Gate::policy(Page::class, OwnerPolicy::class);
+
+        $answer = function (callable $write): array {
+            try {
+                $write();
+            } catch (AuthorizationException $exception) {
+                return [$exception->getMessage(), $exception->status()];
+            }
+
+            $this->fail('The write was not refused.');
+        };
+
+        foreach ([null, Response::denyAsNotFound()] as $default) {
+            if ($default !== null) {
+                Gate::defaultDenialResponse($default);
+            }
+
+            $this->assertSame($answer(fn () => Mainstay::update(Page::class, 999, ['slug' => 'x'], locale: 'en')), $answer(fn () => Mainstay::update(Page::class, $id, ['slug' => 'x'], locale: 'en')));
+            $this->assertSame($answer(fn () => Mainstay::delete(Page::class, 999)), $answer(fn () => Mainstay::delete(Page::class, $id)));
+        }
+
+        $this->assertSame(404, $answer(fn () => Mainstay::delete(Page::class, $id))[1], "The host's default, not the policy's own.");
+
+        /* A create involves no entry that could be there or not, so the
+           policy's own words stand. */
+        $this->assertSame('New pages are closed until Monday.', $answer(fn () => Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'new'], locale: 'en'))[0]);
     }
 
     #[Test]

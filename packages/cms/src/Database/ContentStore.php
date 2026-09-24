@@ -216,9 +216,7 @@ class ContentStore
         $type = $this->entry($type);
         [$row] = $this->load($type, $id, $overrideAccess);
 
-        if (! $overrideAccess) {
-            $this->gate($type)->authorize('delete', $this->hydrate($type, $row, null, true));
-        }
+        $this->writes($type, 'delete', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
         DB::transaction(function () use ($type, $id) {
             $now = $this->stamp(CarbonImmutable::now());
@@ -361,9 +359,18 @@ class ContentStore
         }
 
         $gate = $this->gate($type);
-        $gate->authorize($ability, $subject instanceof Closure ? $subject() : $subject);
+        $reads = $gate->allows('viewAny', $type);
+        $response = $gate->inspect($ability, $subject instanceof Closure ? $subject() : $subject);
 
-        return [$gate->allows('viewInternal', $type), $gate->allows('viewAny', $type)];
+        /* Only where an entry is involved: a refused create has no entry
+           whose being there could leak, and keeps the policy's own words. */
+        if ($response->denied() && ! $reads && $ability !== 'create') {
+            throw $this->refused($type);
+        }
+
+        $response->authorize();
+
+        return [$gate->allows('viewInternal', $type), $reads];
     }
 
     /* Nobody until phase 9, which hands over the guard's user here and
@@ -661,7 +668,27 @@ class ContentStore
     {
         return $overrideAccess || $this->gate($type)->allows('viewAny', $type)
             ? new RecordNotFoundException($message)
-            : new AuthorizationException;
+            : $this->refused($type);
+    }
+
+    /*
+     | The refusal a caller that may not read the type is given for a write to
+     | an entry it may not make, the entry there or not: Gate's default denial,
+     | whatever the policy said. A policy's own message or status for a
+     | present entry, beside a default for a missing one, would tell the two
+     | apart the way a 404 beside a 403 did. Asked for an ability nobody
+     | defines, which is how Gate hands out its default, the host's own
+     | defaultDenialResponse() included.
+     */
+    private function refused(string $type): AuthorizationException
+    {
+        try {
+            $this->gate($type)->inspect('mainstay.refused')->authorize();
+        } catch (AuthorizationException $exception) {
+            return $exception;
+        }
+
+        return new AuthorizationException;
     }
 
     /*
