@@ -2,6 +2,7 @@
 
 namespace Mainstay;
 
+use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
@@ -371,19 +372,28 @@ class Mainstay
 
     /*
      | What a request for a locale's path reaches instead of the entry that
-     | holds it, or null when nothing does: another locale whose prefix the
-     | path runs into -- `/nl` in an unprefixed English beside a Dutch at
-     | `/nl` -- or the admin, where it is served on the locale's host.
+     | holds it, or null when nothing does: a route of Mainstay's own, or
+     | another locale whose prefix the path runs into -- `/nl` in an
+     | unprefixed English beside a Dutch at `/nl`.
+     |
+     | The routes are asked of the router, which is what answers the request:
+     | every one named `mainstay.*` but the catch-all, so the admin at any
+     | path, the API, and whatever the package adds are one check. Not the
+     | host's own, which may be reading the same entry on purpose. A locale
+     | with no host is served on every host, and a route kept to a domain
+     | takes only one of them, so for such a locale it is left out.
      */
     public function shadow(string $locale, string $uri): ?string
     {
         $base = $this->locales()[$locale];
         $path = $this->path($base['prefix'], $uri);
-        $admin = '/'.trim(config('mainstay.path'), '/');
-        $domain = config('mainstay.domain');
+        $request = Request::create(($base['host'] === null ? '' : "http://{$base['host']}").$path);
 
-        if (($domain === null || strtolower($domain) === $base['host']) && $this->under($path, $admin)) {
-            return "the admin at {$admin}";
+        foreach (app('router')->getRoutes()->get('GET') as $route) {
+            if (str_starts_with((string) $route->getName(), 'mainstay.') && ! $route->isFallback
+                && ($base['host'] !== null || $route->getDomain() === null) && $route->matches($request)) {
+                return "the route {$route->getName()}";
+            }
         }
 
         $reached = $this->resolve($base['host'] ?? '', $path)[0];

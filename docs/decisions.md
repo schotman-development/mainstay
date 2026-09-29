@@ -857,9 +857,11 @@ prefix that is not lowercase segments, or some locales with a host and some with
 a host answers on every host, so a relative link to it lands on whichever host the page is on.
 Hosts are compared without scheme or port, which a proxy in front of the application may change.
 
-A path that another locale's prefix, or the admin, would answer instead is refused when it is
-written, on the fields that build it, the way a taken path is: an English page at `/nl` beside a
-Dutch at `/nl` is a page nobody can reach, and an editor told so can pick another slug.
+A path that another locale's prefix, or a route of Mainstay's own, would answer instead is refused
+when it is written, on the fields that build it, the way a taken path is: an English page at `/nl`
+beside a Dutch at `/nl` is a page nobody can reach, and an editor told so can pick another slug.
+The routes are asked of the router, every one named `mainstay.*` but the catch-all, so the admin at
+any path and every API route are covered by one check.
 
 The view is the entry's own, the type's `#[Template]`, or the type's handle, and the first one given
 wins. A view named and missing is an error rather than a step down, since the step down renders a

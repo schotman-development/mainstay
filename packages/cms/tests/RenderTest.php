@@ -13,6 +13,7 @@ use Mainstay\Tests\Fixtures\Lost;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\Shadowed;
+use Orchestra\Testbench\Attributes\DefineEnvironment;
 use Orchestra\Testbench\Attributes\DefineRoute;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -55,6 +56,25 @@ class RenderTest extends DatabaseTestCase
     {
         $router->get('blog/hello', fn () => 'hand-written');
         $router->fallback(fn () => 'host fallback');
+    }
+
+    /* Set before the routes are registered, which read them once. */
+    protected function adminAtRoot($app): void
+    {
+        $app['config']->set('mainstay.path', '');
+    }
+
+    /* The host a path is probed on where the locale names none, so the
+       admin is left out because it is kept to a domain, and not because it
+       is another one. */
+    protected function adminOnItsOwnHost($app): void
+    {
+        $app['config']->set('mainstay.domain', 'localhost');
+    }
+
+    protected function apiAtOneSegment($app): void
+    {
+        $app['config']->set('mainstay.api.prefix', 'content');
     }
 
     #[Test]
@@ -251,24 +271,57 @@ class RenderTest extends DatabaseTestCase
     {
         foreach ([
             'nl' => "The path /nl is answered by nl's prefix /nl in en.",
-            'admin' => 'The path /admin is answered by the admin at /admin in en.',
+            'admin' => 'The path /admin is answered by the route mainstay.admin in en.',
         ] as $slug => $message) {
             $this->assertThrows(fn () => Mainstay::create(Leaf::class, ['title' => 'X', 'slug' => $slug], locale: 'en', overrideAccess: true), ValidationException::class, $message);
         }
 
         $this->assertSame(0, DB::table('leaf')->count());
 
-        /* Inside its own prefix nothing else answers, and the admin on a host
-           of its own leaves the path free. */
+        /* Inside its own prefix nothing else answers. */
         Mainstay::create(Leaf::class, ['title' => 'X', 'slug' => 'nl'], locale: 'nl', overrideAccess: true);
-        config()->set('mainstay.domain', 'admin.test');
-        Mainstay::create(Leaf::class, ['title' => 'Y', 'slug' => 'admin'], locale: 'en', overrideAccess: true);
 
         $this->assertThrows(
             fn () => Mainstay::create(Shadowed::class, ['slug' => 'x'], locale: 'en', overrideAccess: true),
             InvalidArgumentException::class,
             '#[Route] pattern "/nl/{slug}" puts every en path under nl\'s prefix /nl, which answers it instead.',
         );
+    }
+
+    #[Test]
+    #[DefineEnvironment('apiAtOneSegment')]
+    public function a_path_the_api_answers_is_refused(): void
+    {
+        $this->assertThrows(
+            fn () => Mainstay::create(Leaf::class, ['title' => 'X', 'slug' => 'content'], locale: 'en', overrideAccess: true),
+            ValidationException::class,
+            'The path /content is answered by the route mainstay.api.index in en.',
+        );
+    }
+
+    #[Test]
+    #[DefineEnvironment('adminAtRoot')]
+    public function with_the_admin_at_the_root_every_path_is_the_admins(): void
+    {
+        foreach ([
+            [Leaf::class, '/{slug}', ['title' => 'X', 'slug' => 'x']],
+            [Home::class, '/', ['title' => 'X']],
+        ] as [$type, $pattern, $data]) {
+            $this->assertThrows(
+                fn () => Mainstay::create($type, $data, locale: 'en', overrideAccess: true),
+                InvalidArgumentException::class,
+                "#[Route] pattern \"{$pattern}\" puts every en path under the route mainstay.admin, which answers it instead.",
+            );
+        }
+    }
+
+    #[Test]
+    #[DefineEnvironment('adminOnItsOwnHost')]
+    public function the_admin_on_a_host_of_its_own_leaves_the_path_free(): void
+    {
+        Mainstay::create(Leaf::class, ['title' => 'Y', 'slug' => 'admin'], locale: 'en', overrideAccess: true);
+
+        $this->get('http://example.test/admin')->assertOk()->assertSee('leaf: Y');
     }
 
     #[Test]

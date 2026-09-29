@@ -183,9 +183,9 @@ either every locale names a host or none does. The catch-all takes the most spec
 prefix matching whole segments, strips it, looks up `(site, locale, uri)`, and sets the locale as
 the application's, so every read the template makes is in it. Phase 3 stored the path without a
 base, so choosing between prefix and host rewrites no rows. A link is the locale's base and the
-entry's `uri`: `$entry->url()`. A path that another locale's prefix or the admin would answer
-instead is refused when it is written, and a `#[Route]` whose own segments lead there is refused
-for every entry.
+entry's `uri`: `$entry->url()`. A path that another locale's prefix or a route of Mainstay's own
+would answer instead is refused when it is written, and a `#[Route]` whose every path leads there is
+refused for every entry.
 
 Host templates call the query layer directly. They do not touch Eloquent and they do not make HTTP
 requests to their own server.

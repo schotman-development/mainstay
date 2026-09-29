@@ -1011,14 +1011,13 @@ class ContentStore
             ));
         }
 
-        /* A pattern whose own segments lead where the locale's paths are not
-           served, which every entry would be refused for: named here, once,
+        /* A pattern every entry would be refused for, named here, once,
            rather than as a slug that cannot be changed to anything that
-           works. */
+           works. Asked with the pattern as written: a `{slug}` is no locale's
+           prefix and no route's literal segment, so only what answers any
+           value there answers it. */
         foreach ($patterns as $locale => $pattern) {
-            preg_match('#\A(?:/'.Route::SEGMENT.')*#', $pattern, $lead);
-
-            if ($lead[0] !== '' && ($shadow = $this->mainstay->shadow($locale, $lead[0])) !== null) {
+            if (($shadow = $this->mainstay->shadow($locale, $pattern)) !== null) {
                 throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" puts every {$locale} path under {$shadow}, which answers it instead.");
             }
         }
