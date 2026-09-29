@@ -2,9 +2,12 @@
 
 namespace Mainstay\Tests;
 
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Testing\TestResponse;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
@@ -151,12 +154,26 @@ class RenderTest extends DatabaseTestCase
 
         $this->get('/nl/nieuws/hallo')->assertOk()->assertSee('<h1>Hallo</h1>', escape: false)->assertSee('locale nl');
         $this->get('/nl')->assertOk()->assertSee('home: Welkom');
-        $this->get('/nl/')->assertOk()->assertSee('home: Welkom');
         $this->get('/blog/hello')->assertOk()->assertSee('locale en');
 
         $this->get('/nieuws/hallo')->assertNotFound();
         $this->get('/nl/blog/hello')->assertNotFound();
         $this->get('/')->assertNotFound();
+    }
+
+    #[Test]
+    public function a_trailing_slash_is_sent_to_the_path_without_one(): void
+    {
+        $this->writePost();
+
+        /* By hand, since the test client trims the slash off first. */
+        $get = fn (string $uri) => TestResponse::fromBaseResponse($this->app->make(Kernel::class)->handle(Request::create("http://localhost{$uri}")));
+
+        $get('/blog/hello/')->assertStatus(301)->assertRedirect('/blog/hello');
+        $get('/nl/?a=1&b=2')->assertStatus(301)->assertRedirect('/nl?a=1&b=2');
+        $get('/nowhere/')->assertStatus(301)->assertRedirect('/nowhere');
+        $get('//evil.example/')->assertStatus(301)->assertRedirect('/evil.example');
+        $get('/blog/hello')->assertOk();
     }
 
     #[Test]

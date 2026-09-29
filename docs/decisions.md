@@ -848,7 +848,8 @@ requirement the routing entry expected. It is not `Route::fallback()` itself: La
 by domain and path, every `Route::fallback()` has the same path, and a host's, registered after the
 package's, would silently replace it. Under a parameter of its own the package's is registered
 first, and it is the host's fallback that never runs. A custom 404 is `errors/404.blade.php`, as in
-any Laravel app.
+any Laravel app. A trailing slash is redirected to the path without one, as Laravel's `.htaccess`
+does, since the router ignores it and a page would otherwise have two addresses.
 
 `mainstay.locales` maps each locale to a base, `['en' => '/', 'nl' => '/nl']` or a URL per locale,
 rather than listing codes beside a separate prefix setting. A locale and where it is served are one
