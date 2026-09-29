@@ -396,6 +396,16 @@ class RenderTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function the_locale_map_is_read_again_when_the_config_changes(): void
+    {
+        $this->assertSame('/nl', Mainstay::locales()['nl']['prefix']);
+
+        config()->set('mainstay.locales', ['en' => '/', 'nl' => '/nederlands']);
+
+        $this->assertSame('/nederlands', Mainstay::locales()['nl']['prefix']);
+    }
+
+    #[Test]
     public function the_locale_map_is_refused_where_a_request_could_not_be_told_apart(): void
     {
         foreach ([

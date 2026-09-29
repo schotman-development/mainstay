@@ -33,6 +33,9 @@ class Mainstay
     /** @var array<class-string, string|array<string, string>|null> */
     private array $routes = [];
 
+    /** @var array{0: mixed, 1: array<string, array{origin: string, host: ?string, prefix: string}>}|null */
+    private ?array $locales = null;
+
     public function version(): string
     {
         return static::VERSION;
@@ -303,6 +306,12 @@ class Mainstay
     {
         $config = config('mainstay.locales');
 
+        /* Parsed once for the config it was parsed from: nearly every read,
+           write and link asks. */
+        if ($this->locales !== null && $this->locales[0] === $config) {
+            return $this->locales[1];
+        }
+
         /* A list reads as locales called 0 and 1, served at `en` and `nl`. */
         if (! is_array($config) || $config === [] || array_is_list($config)) {
             throw new InvalidArgumentException("mainstay.locales maps each content locale to where it is served, the default first: ['en' => '/', 'nl' => '/nl'], or ['en' => 'https://example.com', 'nl' => 'https://example.nl'].");
@@ -336,7 +345,7 @@ class Mainstay
             throw new InvalidArgumentException('mainstay.locales gives some locales a host and not others. One without a host answers on every host, so give each locale a host or none of them.');
         }
 
-        return $locales;
+        return ($this->locales = [$config, $locales])[1];
     }
 
     /*
