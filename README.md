@@ -35,8 +35,8 @@ php artisan vendor:publish --tag=mainstay-assets
 
 The admin is then at `/admin` and the content API at `/api/mainstay`, and every other path an
 entry holds is answered by Mainstay's catch-all, after any route the app declares itself. The two
-paths, their middleware, an optional dedicated domain, and where each content language is served
-are configurable:
+paths, their middleware, an optional dedicated domain, where each content language is served, and
+the catch-all's middleware, or whether it runs at all, are configurable:
 
 ```bash
 php artisan vendor:publish --tag=mainstay-config

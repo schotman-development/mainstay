@@ -36,6 +36,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Public pages
+    |--------------------------------------------------------------------------
+    |
+    | Every GET no route of the application answers is looked up as an entry's
+    | path and rendered in the entry's view. Turn it off where the front end
+    | is built elsewhere, and the application's own fallback route runs again.
+    |
+    */
+
+    'site' => [
+        'enabled' => true,
+
+        'middleware' => ['web'],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Content locales
     |--------------------------------------------------------------------------
     |

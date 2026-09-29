@@ -847,9 +847,10 @@ they were registered in, cached routes included, so the host's own routes win wi
 requirement the routing entry expected. It is not `Route::fallback()` itself: Laravel files routes
 by domain and path, every `Route::fallback()` has the same path, and a host's, registered after the
 package's, would silently replace it. Under a parameter of its own the package's is registered
-first, and it is the host's fallback that never runs. A custom 404 is `errors/404.blade.php`, as in
-any Laravel app. A trailing slash is redirected to the path without one, as Laravel's `.htaccess`
-does, since the router ignores it and a page would otherwise have two addresses.
+first, and it is the host's fallback that never runs, unless `mainstay.site.enabled` turns public
+pages off. A custom 404 is `errors/404.blade.php`, as in any Laravel app. A trailing slash is
+redirected to the path without one, as Laravel's `.htaccess` does, since the router ignores it and a
+page would otherwise have two addresses.
 
 `mainstay.locales` maps each locale to a base, `['en' => '/', 'nl' => '/nl']` or a URL per locale,
 rather than listing codes beside a separate prefix setting. A locale and where it is served are one
@@ -880,10 +881,11 @@ Consequences:
   the locale too. The host's own routes and the API do not take one from the host or prefix.
 - A host that matches no locale's base is a 404, `127.0.0.1` included when every locale names a
   host.
-- Every public page runs the `web` middleware, so every visit is handed a session cookie and, on
-  the database driver, writes a session row. Cached pages, in the deferred entry below, were to
-  skip anyone holding a session cookie, which would then be everyone. That has to be answered when
-  the deferred question is.
+- Public pages run `mainstay.site.middleware`, `web` by default, so by default every visit is
+  handed a session cookie and, on the database driver, writes a session row. Cached pages, in the
+  deferred entry below, were to skip anyone holding a session cookie, which would then be everyone.
+  A host can take the session off the public pages; the default has to be answered when the
+  deferred question is.
 - A GET fallback answers another method with a 405 rather than a 404, for any unknown path,
   `api/mainstay/*` included. That is Laravel's behaviour for any GET fallback.
 - A route the host writes beats an entry on the same path without a word: the skeleton's `/up`

@@ -57,13 +57,19 @@ class MainstayServiceProvider extends ServiceProvider
          | route whatever order they were registered in, so a route the host
          | writes always wins. Under a parameter of its own: Route::fallback()
          | files every fallback under one path, and the host's, registered
-         | after this, would replace it. The host's is the one that never runs.
+         | after this, would replace it. The host's is the one that never runs,
+         | unless the host turns public pages off.
+         |
+         | The defaults as well as the config's, since a host's config
+         | replaces the package's `site` whole and may leave a key out.
          */
-        Route::get('{mainstayPath}', RenderController::class)
-            ->where('mainstayPath', '.*')
-            ->fallback()
-            ->middleware('web')
-            ->name('mainstay.site');
+        if (config('mainstay.site.enabled', true)) {
+            Route::get('{mainstayPath}', RenderController::class)
+                ->where('mainstayPath', '.*')
+                ->fallback()
+                ->middleware(config('mainstay.site.middleware', ['web']))
+                ->name('mainstay.site');
+        }
 
         if ($this->app->runningInConsole()) {
             $this->commands([SyncCommand::class, SchemaCheckCommand::class]);

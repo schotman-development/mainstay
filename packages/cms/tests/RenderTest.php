@@ -81,6 +81,18 @@ class RenderTest extends DatabaseTestCase
         $app['config']->set('mainstay.api.prefix', 'content');
     }
 
+    /* `site` alone, as a host's own config leaving the middleware out would
+       have it. */
+    protected function headless($app): void
+    {
+        $app['config']->set('mainstay.site', ['enabled' => false]);
+    }
+
+    protected function stateless($app): void
+    {
+        $app['config']->set('mainstay.site.middleware', []);
+    }
+
     #[Test]
     public function a_path_renders_its_entry_with_the_view_named_after_its_type(): void
     {
@@ -89,7 +101,8 @@ class RenderTest extends DatabaseTestCase
         $this->get('/blog/hello')
             ->assertOk()
             ->assertSee('<h1>Hello</h1>', escape: false)
-            ->assertSee('<a href="http://localhost/blog/hello">', escape: false);
+            ->assertSee('<a href="http://localhost/blog/hello">', escape: false)
+            ->assertCookie(config('session.cookie'));
     }
 
     #[Test]
@@ -361,6 +374,25 @@ class RenderTest extends DatabaseTestCase
         Mainstay::create(Leaf::class, ['title' => 'Y', 'slug' => 'admin'], locale: 'en', overrideAccess: true);
 
         $this->get('http://example.test/admin')->assertOk()->assertSee('leaf: Y');
+    }
+
+    #[Test]
+    #[DefineEnvironment('headless')]
+    #[DefineRoute('handWritten')]
+    public function with_public_pages_off_the_hosts_fallback_runs(): void
+    {
+        $this->writePost(['slug' => 'other']);
+
+        $this->get('/blog/other')->assertOk()->assertSee('host fallback');
+    }
+
+    #[Test]
+    #[DefineEnvironment('stateless')]
+    public function public_pages_run_the_middleware_the_config_names(): void
+    {
+        $this->writePost();
+
+        $this->get('/blog/hello')->assertOk()->assertCookieMissing(config('session.cookie'));
     }
 
     #[Test]
