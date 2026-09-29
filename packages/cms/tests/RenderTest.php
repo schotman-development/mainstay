@@ -4,6 +4,7 @@ namespace Mainstay\Tests;
 
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
@@ -85,7 +86,7 @@ class RenderTest extends DatabaseTestCase
         $this->get('/blog/hello')
             ->assertOk()
             ->assertSee('<h1>Hello</h1>', escape: false)
-            ->assertSee('<a href="/blog/hello">', escape: false);
+            ->assertSee('<a href="http://localhost/blog/hello">', escape: false);
     }
 
     #[Test]
@@ -194,6 +195,9 @@ class RenderTest extends DatabaseTestCase
 
         $this->assertSame('https://example.test/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->url());
         $this->assertSame('http://nl.example.test:8000/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->url());
+
+        URL::forceRootUrl('http://example.test/site');
+        $this->assertSame('http://nl.example.test:8000/site/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->url());
     }
 
     #[Test]
@@ -204,10 +208,28 @@ class RenderTest extends DatabaseTestCase
         $home = Mainstay::create(Home::class, ['title' => 'Welcome'], locale: 'en', overrideAccess: true);
         Mainstay::update(Home::class, $home->id, ['title' => 'Welkom'], locale: 'nl', overrideAccess: true);
 
-        $this->assertSame('/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->url());
-        $this->assertSame('/nl/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->url());
-        $this->assertSame('/', Mainstay::findById(Home::class, $home->id, locale: 'en')->url());
-        $this->assertSame('/nl', Mainstay::findById(Home::class, $home->id, locale: 'nl')->url(), 'Not /nl/.');
+        $this->assertSame('http://localhost/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->url());
+        $this->assertSame('http://localhost/nl/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->url());
+        $this->assertSame('http://localhost', Mainstay::findById(Home::class, $home->id, locale: 'en')->url());
+        $this->assertSame('http://localhost/nl', Mainstay::findById(Home::class, $home->id, locale: 'nl')->url(), 'Not /nl/.');
+
+        /* Served from a subdirectory, which the request's path is relative
+           to and the link has to hold. */
+        URL::forceRootUrl('http://example.test/site');
+        $this->assertSame('http://example.test/site/nl/nieuws/hallo', Mainstay::findById(Post::class, $id, locale: 'nl')->url());
+    }
+
+    #[Test]
+    public function an_entry_not_read_with_its_path_has_no_link_and_renders_as_its_type(): void
+    {
+        $this->assertNull((new Post)->url());
+        $this->assertSame('post', Mainstay::template(new Post));
+
+        /* What a caller that may write the type and not read it is handed:
+           the locale, and not the path. */
+        $post = new Post;
+        $post->locale = 'en';
+        $this->assertNull($post->url());
     }
 
     #[Test]

@@ -32,7 +32,7 @@ abstract class Entry extends ContentType
     private ?string $template = null;
 
     /* Where the entry is linked to: its locale's base and its path. Null for
-       a type with no #[Route]. */
+       a type with no #[Route], and for an entry not read with its path. */
     public function url(): ?string
     {
         return app(Mainstay::class)->url($this);

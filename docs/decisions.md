@@ -854,7 +854,8 @@ any Laravel app.
 rather than listing codes beside a separate prefix setting. A locale and where it is served are one
 fact, and the map is refused where a request could not be told apart: two locales at one base, a
 prefix that is not lowercase segments, or some locales with a host and some without — one without
-a host answers on every host, so a relative link to it lands on whichever host the page is on.
+a host answers on every host, so a link to it lands on whichever host the page is on. That link
+comes from Laravel's URL generator, which puts the application's root on it.
 Hosts are compared without scheme or port, which a proxy in front of the application may change.
 
 A path that another locale's prefix, or a route of Mainstay's own, would answer instead is refused

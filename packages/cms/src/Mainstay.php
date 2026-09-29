@@ -5,6 +5,7 @@ namespace Mainstay;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
@@ -362,12 +363,26 @@ class Mainstay
         return $found === null ? null : [$found[0], substr($path, strlen($found[1])) ?: '/'];
     }
 
-    /* The link to an entry: its locale's base and its path. */
+    /*
+     | The link to an entry: its locale's base and its path, with the
+     | subdirectory the application is served from between them, since a
+     | request's path is read below it. For a locale with no host, all of it
+     | through the URL generator, which puts the request's host on as well.
+     |
+     | Null for a type with no #[Route], and for an entry not read with its
+     | locale and path: one handed to a caller that may write the type but
+     | not read it, the one a policy is shown, or one never read at all.
+     */
     public function url(Entry $entry): ?string
     {
-        $base = $this->locales()[$entry->locale];
+        if (! isset($entry->locale, $entry->uri)) {
+            return null;
+        }
 
-        return $entry->uri === null ? null : $base['origin'].$this->path($base['prefix'], $entry->uri);
+        $base = $this->locales()[$entry->locale];
+        $path = $this->path($base['prefix'], $entry->uri);
+
+        return $base['host'] === null ? URL::to($path) : $base['origin'].parse_url(URL::to('/'), PHP_URL_PATH).$path;
     }
 
     /*
