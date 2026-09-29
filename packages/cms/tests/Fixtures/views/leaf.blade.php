@@ -1,0 +1,1 @@
+leaf: {{ $entry->title }}

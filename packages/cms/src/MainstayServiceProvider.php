@@ -9,6 +9,7 @@ use Illuminate\Support\ServiceProvider;
 use Mainstay\Console\SchemaCheckCommand;
 use Mainstay\Console\SyncCommand;
 use Mainstay\Database\ContentSchema;
+use Mainstay\Http\RenderController;
 use Mainstay\Ui\UiServiceProvider;
 use Throwable;
 
@@ -50,6 +51,25 @@ class MainstayServiceProvider extends ServiceProvider
         ], function () {
             $this->loadRoutesFrom(__DIR__.'/../routes/api.php');
         });
+
+        /*
+         | Public pages. A fallback, which Laravel matches after every other
+         | route whatever order they were registered in, so a route the host
+         | writes always wins. Under a parameter of its own: Route::fallback()
+         | files every fallback under one path, and the host's, registered
+         | after this, would replace it. The host's is the one that never runs,
+         | unless the host turns public pages off.
+         |
+         | The defaults as well as the config's, since a host's config
+         | replaces the package's `site` whole and may leave a key out.
+         */
+        if (config('mainstay.site.enabled', true)) {
+            Route::get('{mainstayPath}', RenderController::class)
+                ->where('mainstayPath', '.*')
+                ->fallback()
+                ->middleware(config('mainstay.site.middleware', ['web']))
+                ->name('mainstay.site');
+        }
 
         if ($this->app->runningInConsole()) {
             $this->commands([SyncCommand::class, SchemaCheckCommand::class]);

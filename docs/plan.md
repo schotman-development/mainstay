@@ -3,10 +3,11 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 to 3 are done: content types are declared, reflected into a field list, synced into
-tables that `mainstay:schema:check` holds CI to, and read and written from PHP through one query
-layer. `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
-`src/js` — and `packages/editor` is a built ProseMirror island. Nothing renders content yet.
+Phases 1 to 4 are done: content types are declared, reflected into a field list, synced into
+tables that `mainstay:schema:check` holds CI to, read and written from PHP through one query
+layer, and served at their paths in Blade by a host site, `mainstay-site`. `packages/ui` is ahead
+of the package — Blade components, a theme, and a behaviour layer in `src/js` — and
+`packages/editor` is a built ProseMirror island.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
@@ -21,7 +22,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Eight things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Ten things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -53,6 +54,13 @@ rather than edited into the log, which is append-only by construction.
 - **An untranslated entry is absent, not a fallback.** The localization entry has fallback on by
   default. Phase 3 has none, and phase 12 adds it as an opt-in, so a live multilingual site's
   listings do not start mixing languages on the deploy that ships it.
+- **The catch-all needs no registration order.** The routing entry says it "must be registered
+  after everything else, so ordering becomes a documented requirement." It is a fallback route,
+  which Laravel matches after every other route whatever order they were registered in, so there
+  is no requirement to document. The phase 4 entry has why it is not `Route::fallback()` itself.
+- **`mainstay.locales` is a map, not a list.** The localization entry has it carrying "`locales`, a
+  required default, and a fallback flag." It maps each locale to where it is served, the first
+  being the default, and there is no fallback flag until phase 12 makes fallback an opt-in.
 
 ## Phase 1 — Declarations
 
@@ -152,27 +160,53 @@ and present with one, and a write without an override is refused. It runs on all
 
 ## Phase 4 — Public rendering
 
-`#[Template]`, and one catch-all registered last, matching a path through the lookup table phase 3
-writes and falling through to an ordinary 404. Template resolution cascades: per-entry override,
-then the type's declaration, then convention from the type name.
+One catch-all, answering every path no route the host wrote does: the locale from the request's
+host and path prefix, then the entry the rest of the path leads to, then its view. A path that
+leads nowhere is an ordinary 404. It is a fallback route, so the host's own routes always win
+whatever order they were registered in.
+
+The entry is found by `Mainstay::findByUri()`, a read on phase 3's layer like the others: the lookup
+row, then `findById()`, so the site, the trash and Gate apply as on every read. A type the caller
+may not read is null rather than refused, since the caller named a path and not a type. So is a
+path that is not lowercase segments, which no path is stored as and which MySQL and SQL Server
+would match to one anyway.
+
+The view cascades: the entry's own `template`, then the type's `#[Template]`, then the type's
+handle. The first one given wins, not the first one that exists, so a view named and missing is an
+error. `template` is a nullable column on every entry's main table and a reserved name, written in
+a save's data like a field and checked when it is written: one of the views the type's
+`#[Template]` lists, `#[Template('docs.page', 'docs.wide')]`, since a view is written against a
+type's fields. The view is handed the entry as `$entry`.
+
+`mainstay.locales` maps each locale to where it is served — a path prefix, a host, or both — and
+either every locale names a host or none does. The catch-all takes the most specific base, a
+prefix matching whole segments, strips it, looks up `(site, locale, uri)`, and sets the locale as
+the application's, so every read the template makes is in it. Phase 3 stored the path without a
+base, so choosing between prefix and host rewrites no rows. A link is the locale's base and the
+entry's `uri`: `$entry->url()`. A path that another locale's prefix or a route of Mainstay's own
+would answer instead is refused when it is written, and a `#[Route]` whose every path leads there is
+refused for every entry.
 
 Host templates call the query layer directly. They do not touch Eloquent and they do not make HTTP
 requests to their own server.
 
-A locale has a base, a path prefix or a host, and the catch-all strips it and looks up
-`(site, locale, uri)`; phase 3 stores the path without one, so choosing between them rewrites no
-rows. A link is the locale's base and the entry's `uri`. An unprefixed default locale can hold a
-path whose first segment is another locale's prefix, so the rule against that belongs here too.
-
-The host is a real site in its own repository, consuming `mainstay/cms` through a path repository,
-not the testbench skeleton. Real requirements drive the design — which is what the design-phase
-decision assumes when it says the `@foreach` a designer wrote is where the content model comes
-from. The consequence is that nothing end-to-end runs in this repository's CI, so the phases here
-stay covered by their own checks and the site is where the package is found to be wrong.
+The host is `mainstay-site`, Mainstay's own project site, in its own repository beside this one and
+consuming `mainstay/cms` through a path repository rather than the testbench skeleton. It serves
+English and Dutch on hosts of their own, from seven types written by its seeders — a front page, the
+features it lists, pages, the blog and the docs indexes, articles and docs — and has no route of its
+own. Nothing end-to-end runs in
+this repository's CI, so the phases here stay covered by their own checks and the site is where the
+package is found to be wrong.
 
 Content reaches the site through phase 3, from the site's own seeders and import commands. Every
 field an editor would fill is one a seeder can, so that is enough to prove the model, and the model
 is the first thing the site should be allowed to find wrong.
+
+The check is an entry written through the layer and visited at its path, by prefix and by host:
+each step of the view cascade, a host's route and a host's fallback beside the catch-all, a path
+that leads nowhere, a type the visitor may not read and an internal field kept off the page, the
+locale map refused where a request could not be told apart, and a path another locale or the admin
+would answer refused. It runs on all four drivers.
 
 **This is the milestone that matters.** Declare a type, write an entry, visit a URL. Everything
 after it makes that loop richer rather than making it exist.

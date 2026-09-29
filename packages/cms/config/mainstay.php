@@ -36,17 +36,40 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Content locales
+    | Public pages
     |--------------------------------------------------------------------------
     |
-    | The languages content is written in, the first being the default. Only
-    | a field declared localized differs between them. This is not the
-    | application's locale: that one follows the visitor, and setLocale()
-    | changes it for the rest of the request.
+    | Every GET no route of the application answers is looked up as an entry's
+    | path and rendered in the entry's view. Turn it off where the front end
+    | is built elsewhere, and the application's own fallback route runs again.
     |
     */
 
-    'locales' => [env('APP_LOCALE', 'en')],
+    'site' => [
+        'enabled' => true,
+
+        'middleware' => ['web'],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Content locales
+    |--------------------------------------------------------------------------
+    |
+    | The languages content is written in, the first being the default, each
+    | with where it is served: a path prefix, a host, or both. Either every
+    | locale names a host or none does.
+    |
+    |     ['en' => '/', 'nl' => '/nl']
+    |     ['en' => 'https://example.com', 'nl' => 'https://example.nl']
+    |
+    | Only a field declared localized differs between them. This is not the
+    | application's locale: that one follows the visitor, and a public page
+    | sets it to the locale the page is served in.
+    |
+    */
+
+    'locales' => [env('APP_LOCALE', 'en') => '/'],
 
     /*
     |--------------------------------------------------------------------------

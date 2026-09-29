@@ -9,8 +9,9 @@ not the storage: your static site is the external thing, and the content API is 
 between the two.
 
 > **Status: early.** Content types are declared in PHP, `mainstay:sync` alters the database to match
-> them, and content is read and written from PHP through `Mainstay::find()`, `create()`, `update()`
-> and `delete()`. Nothing renders it yet: there is no public routing, no authentication, no admin
+> them, content is read and written from PHP through `Mainstay::find()`, `create()`, `update()`
+> and `delete()`, and an entry is served at the path its type's `#[Route]` builds, in a Blade
+> template, in the language its host or path prefix names. There is no authentication, no admin
 > form, and no block editor. `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout
@@ -32,14 +33,19 @@ composer require mainstay/cms
 php artisan vendor:publish --tag=mainstay-assets
 ```
 
-The admin is then at `/admin` and the content API at `/api/mainstay`. Both paths, their middleware,
-and an optional dedicated domain are configurable:
+The admin is then at `/admin` and the content API at `/api/mainstay`, and every other path an
+entry holds is answered by Mainstay's catch-all, after any route the app declares itself. The two
+paths, their middleware, an optional dedicated domain, where each content language is served, and
+the catch-all's middleware, or whether it runs at all, are configurable:
 
 ```bash
 php artisan vendor:publish --tag=mainstay-config
 ```
 
-Re-run the asset publish with `--force` after upgrading the package.
+Re-run the asset publish with `--force` after upgrading the package. An upgrade can also add a
+column Mainstay keeps for itself to the content tables, and production's schema comes from
+hand-written migrations: run `php artisan mainstay:schema:check` against it before deploying, and
+write a migration for whatever it reports.
 
 ## Working on Mainstay
 

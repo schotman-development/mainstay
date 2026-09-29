@@ -16,12 +16,14 @@ use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Broken\Collided;
 use Mainstay\Tests\Fixtures\Broken\Reserved;
+use Mainstay\Tests\Fixtures\Broken\Templated;
 use Mainstay\Tests\Fixtures\Broken\Uris;
 use Mainstay\Tests\Fixtures\Coded\Article as CodedArticle;
 use Mainstay\Tests\Fixtures\Moody\Article as MoodyArticle;
 use Mainstay\Tests\Fixtures\Recoded\Article as RecodedArticle;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\Setted\Article as SettedArticle;
+use Mainstay\Tests\Fixtures\SiteSettings;
 use Mainstay\Tests\Fixtures\Tiered\Article as TieredArticle;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
@@ -95,7 +97,7 @@ class SchemaTest extends DatabaseTestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertSame(
-            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
+            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'template', 'created_at', 'updated_at', 'deleted_at'],
             Schema::getColumnListing('article'),
         );
         $this->assertSame(
@@ -555,7 +557,7 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_leaves_the_marker_when_it_fails_after_altering_a_table(): void
     {
-        config()->set('mainstay.locales', ['nl', 'en']);
+        config()->set('mainstay.locales', ['nl' => '/', 'en' => '/en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         DB::table('migrations')->where('migration', ContentSchema::MARKER)->delete();
@@ -590,7 +592,7 @@ class SchemaTest extends DatabaseTestCase
     #[Test]
     public function sync_gives_a_missing_locale_the_default_and_restores_the_locale_keys(): void
     {
-        config()->set('mainstay.locales', ['nl', 'en']);
+        config()->set('mainstay.locales', ['nl' => '/', 'en' => '/en']);
         $this->declare(Article::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $id = $this->insertArticle();
@@ -779,10 +781,24 @@ class SchemaTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_global_has_no_view_of_its_own_and_leaves_template_to_its_fields(): void
+    {
+        $this->declare(SiteSettings::class);
+
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        $this->assertSame(
+            ['id', 'site_id', 'site_name', 'template', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
+            Schema::getColumnListing('site_settings'),
+        );
+    }
+
+    #[Test]
     public function a_type_that_would_collide_with_a_column_or_table_is_refused(): void
     {
         foreach ([
             Reserved::class => 'has a field stored as site_id, a column Mainstay keeps for itself',
+            Templated::class => 'has a field stored as template, a column Mainstay keeps for itself',
             Collided::class => 'has two properties stored in the same column',
             Uris::class => 'would be stored in uris, a table Mainstay keeps for itself',
         ] as $type => $message) {

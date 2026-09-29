@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
@@ -133,6 +134,34 @@ class ContentStore
     public function findById(string $type, int $id, ?string $locale = null, bool $overrideAccess = false): ?Entry
     {
         return $this->find($type, where: ['id' => $id], locale: $locale, overrideAccess: $overrideAccess)->first();
+    }
+
+    /*
+     | The entry a path leads to in a locale, whatever its type: the lookup
+     | row, then the entry read as findById() reads it.
+     |
+     | Null, rather than refused, for a type the caller may not read. The
+     | caller named a path and not a type, and a refusal would tell it the
+     | path is there. Null without a query for a path that is not lowercase
+     | segments, which no path is stored as and which MySQL and SQL Server
+     | would still match to one by folding case.
+     */
+    public function findByUri(string $uri, ?string $locale = null, bool $overrideAccess = false): ?Entry
+    {
+        $locale = $this->locale($locale);
+
+        if ($uri !== '/' && ! preg_match('#\A'.Route::PATH.'\z#', $uri)) {
+            return null;
+        }
+
+        $row = DB::table('uris')->where('site_id', $this->site())->where('locale', $locale)->where('uri', $uri)->first(['type', 'entry_id']);
+        $type = $row === null ? null : $this->mainstay->registered()[$row->type] ?? null;
+
+        if ($type === null || ! is_subclass_of($type, Entry::class) || ! ($overrideAccess || $this->gate($type)->allows('viewAny', $type))) {
+            return null;
+        }
+
+        return $this->findById($type, (int) $row->entry_id, $locale, $overrideAccess);
     }
 
     /**
@@ -293,7 +322,7 @@ class ContentStore
      */
     private function locale(?string $locale): string
     {
-        $locales = config('mainstay.locales');
+        $locales = array_keys($this->mainstay->locales());
 
         if (in_array($locale ?? App::getLocale(), $locales, true)) {
             return $locale ?? App::getLocale();
@@ -439,7 +468,7 @@ class ContentStore
             ->where("{$handle}.site_id", $this->site())
             ->whereNull("{$handle}.deleted_at")
             ->select([
-                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'created_at', 'updated_at', ...array_keys($shared)]),
+                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'template', 'created_at', 'updated_at', ...array_keys($shared)]),
                 ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
                 'uris.uri',
             ]);
@@ -727,7 +756,7 @@ class ContentStore
     {
         $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $internal || ! $field->internal);
 
-        if (($unknown = array_diff_key($data, $fields)) !== []) {
+        if (($unknown = array_diff_key($data, $fields, ['template' => null])) !== []) {
             throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
         }
 
@@ -760,6 +789,16 @@ class ContentStore
             $messages["{$name}.regex"] = 'The :attribute field is part of a path: lowercase letters, digits and single hyphens, the way Str::slug() writes one.';
         }
 
+        /* The entry's own view, one its type lists, since a view is written
+           against a type's fields. Checked when it is written and not again:
+           a view taken off the list since breaks the page, rather than every
+           save of the entry after it. */
+        if (array_key_exists('template', $data)) {
+            $views = $this->mainstay->templates($type);
+            $rules['template'] = ['bail', 'nullable', 'string', Rule::in($views)];
+            $messages['template.in'] = 'The :attribute field is one of the views this type renders with: '.implode(', ', $views).'.';
+        }
+
         Validator::make($values, $rules, $messages)->validate();
 
         return $values;
@@ -783,14 +822,16 @@ class ContentStore
         [$localized, $shared] = $this->columns($type);
         $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->serialize($values[$field->name] ?? null), $fields);
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
+        /* Blank is no view of its own, which is how one is taken off. */
+        $template = array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
 
-        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed) {
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template) {
             $created = $id === null;
 
             $now = $this->stamp(CarbonImmutable::now());
 
             if ($id === null) {
-                $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), 'created_at' => $now, 'updated_at' => $now]);
+                $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), ...$template, 'created_at' => $now, 'updated_at' => $now]);
             } else {
                 /* Only while it is out of the trash, and asked again after. A
                    delete committed since the load leaves the update nothing
@@ -799,7 +840,7 @@ class ContentStore
                    arriving later waits for this commit. Asked with a locking
                    read: inside a caller's own transaction MySQL answers a
                    plain one from the snapshot taken before the delete. */
-                DB::table($handle)->where('id', $id)->whereNull('deleted_at')->update([...$serialize($changed($shared)), 'updated_at' => $now]);
+                DB::table($handle)->where('id', $id)->whereNull('deleted_at')->update([...$serialize($changed($shared)), ...$template, 'updated_at' => $now]);
 
                 if (DB::table($handle)->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->value('id') === null) {
                     throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
@@ -921,6 +962,14 @@ class ContentStore
                     : 'The path this builds is longer than the 255 characters a path can be.'));
             }
 
+            /* Refused as a taken path is: a visitor asking for it would be
+               answered by something else, and the entry never. */
+            if (($shadow = $this->mainstay->shadow($translation->locale, $uri)) !== null) {
+                throw ValidationException::withMessages(array_fill_keys($this->blamed($type), $reads
+                    ? "The path {$uri} is answered by {$shadow} in {$translation->locale}."
+                    : 'The path this builds is answered by something else.'));
+            }
+
             $wanted[$translation->locale] = $uri;
         }
 
@@ -945,13 +994,15 @@ class ContentStore
     private function patterns(string $type): ?array
     {
         $route = $this->mainstay->route($type);
-        $locales = config('mainstay.locales');
+        $locales = array_keys($this->mainstay->locales());
 
-        if (! is_array($route)) {
-            return $route === null ? null : array_fill_keys($locales, $route);
+        if ($route === null) {
+            return null;
         }
 
-        if (array_diff(array_keys($route), $locales) !== [] || array_diff($locales, array_keys($route)) !== []) {
+        $patterns = is_array($route) ? $route : array_fill_keys($locales, $route);
+
+        if (array_diff(array_keys($patterns), $locales) !== [] || array_diff($locales, array_keys($patterns)) !== []) {
             throw new InvalidArgumentException(sprintf(
                 "%s's #[Route] has patterns for %s, and mainstay.locales holds %s. Give a pattern for every content locale, or one pattern for all of them.",
                 $type,
@@ -960,7 +1011,18 @@ class ContentStore
             ));
         }
 
-        return $route;
+        /* A pattern every entry would be refused for, named here, once,
+           rather than as a slug that cannot be changed to anything that
+           works. Asked with the pattern as written: a `{slug}` is no locale's
+           prefix and no route's literal segment, so only what answers any
+           value there answers it. */
+        foreach ($patterns as $locale => $pattern) {
+            if (($shadow = $this->mainstay->shadow($locale, $pattern)) !== null) {
+                throw new InvalidArgumentException("{$type}'s #[Route] pattern \"{$pattern}\" puts every {$locale} path under {$shadow}, which answers it instead.");
+            }
+        }
+
+        return $patterns;
     }
 
     /* The fields a path is built from, in any locale's pattern. */
@@ -1004,6 +1066,10 @@ class ContentStore
             $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
             $entry->createdAt = blank($row->created_at) ? null : $this->moment->cast($row->created_at);
             $entry->updatedAt = blank($row->updated_at) ? null : $this->moment->cast($row->updated_at);
+        }
+
+        if ($only === null || in_array('template', $only, true)) {
+            (new ReflectionProperty(Entry::class, 'template'))->setValue($entry, $row->template);
         }
 
         if ($locale !== null) {

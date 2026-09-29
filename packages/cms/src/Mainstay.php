@@ -2,18 +2,22 @@
 
 namespace Mainstay;
 
+use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
 use Mainstay\Content\Route;
+use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
 use ReflectionAttribute;
 use ReflectionClass;
+use ReflectionProperty;
 use stdClass;
 
 class Mainstay
@@ -28,6 +32,9 @@ class Mainstay
 
     /** @var array<class-string, string|array<string, string>|null> */
     private array $routes = [];
+
+    /** @var array{0: mixed, 1: array<string, array{origin: string, host: ?string, prefix: string}>}|null */
+    private ?array $locales = null;
 
     public function version(): string
     {
@@ -230,6 +237,11 @@ class Mainstay
         return $this->store()->findById($type, ...$arguments);
     }
 
+    public function findByUri(string $uri, mixed ...$arguments): ?Entry
+    {
+        return $this->store()->findByUri($uri, ...$arguments);
+    }
+
     public function paginate(string $type, mixed ...$arguments): LengthAwarePaginator
     {
         return $this->store()->paginate($type, ...$arguments);
@@ -253,6 +265,175 @@ class Mainstay
     private function store(): ContentStore
     {
         return new ContentStore($this);
+    }
+
+    /*
+     | The view an entry renders with: its own, then its type's #[Template],
+     | then the type's handle. The first one given wins, not the first one
+     | there is -- a view named and missing is an error, rather than a quiet
+     | step down to one nobody chose.
+     */
+    public function template(Entry $entry): string
+    {
+        return (new ReflectionProperty(Entry::class, 'template'))->getValue($entry) ?? $this->templates($entry::class)[0];
+    }
+
+    /*
+     | The views a type's entries may render with, the one they render with
+     | first: its #[Template]'s, or its handle alone.
+     |
+     | @return list<string>
+     */
+    public function templates(string $type): array
+    {
+        $attributes = (new ReflectionClass($type))->getAttributes(Template::class);
+
+        return $attributes === [] ? [$type::handle()] : $attributes[0]->newInstance()->views;
+    }
+
+    /*
+     | The content locales, the default first, each with where it is served:
+     | a path prefix, `'/nl'`, a host, `'https://example.nl'`, or both. `/` is
+     | the unprefixed one on every host.
+     |
+     | Either every locale names a host or none does. One without a host
+     | answers on all of them, so beside one with a host it would link to
+     | itself on whichever host the page it is linked from is on.
+     |
+     | @return array<string, array{origin: string, host: ?string, prefix: string}>
+     */
+    public function locales(): array
+    {
+        $config = config('mainstay.locales');
+
+        /* Parsed once for the config it was parsed from: nearly every read,
+           write and link asks. */
+        if ($this->locales !== null && $this->locales[0] === $config) {
+            return $this->locales[1];
+        }
+
+        /* A list reads as locales called 0 and 1, served at `en` and `nl`. */
+        if (! is_array($config) || $config === [] || array_is_list($config)) {
+            throw new InvalidArgumentException("mainstay.locales maps each content locale to where it is served, the default first: ['en' => '/', 'nl' => '/nl'], or ['en' => 'https://example.com', 'nl' => 'https://example.nl'].");
+        }
+
+        $locales = $bases = [];
+
+        foreach ($config as $locale => $base) {
+            /* The prefix held to what a path is, lowercase, for the reason a
+               path is: MySQL and SQL Server would match `/NL` to it and the
+               others would not. */
+            if (! is_string($locale) || ! is_string($base) || ! preg_match('#\A(https?://([A-Za-z0-9.-]+)(?::\d+)?)?((?:'.Route::PATH.')?)/?\z#', $base, $parts)) {
+                throw new InvalidArgumentException(sprintf(
+                    'mainstay.locales serves %s at %s, which is neither a path of lowercase segments, like /nl, nor a URL, like https://example.nl.',
+                    $locale,
+                    is_string($base) ? "\"{$base}\"" : get_debug_type($base),
+                ));
+            }
+
+            $host = $parts[2] === '' ? null : strtolower($parts[2]);
+
+            if (($other = $bases[$host.$parts[3]] ?? null) !== null) {
+                throw new InvalidArgumentException("mainstay.locales serves {$other} and {$locale} at the same base, so a request cannot tell them apart.");
+            }
+
+            $bases[$host.$parts[3]] = $locale;
+            $locales[$locale] = ['origin' => $parts[1], 'host' => $host, 'prefix' => $parts[3]];
+        }
+
+        if (count(array_unique(array_map(fn (array $base) => $base['host'] === null, $locales))) > 1) {
+            throw new InvalidArgumentException('mainstay.locales gives some locales a host and not others. One without a host answers on every host, so give each locale a host or none of them.');
+        }
+
+        return ($this->locales = [$config, $locales])[1];
+    }
+
+    /*
+     | The locale a request is in and its path with the locale's prefix taken
+     | off, which is what the lookup holds. The longest prefix wins, and a
+     | prefix matches whole segments: `/nlx` is not under `/nl`. A host is
+     | compared without scheme or port, which a proxy in front of the
+     | application may have changed. Null where no locale is served.
+     |
+     | @return array{0: string, 1: string}|null
+     */
+    public function resolve(string $host, string $path): ?array
+    {
+        $path = '/'.trim($path, '/');
+        $found = null;
+
+        foreach ($this->locales() as $locale => $base) {
+            if (($base['host'] === null || $base['host'] === strtolower($host)) && $this->under($path, $base['prefix'])
+                && ($found === null || strlen($base['prefix']) > strlen($found[1]))) {
+                $found = [$locale, $base['prefix']];
+            }
+        }
+
+        return $found === null ? null : [$found[0], substr($path, strlen($found[1])) ?: '/'];
+    }
+
+    /*
+     | The link to an entry: its locale's base and its path, with the
+     | subdirectory the application is served from between them, since a
+     | request's path is read below it. For a locale with no host, all of it
+     | through the URL generator, which puts the request's host on as well.
+     |
+     | Null for a type with no #[Route], and for an entry not read with its
+     | locale and path: one handed to a caller that may write the type but
+     | not read it, the one a policy is shown, or one never read at all.
+     */
+    public function url(Entry $entry): ?string
+    {
+        if (! isset($entry->locale, $entry->uri)) {
+            return null;
+        }
+
+        $base = $this->locales()[$entry->locale];
+        $path = $this->path($base['prefix'], $entry->uri);
+
+        return $base['host'] === null ? URL::to($path) : $base['origin'].parse_url(URL::to('/'), PHP_URL_PATH).$path;
+    }
+
+    /*
+     | What a request for a locale's path reaches instead of the entry that
+     | holds it, or null when nothing does: a route of Mainstay's own, or
+     | another locale whose prefix the path runs into -- `/nl` in an
+     | unprefixed English beside a Dutch at `/nl`.
+     |
+     | The routes are asked of the router, which is what answers the request:
+     | every one named `mainstay.*` but the catch-all, so the admin at any
+     | path, the API, and whatever the package adds are one check. Not the
+     | host's own, which may be reading the same entry on purpose. A locale
+     | with no host is served on every host, and a route kept to a domain
+     | takes only one of them, so for such a locale it is left out.
+     */
+    public function shadow(string $locale, string $uri): ?string
+    {
+        $base = $this->locales()[$locale];
+        $path = $this->path($base['prefix'], $uri);
+        $request = Request::create(($base['host'] === null ? '' : "http://{$base['host']}").$path);
+
+        foreach (app('router')->getRoutes()->get('GET') as $route) {
+            if (str_starts_with((string) $route->getName(), 'mainstay.') && ! $route->isFallback
+                && ($base['host'] !== null || $route->getDomain() === null) && $route->matches($request)) {
+                return "the route {$route->getName()}";
+            }
+        }
+
+        $reached = $this->resolve($base['host'] ?? '', $path)[0];
+
+        return $reached === $locale ? null : "{$reached}'s prefix {$this->locales()[$reached]['prefix']}";
+    }
+
+    /* A locale's path under its prefix: `/nl` for its `/`, not `/nl/`. */
+    private function path(string $prefix, string $uri): string
+    {
+        return $prefix !== '' && $uri === '/' ? $prefix : $prefix.$uri;
+    }
+
+    private function under(string $path, string $prefix): bool
+    {
+        return $prefix === '' || $path === $prefix || str_starts_with($path, "{$prefix}/");
     }
 
     /* `\App\Article` and `App\Article` are one class and two cache keys -- and

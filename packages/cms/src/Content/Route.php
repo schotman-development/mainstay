@@ -26,6 +26,10 @@ class Route
     /* A value that is one segment and nothing else. */
     public const SLUG = '/\A'.self::SEGMENT.'\z/';
 
+    /* One or more segments, each after its slash: a path other than `/`, a
+       locale's prefix, and what a stored path is held to. */
+    public const PATH = '(?:/'.self::SEGMENT.')+';
+
     /* A `{field}` in a pattern, capturing the field's name. */
     public const PLACEHOLDER = '\{(\w+)\}';
 

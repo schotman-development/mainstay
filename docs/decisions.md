@@ -838,6 +838,64 @@ Consequences:
 - It is required by phase 13, not now. Nothing before then uses it, and a host installing today
   should not be paying for a checklist that does not exist yet.
 
+## Public pages are a fallback route, and each locale is served at a base
+
+*2026-09-29*
+
+The catch-all is a fallback route. Laravel matches fallbacks after every other route whatever order
+they were registered in, cached routes included, so the host's own routes win without the ordering
+requirement the routing entry expected. It is not `Route::fallback()` itself: Laravel files routes
+by domain and path, every `Route::fallback()` has the same path, and a host's, registered after the
+package's, would silently replace it. Under a parameter of its own the package's is registered
+first, and it is the host's fallback that never runs, unless `mainstay.site.enabled` turns public
+pages off. A custom 404 is `errors/404.blade.php`, as in any Laravel app. A trailing slash is
+redirected to the path without one, as Laravel's `.htaccess` does, since the router ignores it and a
+page would otherwise have two addresses.
+
+`mainstay.locales` maps each locale to a base, `['en' => '/', 'nl' => '/nl']` or a URL per locale,
+rather than listing codes beside a separate prefix setting. A locale and where it is served are one
+fact, and the map is refused where a request could not be told apart: two locales at one base, a
+prefix that is not lowercase segments, or some locales with a host and some without — one without
+a host answers on every host, so a link to it lands on whichever host the page is on. That link
+comes from Laravel's URL generator, which puts the application's root on it.
+Hosts are compared without scheme or port, which a proxy in front of the application may change.
+
+A path that another locale's prefix, or a route of Mainstay's own, would answer instead is refused
+when it is written, on the fields that build it, the way a taken path is: an English page at `/nl`
+beside a Dutch at `/nl` is a page nobody can reach, and an editor told so can pick another slug.
+The routes are asked of the router, every one named `mainstay.*` but the catch-all, so the admin at
+any path and every API route are covered by one check.
+
+The view is the entry's own, the type's `#[Template]`, or the type's handle, and the first one given
+wins. A view named and missing is an error rather than a step down, since the step down renders a
+page with a view nobody chose. An entry's own view is one its type lists in `#[Template]`, the first
+being the type's own, rather than any view the application has: a view is written against a type's
+fields, and the admin needs a list to offer. It is checked when it is written and not again, so a
+view taken off the list later breaks its page and not every later save of it. It is an entry's
+alone, so globals and taxonomies keep the name for their fields, and a private property on `Entry`,
+so a type that already had a `template` field is refused by sync rather than failing to load.
+
+Consequences:
+
+- Only the catch-all sets the locale, from the request, before its lookup, so its 404 renders in
+  the locale too. The host's own routes and the API do not take one from the host or prefix.
+- A host that matches no locale's base is a 404, `127.0.0.1` included when every locale names a
+  host.
+- Public pages run `mainstay.site.middleware`, `web` by default, so by default every visit is
+  handed a session cookie and, on the database driver, writes a session row. Cached pages, in the
+  deferred entry below, were to skip anyone holding a session cookie, which would then be everyone.
+  A host can take the session off the public pages; the default has to be answered when the
+  deferred question is.
+- A GET fallback answers another method with a 405 rather than a 404, for any unknown path,
+  `api/mainstay/*` included. That is Laravel's behaviour for any GET fallback.
+- A route the host writes beats an entry on the same path without a word: the skeleton's `/up`
+  hides a page slugged `up`. That is the escape hatch the routing entry wanted, and the one thing
+  not refused on write, since a host's controller may be reading the same entry on purpose.
+- A changed `#[Route]` or a new locale leaves each entry's lookup rows as they were until the entry
+  is saved again. A command to rebuild them waits for a site that needs one.
+- The map is installation-wide. Per-site locales mean the map moves onto the site in phase 12,
+  where the request's host picks the site and the locale in one step.
+
 ## Deferred
 
 Questions raised and deliberately left open. The reasoning is recorded so it does not have to be

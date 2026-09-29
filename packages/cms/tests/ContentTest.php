@@ -46,7 +46,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::defineEnvironment($app);
 
-        $app['config']->set('mainstay.locales', ['en', 'nl']);
+        $app['config']->set('mainstay.locales', ['en' => '/', 'nl' => '/nl']);
     }
 
     protected function setUp(): void
@@ -1135,7 +1135,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_route_map_has_to_name_every_content_locale(): void
     {
-        config()->set('mainstay.locales', ['en', 'nl', 'de']);
+        config()->set('mainstay.locales', ['en' => '/', 'nl' => '/nl', 'de' => '/de']);
 
         $this->assertThrows(
             fn () => $this->writePost(),
