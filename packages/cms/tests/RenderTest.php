@@ -410,6 +410,7 @@ class RenderTest extends DatabaseTestCase
     {
         foreach ([
             [['en', 'nl'], 'mainstay.locales maps each content locale to where it is served'],
+            [['en'], 'mainstay.locales maps each content locale to where it is served'],
             [['en' => 'nl'], 'mainstay.locales serves en at "nl", which is neither'],
             [['en' => '/NL'], 'mainstay.locales serves en at "/NL"'],
             [['en' => '/', 'nl' => 'https://example.nl'], 'gives some locales a host and not others'],
