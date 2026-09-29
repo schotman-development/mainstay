@@ -2,6 +2,8 @@
 
 namespace Mainstay\Content;
 
+use Mainstay\Mainstay;
+
 /*
  | Many instances, each with a route. Everything that separates an entry from a
  | global -- the slug, the URI row, the route pattern -- arrives in the phase
@@ -16,4 +18,17 @@ abstract class Entry extends ContentType
      | locale's base and this. Null for a type with no #[Route].
      */
     public ?string $uri;
+
+    /*
+     | The view this entry renders with, ahead of its type's #[Template] and
+     | its handle. Null for one that renders as its type does.
+     */
+    public ?string $template;
+
+    /* Where the entry is linked to: its locale's base and its path. Null for
+       a type with no #[Route]. */
+    public function url(): ?string
+    {
+        return app(Mainstay::class)->url($this);
+    }
 }

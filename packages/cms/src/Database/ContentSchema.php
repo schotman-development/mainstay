@@ -64,7 +64,7 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'template', 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
@@ -89,6 +89,7 @@ class ContentSchema
                        Date(time: true) wants: MySQL shifts a timestamp by the
                        session's zone and stops it at 2038. */
                     $table->unsignedBigInteger('owner_id')->nullable();
+                    $table->string('template')->nullable();
                     $table->datetimes();
                     $table->softDeletes();
                 },
@@ -659,7 +660,7 @@ class ContentSchema
         return match (true) {
             $column->name === 'site_id' => DB::table('sites')->orderBy('id')->value('id')
                 ?? throw new InvalidArgumentException("{$table}.site_id is required, and there is no site to give the rows already in the table. Run php artisan migrate."),
-            $column->name === 'locale' => config('mainstay.locales')[0],
+            $column->name === 'locale' => array_key_first($this->mainstay->locales()),
             $column->name === 'parent_id' => throw new InvalidArgumentException("{$table}.parent_id is required, and a row with no parent has none to be given. Empty the table, or add the column by hand."),
             in_array($column->type, ['char', 'string', 'tinyText', 'text', 'mediumText', 'longText'], true) => '',
             in_array($column->type, ['tinyInteger', 'smallInteger', 'mediumInteger', 'integer', 'bigInteger', 'float', 'double', 'decimal'], true) => 0,

@@ -39,14 +39,20 @@ return [
     | Content locales
     |--------------------------------------------------------------------------
     |
-    | The languages content is written in, the first being the default. Only
-    | a field declared localized differs between them. This is not the
-    | application's locale: that one follows the visitor, and setLocale()
-    | changes it for the rest of the request.
+    | The languages content is written in, the first being the default, each
+    | with where it is served: a path prefix, a host, or both. Either every
+    | locale names a host or none does.
+    |
+    |     ['en' => '/', 'nl' => '/nl']
+    |     ['en' => 'https://example.com', 'nl' => 'https://example.nl']
+    |
+    | Only a field declared localized differs between them. This is not the
+    | application's locale: that one follows the visitor, and a public page
+    | sets it to the locale the page is served in.
     |
     */
 
-    'locales' => [env('APP_LOCALE', 'en')],
+    'locales' => [env('APP_LOCALE', 'en') => '/'],
 
     /*
     |--------------------------------------------------------------------------
