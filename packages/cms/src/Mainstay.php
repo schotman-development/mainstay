@@ -311,7 +311,7 @@ class Mainstay
             /* The prefix held to what a path is, lowercase, for the reason a
                path is: MySQL and SQL Server would match `/NL` to it and the
                others would not. */
-            if (! is_string($locale) || ! is_string($base) || ! preg_match('#\A(https?://([A-Za-z0-9.-]+)(?::\d+)?)?((?:/'.Route::SEGMENT.')*)/?\z#', $base, $parts)) {
+            if (! is_string($locale) || ! is_string($base) || ! preg_match('#\A(https?://([A-Za-z0-9.-]+)(?::\d+)?)?((?:'.Route::PATH.')?)/?\z#', $base, $parts)) {
                 throw new InvalidArgumentException(sprintf(
                     'mainstay.locales serves %s at %s, which is neither a path of lowercase segments, like /nl, nor a URL, like https://example.nl.',
                     $locale,

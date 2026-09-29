@@ -150,7 +150,7 @@ class ContentStore
     {
         $locale = $this->locale($locale);
 
-        if ($uri !== '/' && ! preg_match('#\A(?:/'.Route::SEGMENT.')+\z#', $uri)) {
+        if ($uri !== '/' && ! preg_match('#\A'.Route::PATH.'\z#', $uri)) {
             return null;
         }
 
