@@ -866,7 +866,9 @@ wins. A view named and missing is an error rather than a step down, since the st
 page with a view nobody chose. An entry's own view is one its type lists in `#[Template]`, the first
 being the type's own, rather than any view the application has: a view is written against a type's
 fields, and the admin needs a list to offer. It is checked when it is written and not again, so a
-view taken off the list later breaks its page and not every later save of it.
+view taken off the list later breaks its page and not every later save of it. It is an entry's
+alone, so globals and taxonomies keep the name for their fields, and a private property on `Entry`,
+so a type that already had a `template` field is refused by sync rather than failing to load.
 
 Consequences:
 

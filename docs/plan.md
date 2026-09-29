@@ -173,10 +173,10 @@ would match to one anyway.
 
 The view cascades: the entry's own `template`, then the type's `#[Template]`, then the type's
 handle. The first one given wins, not the first one that exists, so a view named and missing is an
-error. `template` is a nullable column on every main table and a reserved name, written in a save's
-data like a field and checked when it is written: one of the views the type's `#[Template]` lists,
-`#[Template('docs.page', 'docs.wide')]`, since a view is written against a type's fields. The view
-is handed the entry as `$entry`.
+error. `template` is a nullable column on every entry's main table and a reserved name, written in
+a save's data like a field and checked when it is written: one of the views the type's
+`#[Template]` lists, `#[Template('docs.page', 'docs.wide')]`, since a view is written against a
+type's fields. The view is handed the entry as `$entry`.
 
 `mainstay.locales` maps each locale to where it is served — a path prefix, a host, or both — and
 either every locale names a host or none does. The catch-all takes the most specific base, a

@@ -82,8 +82,7 @@ class RenderTest extends DatabaseTestCase
 
         $post = Mainstay::update(Post::class, $id, ['template' => ''], locale: 'en', overrideAccess: true);
 
-        $this->assertNull($post->template, 'Blank takes the view off.');
-        $this->assertSame('post', Mainstay::template($post));
+        $this->assertSame('post', Mainstay::template($post), 'Blank takes the view off.');
         $this->get('/blog/hello')->assertSee('<h1>Hello</h1>', escape: false);
     }
 

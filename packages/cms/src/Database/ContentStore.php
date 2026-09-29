@@ -1070,7 +1070,7 @@ class ContentStore
         }
 
         if ($only === null || in_array('template', $only, true)) {
-            $entry->template = $row->template;
+            (new ReflectionProperty(Entry::class, 'template'))->setValue($entry, $row->template);
         }
 
         if ($locale !== null) {

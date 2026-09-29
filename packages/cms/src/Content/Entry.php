@@ -21,9 +21,15 @@ abstract class Entry extends ContentType
 
     /*
      | The view this entry renders with, ahead of its type's #[Template] and
-     | its handle. Null for one that renders as its type does.
+     | its handle, read through Mainstay::template(). Null for one that
+     | renders as its type does.
+     |
+     | Private, since `template` was a field's name before it was Mainstay's.
+     | A subclass redeclaring a public property has to keep its type or fail
+     | to load, with a message about types; a private one is the subclass's
+     | to redeclare, and sync then refuses the field by name.
      */
-    public ?string $template;
+    private ?string $template = null;
 
     /* Where the entry is linked to: its locale's base and its path. Null for
        a type with no #[Route]. */

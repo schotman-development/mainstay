@@ -15,6 +15,7 @@ use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
 use ReflectionAttribute;
 use ReflectionClass;
+use ReflectionProperty;
 use stdClass;
 
 class Mainstay
@@ -269,7 +270,7 @@ class Mainstay
      */
     public function template(Entry $entry): string
     {
-        return $entry->template ?? $this->templates($entry::class)[0];
+        return (new ReflectionProperty(Entry::class, 'template'))->getValue($entry) ?? $this->templates($entry::class)[0];
     }
 
     /*

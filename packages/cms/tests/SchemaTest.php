@@ -23,6 +23,7 @@ use Mainstay\Tests\Fixtures\Moody\Article as MoodyArticle;
 use Mainstay\Tests\Fixtures\Recoded\Article as RecodedArticle;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\Setted\Article as SettedArticle;
+use Mainstay\Tests\Fixtures\SiteSettings;
 use Mainstay\Tests\Fixtures\Tiered\Article as TieredArticle;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
@@ -777,6 +778,19 @@ class SchemaTest extends DatabaseTestCase
         $this->assertFalse(Schema::hasColumn('article', 'headline'));
         $this->assertTrue(Schema::hasColumn('article', 'title'));
         $this->assertFalse(DB::table('migrations')->where('migration', ContentSchema::MARKER)->exists(), 'Nothing was altered, so migrate has nothing to warn about.');
+    }
+
+    #[Test]
+    public function a_global_has_no_view_of_its_own_and_leaves_template_to_its_fields(): void
+    {
+        $this->declare(SiteSettings::class);
+
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        $this->assertSame(
+            ['id', 'site_id', 'site_name', 'template', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
+            Schema::getColumnListing('site_settings'),
+        );
     }
 
     #[Test]

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Fluent;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Mainstay\Content\Entry;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
 
@@ -64,7 +65,11 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'template', 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
+            /* An entry's own view. A global or a term renders nothing of its
+               own, so the name is left to its fields. */
+            $entry = is_subclass_of($type, Entry::class);
+
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
@@ -77,7 +82,7 @@ class ContentSchema
             [$localized, $shared] = $columns->partition(fn (Field $field) => $field->localized)->map->all();
 
             $tables[$handle] = [
-                'columns' => function (Blueprint $table) use ($shared) {
+                'columns' => function (Blueprint $table) use ($shared, $entry) {
                     $table->id();
                     $table->unsignedBigInteger('site_id');
                     $this->fields($table, $shared);
@@ -89,7 +94,9 @@ class ContentSchema
                        Date(time: true) wants: MySQL shifts a timestamp by the
                        session's zone and stops it at 2038. */
                     $table->unsignedBigInteger('owner_id')->nullable();
-                    $table->string('template')->nullable();
+                    if ($entry) {
+                        $table->string('template')->nullable();
+                    }
                     $table->datetimes();
                     $table->softDeletes();
                 },
