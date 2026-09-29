@@ -42,7 +42,10 @@ the catch-all's middleware, or whether it runs at all, are configurable:
 php artisan vendor:publish --tag=mainstay-config
 ```
 
-Re-run the asset publish with `--force` after upgrading the package.
+Re-run the asset publish with `--force` after upgrading the package. An upgrade can also add a
+column Mainstay keeps for itself to the content tables, and production's schema comes from
+hand-written migrations: run `php artisan mainstay:schema:check` against it before deploying, and
+write a migration for whatever it reports.
 
 ## Working on Mainstay
 
