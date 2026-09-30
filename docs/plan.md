@@ -249,10 +249,17 @@ by its own block's rules, reported as `blocks.0.data.heading`. A block type the 
 lists is refused in a write and skipped in a read, and a save of the entry does not trip on one still
 stored. A field of a block may itself be blocks, which is all a repeater is. The field is translated
 whole or not at all, so `localized` and `#[Internal]` inside a block are refused, and so are a block
-that holds itself and a list naming two blocks of one handle. A field added to a block already in use
-needs a default or has to be nullable: the blocks stored before it do not have it, and read with
-its default. A Block is Htmlable too, drawn by the view `blocks.{handle}`; a missing one is an error,
-as an entry's is.
+that holds itself and two blocks of one handle, anywhere. Every field of a block needs a default, or
+has to read nothing as something -- nullable, or a type with an empty value, as text has -- since a
+block stored before the field was added does not have it, and reads with its default or that. One
+with neither is refused where it is declared, so a document or a date a block must have is declared
+nullable with `required: true`. `mainstay:schema:check` reads every stored document and list of
+blocks, on entries and inside blocks, and fails naming the row that its field cannot read or holds a
+value of the wrong kind for -- a block field retyped under stored blocks, prose left in a column now
+rich text. A value only missing is not drift: sync fills a required document with an empty one and a
+required list with none. That check is the guard: a read shows a value a retype coerced -- a number
+field reading 'heavy' as 0 -- and a save giving the blocks back writes what it showed. A Block is
+Htmlable too, drawn by the view `blocks.{handle}`; a missing one is an error, as an entry's is.
 
 Everything a site draws a block with is the site's. The package holds the field types and the base
 class, and its tests hold the blocks they need.
