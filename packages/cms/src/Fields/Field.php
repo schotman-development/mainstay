@@ -176,11 +176,14 @@ abstract class Field
     }
 
     /*
-     | The column this field wants, as a Blueprint method and its arguments, or
-     | null for a field that lives in the type's JSON column and therefore costs
-     | no migration at all.
+     | The column this field wants, as a Blueprint method and its arguments.
+     | A field holding a tree -- a document, a list of blocks -- wants
+     | `['json']`: the store encodes the array serialize() hands it on the way
+     | in and decodes it on the way out, so the field type only ever handles
+     | the array, and a field nested in a block's JSON serializes to the same
+     | thing a column of its own is written from.
      */
-    abstract public function column(): ?array;
+    abstract public function column(): array;
 
     /* The JSON Schema fragment, before nullability is applied to it. */
     abstract protected function json(): array;

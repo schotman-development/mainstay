@@ -684,18 +684,12 @@ class ContentSchema
         };
     }
 
-    /*
-     | Columns are the snake_case of the property, the way every Laravel table
-     | is written. A field that lives in JSON has no column of its own; the
-     | JSON column arrives with the first field type that needs it, in phase 5.
-     */
+    /* Columns are the snake_case of the property, the way every Laravel table
+       is written. */
     private function fields(Blueprint $table, array $fields): void
     {
         foreach ($fields as $name => $field) {
-            if (($column = $field->column()) === null) {
-                continue;
-            }
-
+            $column = $field->column();
             [$method, $arguments] = [array_shift($column), $column];
 
             $table->{$method}($name, ...$arguments)->nullable($field->nullable);

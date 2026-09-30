@@ -27,7 +27,7 @@ class Boolean extends Field
         return false;
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return ['boolean'];
     }

@@ -12,7 +12,7 @@ class ColorPicker extends Field
 {
     protected string $viewNamespace = 'acme';
 
-    public function column(): ?array
+    public function column(): array
     {
         return ['string', 7];
     }

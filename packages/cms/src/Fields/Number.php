@@ -47,7 +47,7 @@ class Number extends Field
         return $this->isFloat() ? 0.0 : 0;
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return [$this->isFloat() ? 'float' : 'integer'];
     }

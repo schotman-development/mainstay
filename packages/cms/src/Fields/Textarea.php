@@ -24,7 +24,7 @@ class Textarea extends Field
         return '';
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return ['text'];
     }

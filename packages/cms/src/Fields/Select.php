@@ -122,7 +122,7 @@ class Select extends Field
         return $this->to($this->values()[0]);
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return ['string', 255];
     }
