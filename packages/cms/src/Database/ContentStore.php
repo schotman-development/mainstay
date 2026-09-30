@@ -6,6 +6,7 @@ use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\Access\Gate as AccessGate;
+use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Database\RecordNotFoundException;
@@ -20,6 +21,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use JsonException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
 use Mainstay\Content\Route;
@@ -600,6 +602,12 @@ class ContentStore
             throw new InvalidArgumentException("{$type} has no field called {$key} to filter or sort on.");
         }
 
+        /* A tree is not a value to compare, and Postgres has no operator to
+           compare a json column with anyway. */
+        if ($this->json($field)) {
+            throw new InvalidArgumentException("{$type}::\${$key} is kept as JSON, which is not filtered or sorted on.");
+        }
+
         return [($field->localized ? "{$handle}_locales" : $handle).'.'.Str::snake($key), $field];
     }
 
@@ -715,6 +723,12 @@ class ContentStore
      | a translation not written yet has no row, and cast() refuses the null
      | a required select or date would read as. Its localized keys are left
      | out instead, which the validator then reports as missing.
+     |
+     | Except a tree, which the rules check as the array a read hands back
+     | and not as the string it is kept in. Through cast() and back for that,
+     | so the save checks what a read would see: a block whose type the
+     | field no longer lists is not there, and one stored before a field was
+     | added to it has that field's default.
      */
     private function stored(string $type, object $row, ?object $translation): array
     {
@@ -724,11 +738,41 @@ class ContentStore
             $source = $field->localized ? $translation : $row;
 
             if ($source !== null) {
-                $stored[$name] = $source->{Str::snake($name)};
+                $value = $source->{Str::snake($name)};
+                $stored[$name] = $this->json($field) ? $field->serialize($field->cast($this->decode($type, $field, $value))) : $value;
             }
         }
 
         return $stored;
+    }
+
+    /* Whether the field's column holds JSON, which the store encodes and
+       decodes so a field type only ever handles the array. */
+    private function json(Field $field): bool
+    {
+        return in_array($field->column()[0], ['json', 'jsonb'], true);
+    }
+
+    private function encode(Field $field, mixed $value): mixed
+    {
+        return $this->json($field) && $value !== null
+            ? json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            : $value;
+    }
+
+    /* A column that does not parse was written around the layer, and is
+       named as a row a field cannot read is. */
+    private function decode(string $type, Field $field, mixed $value): mixed
+    {
+        if (! $this->json($field) || ! is_string($value)) {
+            return $value;
+        }
+
+        try {
+            return json_decode($value, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new InvalidArgumentException("{$type}::\${$field->name} holds something that is not JSON: {$exception->getMessage()}.", previous: $exception);
+        }
     }
 
     /*
@@ -749,6 +793,16 @@ class ContentStore
         if (($unknown = array_diff_key($data, $fields, ['template' => null])) !== []) {
             throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
         }
+
+        /* What a read handed out -- a document, a list of blocks, a block
+           inside another's data -- given back as the arrays it was read
+           from, all the way down, which is what the rules check. */
+        $plain = function (mixed $value) use (&$plain): mixed {
+            $value = $value instanceof Arrayable ? $value->toArray() : $value;
+
+            return is_array($value) ? array_map($plain, $value) : $value;
+        };
+        $data = array_map($plain, $data);
 
         $values = [...$stored, ...$data];
 
@@ -810,7 +864,7 @@ class ContentStore
         $handle = $type::handle();
         $site = $this->site();
         [$localized, $shared] = $this->columns($type);
-        $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->serialize($values[$field->name] ?? null), $fields);
+        $serialize = fn (array $fields) => array_map(fn (Field $field) => $this->encode($field, $field->serialize($values[$field->name] ?? null)), $fields);
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
         /* Blank is no view of its own, which is how one is taken off. */
         $template = array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
@@ -1086,7 +1140,7 @@ class ContentStore
                rather than refusing the caller in that field's name. A read
                still fails on it, naming the declaration. */
             try {
-                $properties[$name]->setValue($entry, $field->cast($row->{$column}));
+                $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column})));
             } catch (InvalidArgumentException $exception) {
                 if ($locale !== null) {
                     throw $exception;

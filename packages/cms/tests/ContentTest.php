@@ -14,9 +14,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Mainstay\Content\Document;
 use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Hooked;
 use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
@@ -52,7 +54,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Hooked::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Hooked::class, SiteSettings::class, Guide::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -1141,6 +1143,90 @@ class ContentTest extends DatabaseTestCase
             InvalidArgumentException::class,
             '#[Route] has patterns for en, nl, and mainstay.locales holds en, nl, de.',
         );
+    }
+
+    #[Test]
+    public function rich_text_is_written_and_read_back_as_a_document(): void
+    {
+        $document = json_decode(file_get_contents(__DIR__.'/Fixtures/document.json'), true);
+        $paragraph = fn (string $text) => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]]]];
+
+        $id = Mainstay::create(Guide::class, ['title' => 'Fields', 'body' => $document, 'aside' => $paragraph('Shared')], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Guide::class, $id, ['title' => 'Velden', 'body' => $paragraph('Nederlands')], locale: 'nl', overrideAccess: true);
+
+        /* A save of another field on a row that holds documents checks them
+           as the trees they are, not as the strings they are kept in. */
+        Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true);
+
+        /* What a read handed out is written back as it was read. */
+        Mainstay::update(Guide::class, $id, ['aside' => Mainstay::findById(Guide::class, $id, locale: 'en')->aside], locale: 'en', overrideAccess: true);
+
+        $en = Mainstay::findById(Guide::class, $id, locale: 'en');
+        $nl = Mainstay::findById(Guide::class, $id, locale: 'nl');
+
+        $this->assertSame('Every field', $en->title);
+        $this->assertInstanceOf(Document::class, $en->body);
+        /* Equal rather than the same: MySQL keeps an object's keys in an
+           order of its own. */
+        $this->assertEquals($document, $en->body->toArray());
+        $this->assertSame((new Document($document))->toHtml(), $en->body->toHtml());
+        $this->assertSame('<p>Nederlands</p>', $nl->body->toHtml());
+        $this->assertSame('<p>Shared</p>', $nl->aside->toHtml());
+        $this->assertSame('<p>Shared</p>', $en->aside->toHtml());
+
+        $this->artisan('mainstay:schema:check')->assertSuccessful();
+    }
+
+    #[Test]
+    public function rich_text_outside_the_schema_is_refused_where_it_goes_wrong(): void
+    {
+        foreach ([
+            ['type' => 'doc', 'content' => [['type' => 'image', 'attrs' => ['src' => 'x.png']]]],
+            '<p>Markup</p>',
+        ] as $body) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'Refused', 'body' => $body], locale: 'en', overrideAccess: true);
+                $this->fail('A body the schema does not hold was written.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    is_array($body) ? 'The body field has a node at content.0 of a type it does not know: image.' : 'The body field must be an array.',
+                    $exception->errors()['body'][0],
+                );
+            }
+        }
+
+        $this->assertSame(0, DB::table('guide')->count());
+    }
+
+    #[Test]
+    public function a_json_column_that_does_not_parse_is_named(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Fields'], locale: 'en', overrideAccess: true)->id;
+        $corrupt = fn () => DB::table('guide')->where('id', $id)->update(['aside' => '{"type": "doc", "content": [']);
+
+        /* Postgres and MySQL check a json column's JSON themselves; SQLite and
+           SQL Server keep it as text, and a row can hold anything. */
+        if (in_array(DB::getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->assertThrows($corrupt, QueryException::class);
+
+            return;
+        }
+
+        $corrupt();
+
+        foreach ([
+            fn () => Mainstay::findById(Guide::class, $id, locale: 'en'),
+            fn () => Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true),
+        ] as $call) {
+            $this->assertThrows($call, InvalidArgumentException::class, 'Guide::$aside holds something that is not JSON');
+        }
+    }
+
+    #[Test]
+    public function rich_text_is_not_filtered_or_sorted_on(): void
+    {
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, where: ['body' => null]), InvalidArgumentException::class, 'Guide::$body is kept as JSON, which is not filtered or sorted on.');
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, sort: 'aside'), InvalidArgumentException::class, 'Guide::$aside is kept as JSON, which is not filtered or sorted on.');
     }
 
     #[Test]
