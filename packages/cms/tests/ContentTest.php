@@ -14,13 +14,17 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Mainstay\Content\Document;
 use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Blocks\Callout;
+use Mainstay\Tests\Fixtures\Blocks\Gallery;
+use Mainstay\Tests\Fixtures\Blocks\Slide;
+use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Hooked;
 use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
-use Mainstay\Tests\Fixtures\Notebook;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
@@ -53,7 +57,7 @@ class ContentTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Notebook::class, Hooked::class, SiteSettings::class);
+        $this->declare(Post::class, Page::class, Memo::class, Submission::class, Ticket::class, Hooked::class, SiteSettings::class, Guide::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -1145,14 +1149,331 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_type_with_a_field_kept_in_json_is_refused_by_name(): void
+    public function rich_text_is_written_and_read_back_as_a_document(): void
+    {
+        $document = json_decode(file_get_contents(__DIR__.'/Fixtures/document.json'), true);
+        $paragraph = fn (string $text) => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]]]];
+
+        $id = Mainstay::create(Guide::class, ['title' => 'Fields', 'body' => $document, 'aside' => $paragraph('Shared')], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Guide::class, $id, ['title' => 'Velden', 'body' => $paragraph('Nederlands')], locale: 'nl', overrideAccess: true);
+
+        /* A save of another field on a row that holds documents checks them
+           as the trees they are, not as the strings they are kept in. */
+        Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true);
+
+        /* What a read handed out is written back as it was read. */
+        Mainstay::update(Guide::class, $id, ['aside' => Mainstay::findById(Guide::class, $id, locale: 'en')->aside], locale: 'en', overrideAccess: true);
+
+        $en = Mainstay::findById(Guide::class, $id, locale: 'en');
+        $nl = Mainstay::findById(Guide::class, $id, locale: 'nl');
+
+        $this->assertSame('Every field', $en->title);
+        $this->assertInstanceOf(Document::class, $en->body);
+        /* Equal rather than the same: MySQL keeps an object's keys in an
+           order of its own. */
+        $this->assertEquals($document, $en->body->toArray());
+        $this->assertSame((new Document($document))->toHtml(), $en->body->toHtml());
+        $this->assertSame('<p>Nederlands</p>', $nl->body->toHtml());
+        $this->assertSame('<p>Shared</p>', $nl->aside->toHtml());
+        $this->assertSame('<p>Shared</p>', $en->aside->toHtml());
+
+        $this->artisan('mainstay:schema:check')->assertSuccessful();
+    }
+
+    #[Test]
+    public function rich_text_outside_the_schema_is_refused_where_it_goes_wrong(): void
     {
         foreach ([
-            fn () => Mainstay::find(Notebook::class),
-            fn () => Mainstay::create(Notebook::class, ['title' => 'Ideas'], locale: 'en', overrideAccess: true),
-        ] as $call) {
-            $this->assertThrows($call, InvalidArgumentException::class, 'Notebook::$jottings is kept in the type\'s JSON column, which the query layer does not read or write yet.');
+            ['type' => 'doc', 'content' => [['type' => 'image', 'attrs' => ['src' => 'x.png']]]],
+            '<p>Markup</p>',
+        ] as $body) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'Refused', 'body' => $body], locale: 'en', overrideAccess: true);
+                $this->fail('A body the schema does not hold was written.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    is_array($body) ? 'The body field has a node at content.0 of a type it does not know: image.' : 'The body field must be an array.',
+                    $exception->errors()['body'][0],
+                );
+            }
         }
+
+        $this->assertSame(0, DB::table('guide')->count());
+    }
+
+    #[Test]
+    public function a_json_column_that_does_not_parse_is_named(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Fields'], locale: 'en', overrideAccess: true)->id;
+        $corrupt = fn () => DB::table('guide')->where('id', $id)->update(['aside' => '{"type": "doc", "content": [']);
+
+        /* Postgres and MySQL check a json column's JSON themselves; SQLite and
+           SQL Server keep it as text, and a row can hold anything. */
+        if (in_array(DB::getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->assertThrows($corrupt, QueryException::class);
+
+            return;
+        }
+
+        $corrupt();
+
+        /* A read fails naming the declaration; a save is refused naming the
+           field, as one of a date column holding something else is. */
+        $this->assertThrows(fn () => Mainstay::findById(Guide::class, $id, locale: 'en'), InvalidArgumentException::class, 'Guide::$aside holds something that is not JSON');
+        $this->assertSame(
+            ['aside' => ['The aside field must be an array.']],
+            $this->refusal(fn () => Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true)),
+        );
+    }
+
+    #[Test]
+    public function json_that_is_not_the_tree_its_field_holds_is_named_rather_than_read_as_nothing(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Fields'], locale: 'en', overrideAccess: true)->id;
+        DB::table('guide')->where('id', $id)->update(['aside' => '42']);
+
+        $this->assertThrows(fn () => Mainstay::findById(Guide::class, $id, locale: 'en'), InvalidArgumentException::class, 'aside holds something that is not a document.');
+        $this->assertSame(['aside'], array_keys($this->refusal(fn () => Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true))));
+
+        DB::table('guide')->where('id', $id)->update(['aside' => null]);
+        DB::table('guide_locales')->where('parent_id', $id)->update(['blocks' => '{"callout": {"heading": "Keyed"}}']);
+
+        $this->assertThrows(fn () => Mainstay::findById(Guide::class, $id, locale: 'en'), InvalidArgumentException::class, 'blocks holds something that is not a list of blocks.');
+        $this->assertSame(['blocks'], array_keys($this->refusal(fn () => Mainstay::update(Guide::class, $id, ['title' => 'Every field'], locale: 'en', overrideAccess: true))));
+    }
+
+    #[Test]
+    public function a_stored_tree_the_caller_may_not_see_is_neither_checked_nor_named(): void
+    {
+        Gate::policy(Guide::class, EditorPolicy::class);
+        $id = Mainstay::create(Guide::class, ['title' => 'Notes'], locale: 'en', overrideAccess: true)->id;
+        $unreadable = ['42'];
+
+        /* Postgres and MySQL check a json column's JSON themselves; SQLite and
+           SQL Server keep it as text, and a row can hold what does not parse. */
+        if (in_array(DB::getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->assertThrows(fn () => DB::table('guide')->where('id', $id)->update(['notes' => '{"type": "doc"']), QueryException::class);
+        } else {
+            $unreadable[] = '{"type": "doc"';
+        }
+
+        foreach ($unreadable as $notes) {
+            DB::table('guide')->where('id', $id)->update(['notes' => $notes]);
+
+            $this->assertSame('Seen', Mainstay::update(Guide::class, $id, ['title' => 'Seen'], locale: 'en')->title);
+            $this->assertSame(['notes'], array_keys($this->refusal(fn () => Mainstay::update(Guide::class, $id, ['title' => 'Other'], locale: 'en', overrideAccess: true))));
+        }
+    }
+
+    #[Test]
+    public function what_json_cannot_hold_is_refused_by_name_before_anything_is_written(): void
+    {
+        $bad = "bad \xB1 byte";
+
+        $this->assertSame(
+            ['body' => ['The body field holds something JSON cannot: Malformed UTF-8 characters, possibly incorrectly encoded.']],
+            $this->refusal(fn () => Mainstay::create(Guide::class, ['title' => 'Bytes', 'body' => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $bad]]]]]], locale: 'en', overrideAccess: true)),
+        );
+        $this->assertSame(['blocks'], array_keys($this->refusal(fn () => Mainstay::create(Guide::class, ['title' => 'Bytes', 'blocks' => [['type' => 'callout', 'data' => ['heading' => $bad]]]], locale: 'en', overrideAccess: true))));
+
+        /* A number every rule takes, which only its field's serializing
+           makes infinite. */
+        $this->assertSame(
+            ['blocks' => ['The blocks field holds something JSON cannot: Inf and NaN cannot be JSON encoded.']],
+            $this->refusal(fn () => Mainstay::create(Guide::class, ['title' => 'Huge', 'blocks' => [['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'Heavy', 'weight' => '1e999']]]]]]], locale: 'en', overrideAccess: true)),
+        );
+        $this->assertSame(0, DB::table('guide')->count());
+    }
+
+    #[Test]
+    public function blocks_are_written_and_read_back_as_blocks(): void
+    {
+        $careful = ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Careful']]]]];
+
+        $id = Mainstay::create(Guide::class, ['title' => 'Blocks', 'blocks' => [
+            ['type' => 'callout', 'data' => ['heading' => 'Note', 'text' => $careful, 'on' => '2026-09-30']],
+            ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [
+                ['type' => 'slide', 'data' => ['title' => 'One']],
+                ['type' => 'slide', 'data' => ['title' => 'Two']],
+            ]]],
+        ]], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Guide::class, $id, ['title' => 'Blokken', 'blocks' => [
+            ['id' => 'kept', 'type' => 'callout', 'data' => ['heading' => 'Let op', 'tone' => 'warning']],
+        ]], locale: 'nl', overrideAccess: true);
+
+        $read = Mainstay::findById(Guide::class, $id, locale: 'en');
+        [$callout, $gallery] = $read->blocks;
+        $ids = fn (Guide $guide) => [$guide->blocks[0]->id, $guide->blocks[1]->id, ...array_map(fn (Slide $slide) => $slide->id, $guide->blocks[1]->slides)];
+
+        $this->assertInstanceOf(Callout::class, $callout);
+        $this->assertSame('Note', $callout->heading);
+        $this->assertSame('info', $callout->tone, 'Left out, a field takes the default its property declares.');
+        $this->assertInstanceOf(CarbonImmutable::class, $callout->on);
+        $this->assertSame('2026-09-30', $callout->on->format('Y-m-d'));
+        $this->assertSame('<p>Careful</p>', $callout->text->toHtml());
+        $this->assertStringContainsString('"text":{"type":"doc"', json_encode($read->blocks), 'A document inside a block encodes as the tree it is.');
+        $this->assertInstanceOf(Gallery::class, $gallery);
+        $this->assertSame(['One', 'Two'], array_map(fn (Slide $slide) => $slide->title, $gallery->slides));
+        $this->assertCount(4, array_unique($ids($read)), 'Every block, the repeater\'s included, is given an id of its own.');
+
+        /* A save of another field keeps every block as it was, and blocks
+           written back as a read handed them out keep their ids. */
+        Mainstay::update(Guide::class, $id, ['title' => 'Every block'], locale: 'en', overrideAccess: true);
+        Mainstay::update(Guide::class, $id, ['blocks' => $read->blocks], locale: 'en', overrideAccess: true);
+        $this->assertSame($ids($read), $ids(Mainstay::findById(Guide::class, $id, locale: 'en')));
+
+        $nl = Mainstay::findById(Guide::class, $id, locale: 'nl');
+        $this->assertCount(1, $nl->blocks);
+        $this->assertSame('kept', $nl->blocks[0]->id);
+        $this->assertSame('warning', $nl->blocks[0]->tone);
+
+        $this->artisan('mainstay:schema:check')->assertSuccessful();
+    }
+
+    #[Test]
+    public function a_block_is_checked_by_its_own_rules_where_it_is(): void
+    {
+        foreach ([
+            [[
+                ['type' => 'callout', 'data' => ['heading' => 'Fine']],
+                ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'Fine']], ['type' => 'slide', 'data' => []]]]],
+                ['type' => 'banner', 'data' => []],
+                ['type' => 'callout', 'data' => ['heading' => 'Late', 'on' => 'not a date']],
+                ['type' => 'callout', 'data' => ['heading' => 'Red', 'colour' => 'red']],
+                ['type' => 'callout', 'data' => ['heading' => 'Tagged'], 'tags' => ['new']],
+            ], ['blocks.1.data.slides.1.data.title', 'blocks.2.type', 'blocks.3.data.on', 'blocks.4.data', 'blocks.5']],
+            [[
+                ['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'One']],
+            ], ['blocks.0.type']],
+            [[
+                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'One']],
+                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'Two']],
+            ], ['blocks.0.id', 'blocks.1.id']],
+            [['type' => 'callout', 'data' => ['heading' => 'Keyed']], ['blocks']],
+        ] as [$blocks, $keys]) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'Refused', 'blocks' => $blocks], locale: 'en', overrideAccess: true);
+                $this->fail('Blocks their rules refuse were written.');
+            } catch (ValidationException $exception) {
+                $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
+            }
+        }
+
+        $this->assertSame(0, DB::table('guide')->count());
+    }
+
+    #[Test]
+    public function blocks_built_by_hand_are_checked_as_blocks_written_as_data_are(): void
+    {
+        $slide = new Slide;
+        $slide->title = 'Built';
+        $gallery = new Gallery;
+        $gallery->slides = [$slide];
+        $stray = new Callout;
+        $stray->heading = 'In the wrong list';
+        $unfinished = new Gallery;
+        $unfinished->slides = [new Slide];
+
+        foreach ([
+            [[$gallery, ['type' => 'gallery', 'data' => ['slides' => [$stray]]]], ['blocks.1.data.slides.0.type']],
+            [[$unfinished], ['blocks.0.data.slides.0.data.title']],
+        ] as [$blocks, $keys]) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'By hand', 'blocks' => $blocks], locale: 'en', overrideAccess: true);
+                $this->fail('Blocks their rules refuse were written.');
+            } catch (ValidationException $exception) {
+                $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
+            }
+        }
+
+        $id = Mainstay::create(Guide::class, ['title' => 'By hand', 'blocks' => [$gallery]], locale: 'en', overrideAccess: true)->id;
+
+        $this->assertSame('Built', Mainstay::findById(Guide::class, $id, locale: 'en')->blocks[0]->slides[0]->title);
+    }
+
+    #[Test]
+    public function a_block_the_field_no_longer_lists_is_not_there(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Old', 'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Kept']]]], locale: 'en', overrideAccess: true)->id;
+
+        /* A block of a type the field has since stopped listing, and one
+           stored before its tone was declared and after a field and a key
+           of its own were taken off it. */
+        $stored = json_decode(DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), true);
+        unset($stored[0]['data']['tone']);
+        $stored[0]['data']['retired'] = 'Taken off the block';
+        $stored[0]['meta'] = ['by' => 'an old seeder'];
+        $stored[] = ['id' => 'gone', 'type' => 'banner', 'data' => ['text' => 'Retired']];
+        DB::table('guide_locales')->where('parent_id', $id)->update(['blocks' => json_encode($stored)]);
+
+        Mainstay::update(Guide::class, $id, ['title' => 'Still saves'], locale: 'en', overrideAccess: true);
+        $read = Mainstay::findById(Guide::class, $id, locale: 'en');
+
+        $this->assertSame('Still saves', $read->title);
+        $this->assertCount(1, $read->blocks);
+        $this->assertSame('info', $read->blocks[0]->tone, 'A field a block was stored without takes its default.');
+        $this->assertStringContainsString('Retired', DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), 'Nothing is thrown away until the blocks are written.');
+    }
+
+    #[Test]
+    public function a_block_keeps_the_id_it_was_given_and_is_given_one_for_none(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Ids', 'blocks' => array_map(
+            fn (?string $id) => ['id' => $id, 'type' => 'callout', 'data' => ['heading' => 'Kept']],
+            ['', ' ', null, '1', '01'],
+        )], locale: 'en', overrideAccess: true)->id;
+
+        $ids = fn () => array_map(fn (Callout $callout) => $callout->id, Mainstay::findById(Guide::class, $id, locale: 'en')->blocks);
+        $read = $ids();
+
+        $this->assertSame(['1', '01'], array_slice($read, 3), 'Two ids are two strings, however alike as numbers.');
+        $this->assertCount(5, array_unique($read), 'A blank id is none, and each block given none is given its own.');
+        $this->assertSame($read, $ids(), 'An id given is kept, read after read.');
+    }
+
+    #[Test]
+    public function a_stored_block_its_fields_cannot_read_fails_the_read_and_the_save_by_name(): void
+    {
+        Gate::policy(Guide::class, EditorPolicy::class);
+        $id = Mainstay::create(Guide::class, ['title' => 'Stored', 'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Note']]]], locale: 'en', overrideAccess: true)->id;
+        [$stored] = json_decode(DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), true);
+        /* Behind a block of a type the field no longer lists, which a read
+           and a save both leave out: each names the one after it as the
+           first. */
+        $store = fn (array $block) => DB::table('guide_locales')->where('parent_id', $id)->update(['blocks' => json_encode([['id' => 'gone', 'type' => 'banner', 'data' => []], $block])]);
+
+        /* Written around the layer. A save of another field is refused naming
+           where, as a column holding what its type refuses is -- through Gate
+           as well, which is shown the entry without the field it cannot
+           read. */
+        foreach ([
+            [[...$stored, 'data' => [...$stored['data'], 'on' => 'garbage']], ['blocks.0.data.on'], 'Mainstay\Tests\Fixtures\Blocks\Callout::$on cannot read the callout at blocks.0:'],
+            [[...$stored, 'data' => [...$stored['data'], 'heading' => ['type' => 'doc']]], ['blocks.0.data.heading'], 'Mainstay\Tests\Fixtures\Blocks\Callout::$heading cannot read the callout at blocks.0: a list or a map is stored for it.'],
+            [[...$stored, 'id' => 7], ['blocks.0.id'], 'The callout at blocks.0 has an id that is not a string.'],
+            [[...$stored, 'id' => []], ['blocks.0.id'], 'The callout at blocks.0 has an id that is not a string.'],
+            [[...$stored, 'data' => 'Note'], ['blocks.0.data', 'blocks.0.data.heading', 'blocks.0.data.tone'], 'The callout at blocks.0 has data that is not a map.'],
+        ] as [$block, $keys, $message]) {
+            $store($block);
+
+            $this->assertThrows(fn () => Mainstay::findById(Guide::class, $id, locale: 'en'), InvalidArgumentException::class, $message);
+            $this->assertSame($keys, array_keys($this->refusal(fn () => Mainstay::update(Guide::class, $id, ['title' => 'Other'], locale: 'en'))), $message);
+        }
+
+        /* A block stored with no id, or a blank one, is given one, as a block
+           written with none is. */
+        foreach ([array_diff_key($stored, ['id' => null]), [...$stored, 'id' => ' ']] as $block) {
+            $store($block);
+            $this->assertSame(26, strlen(Mainstay::findById(Guide::class, $id, locale: 'en')->blocks[0]->id));
+            $this->assertSame('Saved', Mainstay::update(Guide::class, $id, ['title' => 'Saved'], locale: 'en')->title);
+        }
+    }
+
+    #[Test]
+    public function rich_text_is_not_filtered_or_sorted_on(): void
+    {
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, where: ['blocks' => ['!=' => null]]), InvalidArgumentException::class, 'Guide::$blocks is kept as JSON, which is not filtered or sorted on.');
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, where: ['body' => null]), InvalidArgumentException::class, 'Guide::$body is kept as JSON, which is not filtered or sorted on.');
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, sort: 'aside'), InvalidArgumentException::class, 'Guide::$aside is kept as JSON, which is not filtered or sorted on.');
     }
 
     #[Test]

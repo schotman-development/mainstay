@@ -16,13 +16,13 @@ admin arrive after the model has been proven, as a surface over a layer that alr
 ## What is already settled and does not get re-opened
 
 Structure is PHP classes read by reflection. Content lives in per-type tables with real columns for
-scalars and one JSON column for blocks. There is one query layer and HTTP is a transport over it.
+scalars and a JSON column for each tree: a document, a list of blocks. There is one query layer and HTTP is a transport over it.
 The admin renders in Blade. Client state is vanilla TypeScript. Everything is soft-deleted, scoped
 to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Ten things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Eleven things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -58,6 +58,14 @@ rather than edited into the log, which is append-only by construction.
   after everything else, so ordering becomes a documented requirement." It is a fallback route,
   which Laravel matches after every other route whatever order they were registered in, so there
   is no requirement to document. The phase 4 entry has why it is not `Route::fallback()` itself.
+- **A field stored as JSON has a column of its own.** The field types entry says "a custom field that
+  stores in JSON requires no migration", which one JSON column shared by every such field on a table
+  would give. Laravel cannot update one key of a JSON column on SQL Server, so every save of one of
+  those fields would read the column, merge and write it back under a lock, to keep a save writing
+  only what it was given. So a document or a list of blocks is a `json` column of its own, which
+  `mainstay:schema:check` sees like any other: adding one to a type is a sync and a migration, as
+  adding a text field is. Adding a field inside a block still costs nothing, which is the case the
+  blocks decision was about.
 - **`mainstay.locales` is a map, not a list.** The localization entry has it carrying "`locales`, a
   required default, and a fallback flag." It maps each locale to where it is served, the first
   being the default, and there is no fallback flag until phase 12 makes fallback an opt-in.
@@ -213,19 +221,58 @@ after it makes that loop richer rather than making it exist.
 
 ## Phase 5 — Rich text and blocks
 
-The JSON column holding an ordered array of `{ id, type, data }`, and rich text stored as
-ProseMirror document JSON, both written through phase 3's layer.
+Two field types, and nothing else in the layer changes shape. A field whose `column()` is `['json']`
+serializes to an array, which the store encodes on the way in and decodes on the way out, so a field
+type never handles a string and a field nested in a block's JSON serializes to the same array a
+column of its own is written from. A JSON field is not filtered or sorted on: a tree is not a value
+to compare, and Postgres has no operator for a `json` column anyway. A save checks what is stored
+there as a read would hand it back, not as the string it is kept in.
 
-A PHP walker turning that document into HTML at render time. The node schema is closed and an
-unknown node renders as nothing.
+`#[RichText] public ?Document $body` is a ProseMirror document, written as the nested array its
+`toJSON()` gives or as the Document a read handed out. The node schema is closed and ProseMirror's
+own: paragraph, heading (2 to 4, since h1 is the page's title), blockquote, code block, both lists
+and their items, rule and break; link, em, strong and code marks. `packages/editor/src/schema.ts`
+declares the same one, and one fixture document is loaded by both. A save refuses a document
+outside it, naming the path to the node that is wrong, nesting included, so a document a seeder
+writes by hand is one the editor in phase 10 can open. A link leads to a web, mail or phone address
+or a path, decided from the text before the colon, since `parse_url()` finds no scheme in the
+`java\tscript:` a browser runs. The Document is Htmlable, so a template prints it. The walker
+escapes everything, draws an unknown node or one whose shape is wrong as nothing, and drops a mark
+it does not know or a link it would not have saved while keeping the text. No empty value: the
+empty document is a paragraph holding nothing, and storing one for an unset body would print it.
 
-Block Blade templates on the site are the other half, and they are the only part of a design
-conversion that is not a rename.
+`#[Blocks(of: [Hero::class, ...])] public array $blocks` is an ordered list of `{ id, type, data }`.
+A block is a class extending `Block`, its properties carrying the same field attributes an entry's
+do, its type its handle. The layer gives a block with no id a new one and keeps an id it is given.
+It reads back as a list of block objects, each field cast through its type, and each item is checked
+by its own block's rules, reported as `blocks.0.data.heading`. A block type the field no longer
+lists is refused in a write and skipped in a read, and a save of the entry does not trip on one still
+stored. A field of a block may itself be blocks, which is all a repeater is. The field is translated
+whole or not at all, so `localized` and `#[Internal]` inside a block are refused, and so are a block
+that holds itself and two blocks of one handle, anywhere. Every field of a block needs a default, or
+has to read nothing as something -- nullable, or a type with an empty value, as text has -- since a
+block stored before the field was added does not have it, and reads with its default or that. One
+with neither is refused where it is declared, so a document or a date a block must have is declared
+nullable with `required: true`. `mainstay:schema:check` reads every stored document and list of
+blocks, on entries and inside blocks, and fails naming the row that its field cannot read or holds a
+value of the wrong kind for -- a block field retyped under stored blocks, prose left in a column now
+rich text. A value only missing is not drift: sync fills a required document with an empty one and a
+required list with none. That check is the guard: a read shows a value a retype coerced -- a number
+field reading 'heavy' as 0 -- and a save giving the blocks back writes what it showed. A Block is
+Htmlable too, drawn by the view `blocks.{handle}`; a missing one is an error, as an entry's is.
 
-Until phase 10 a document is written by hand, as a nested array in a seeder. That is the cost of
-testing the model before the editor exists.
+Everything a site draws a block with is the site's. The package holds the field types and the base
+class, and its tests hold the blocks they need.
 
-The check is a document fixture rendered to expected HTML.
+The site's pages, articles and docs have rich text bodies, written by its seeder from the plain
+text they were, and its front page is a list of blocks, which the Feature type it listed was only
+standing in for.
+
+The check is a document fixture rendered to expected HTML, every node and mark, with an unknown
+node and mark, a refused link and escaping beside it; the same fixture opened by the editor's
+schema; and documents and blocks written and read back through the layer on all four drivers, in
+two locales, with a nested repeater, a date inside a block, a refused block type, a save of another
+field on a row that already holds both, and the drift check passing over the json columns.
 
 ## Phase 6 — Media
 

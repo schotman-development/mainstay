@@ -82,7 +82,7 @@ class Date extends Field
         return parent::bind($property);
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return [$this->time ? 'dateTime' : 'date'];
     }

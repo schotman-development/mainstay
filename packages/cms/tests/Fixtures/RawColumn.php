@@ -15,7 +15,7 @@ class RawColumn extends Field
         parent::__construct();
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return $this->definition;
     }

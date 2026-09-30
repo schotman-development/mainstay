@@ -10,12 +10,15 @@ use Illuminate\Database\Schema\ColumnDefinition;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Fluent;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use JsonException;
 use Mainstay\Content\Entry;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
+use TypeError;
 
 /*
  | The field list as tables, the live database compared against them, and the
@@ -145,7 +148,12 @@ class ContentSchema
      | connection being checked, and buys a comparison that works for any
      | column a host's field type asks for.
      |
-     | @return array<string, array{missing: bool, add: list<string>, drop: list<string>, change: array<string, array{live: array, declared: array}>, keys: list<array>}>
+     | The json columns are asked about their rows as well -- see
+     | unreadable() -- because their type alone cannot tell a document from
+     | the prose it replaced, or blocks from the ones their fields were
+     | before.
+     |
+     | @return array<string, array{missing: bool, add: list<string>, drop: list<string>, change: array<string, array{live: array, declared: array}>, keys: list<array>, unreadable: array<string, string>}>
      */
     public function diff(): array
     {
@@ -153,7 +161,7 @@ class ContentSchema
 
         foreach ($this->tables() as $name => $table) {
             if (! Schema::hasTable($name)) {
-                $diff[$name] = ['missing' => true, 'add' => [], 'drop' => [], 'change' => [], 'keys' => []];
+                $diff[$name] = ['missing' => true, 'add' => [], 'drop' => [], 'change' => [], 'keys' => [], 'unreadable' => []];
 
                 continue;
             }
@@ -180,9 +188,10 @@ class ContentSchema
                     $this->declared($name, $table['keys']),
                     fn (array $key) => ! in_array($this->comparable($key), $keys, true),
                 )),
+                'unreadable' => $this->unreadable($name, $table['fields'], $live, $declared),
             ];
 
-            if ($changes['add'] !== [] || $changes['drop'] !== [] || $changes['change'] !== [] || $changes['keys'] !== []) {
+            if ($changes['add'] !== [] || $changes['drop'] !== [] || $changes['change'] !== [] || $changes['keys'] !== [] || $changes['unreadable'] !== []) {
                 $diff[$name] = $changes;
             }
         }
@@ -219,6 +228,10 @@ class ContentSchema
                     ? "{$table}: declared unique on ({$columns}), and the database has no such index"
                     : "{$table}: declared a foreign key on ({$columns}) referencing {$key['on']}.".implode(', ', $key['references']).', and the database has no such key';
             }
+
+            foreach ($changes['unreadable'] as $column => $reason) {
+                $lines[] = "{$table}.{$column}: declared json, and {$reason}";
+            }
         }
 
         return $lines;
@@ -245,6 +258,10 @@ class ContentSchema
      | a restored unique index refusing duplicate rows, or a key whose
      | conventional name is already taken by something else, fails where it
      | happens, after the tables ahead of it were altered.
+     |
+     | Rows a json column cannot read are left as they are: turning prose
+     | into a document is not a conversion anything here can make for a
+     | person, and the diff sync is asked again after still names them.
      */
     public function sync(array $diff): void
     {
@@ -631,6 +648,70 @@ class ContentSchema
             ->all();
     }
 
+    /*
+     | The json columns holding a row their field cannot read, or would
+     | refuse to save, each with the first such row and what is wrong with
+     | it. Asked of the field itself -- every row decoded and cast as a read
+     | would, then checked by the rules a save checks it by -- because a json
+     | column's type tells nothing: SQLite and SQL Server keep json as text,
+     | so a Textarea redeclared as rich text reads as in step while its rows
+     | still hold prose, and a block field retyped since its blocks were
+     | stored is the same json column on every driver. The rules are what
+     | see a retype a cast coerces rather than refuses: 'heavy' in a field
+     | that was text and is now a number reads as 0. So each check reads
+     | every row of every json column, a page at a time -- seconds, for ten
+     | thousand entries.
+     |
+     | Only a column already of its declared type: one still to be retyped
+     | holds values of the old type, which sync converts or refuses first.
+     | A null is the nullability comparison's to report, not this.
+     |
+     | @param  array<string, Field>  $fields  by column
+     | @return array<string, string>
+     */
+    private function unreadable(string $table, array $fields, array $live, array $declared): array
+    {
+        $unreadable = [];
+
+        foreach ($fields as $column => $field) {
+            if (! $field->keptAsJson() || ($live[$column]['type'] ?? null) !== $declared[$column]['type']) {
+                continue;
+            }
+
+            foreach (DB::table($table)->whereNotNull($column)->select(['id', $column])->lazyById(200) as $row) {
+                try {
+                    $field->cast($value = $field->decode($row->{$column}));
+                } catch (InvalidArgumentException|JsonException|TypeError $exception) {
+                    $unreadable[$column] = "row {$row->id} holds what its field cannot read: {$exception->getMessage()}";
+
+                    break;
+                }
+
+                $value = $field->complete($value, stored: true);
+                $validator = Validator::make([$field->name => $value], $field->rulesAt($field->name, $value));
+
+                /* A value of the wrong kind, and not one missing: a required
+                   field holding its empty value -- the `[]` sync fills a
+                   required list with, a field a block was stored without, a
+                   box that must be ticked left unticked -- is what a required
+                   text column holding '' is, which nothing here reports
+                   either. */
+                $wrong = $validator->fails()
+                    ? collect($validator->failed())->reject(fn (array $rules, string $attribute) => array_diff(array_keys($rules), ['Required', 'Accepted']) === []
+                        && (blank($held = data_get($validator->getData(), $attribute)) || in_array($held, [false, 0, '0'], true)))->keys()->first()
+                    : null;
+
+                if ($wrong !== null) {
+                    $unreadable[$column] = "row {$row->id} holds what its field refuses: {$validator->errors()->first($wrong)}";
+
+                    break;
+                }
+            }
+        }
+
+        return $unreadable;
+    }
+
     /* Bound by name only; the interface is not in the container. */
     private function mark(): void
     {
@@ -656,7 +737,7 @@ class ContentSchema
     {
         if ($field !== null) {
             try {
-                return $field->backfill();
+                return $field->encode($field->backfill());
             } catch (InvalidArgumentException) {
                 /* No empty value of its own; the column's type answers. */
             }
@@ -684,18 +765,12 @@ class ContentSchema
         };
     }
 
-    /*
-     | Columns are the snake_case of the property, the way every Laravel table
-     | is written. A field that lives in JSON has no column of its own; the
-     | JSON column arrives with the first field type that needs it, in phase 5.
-     */
+    /* Columns are the snake_case of the property, the way every Laravel table
+       is written. */
     private function fields(Blueprint $table, array $fields): void
     {
         foreach ($fields as $name => $field) {
-            if (($column = $field->column()) === null) {
-                continue;
-            }
-
+            $column = $field->column();
             [$method, $arguments] = [array_shift($column), $column];
 
             $table->{$method}($name, ...$arguments)->nullable($field->nullable);

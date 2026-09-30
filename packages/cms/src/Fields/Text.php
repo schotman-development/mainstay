@@ -38,7 +38,7 @@ class Text extends Field
         return '';
     }
 
-    public function column(): ?array
+    public function column(): array
     {
         return ['string', $this->max];
     }
