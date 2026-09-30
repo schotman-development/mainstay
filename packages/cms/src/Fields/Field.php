@@ -52,6 +52,15 @@ abstract class Field
     public readonly bool $internal;
 
     /*
+     | Whether the property declares a default, and the default: what a field
+     | left off a new row, or off a block stored before it was added, holds.
+     | Read here once rather than off a ReflectionProperty by every caller.
+     */
+    public readonly bool $hasDefault;
+
+    public readonly mixed $default;
+
+    /*
      | The view namespace component() draws from. A property rather than a
      | literal because a host cannot add views to Mainstay's own: a field type
      | is only registration-free if the half of it that draws lives somewhere
@@ -81,6 +90,8 @@ abstract class Field
         $this->phpType = $declared instanceof ReflectionNamedType ? $declared->getName() : 'mixed';
         $this->nullable = $declared === null || $declared->allowsNull();
         $this->internal = $this->marked($property);
+        $this->hasDefault = $property->hasDefaultValue();
+        $this->default = $this->hasDefault ? $property->getDefaultValue() : null;
 
         /*
          | The one declaration isRequired() cannot answer for: `required: false`
@@ -184,6 +195,43 @@ abstract class Field
      | thing a column of its own is written from.
      */
     abstract public function column(): array;
+
+    /* Whether the column holds JSON, which the layer encodes on the way in
+       and decodes on the way out. A type storing a tree in a column of
+       another kind overrides this. */
+    public function keptAsJson(): bool
+    {
+        return in_array($this->column()[0], ['json', 'jsonb'], true);
+    }
+
+    /* A serialized value as the column takes it: the store's write and
+       sync's backfill both come through here, so a tree is encoded one way. */
+    public function encode(mixed $value): mixed
+    {
+        return $this->keptAsJson() && $value !== null
+            ? json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            : $value;
+    }
+
+    /* The column's value as cast() takes it, and as the rules check it: a
+       tree decoded. Text that does not parse throws a JsonException. */
+    public function decode(mixed $value): mixed
+    {
+        return $this->keptAsJson() && is_string($value)
+            ? json_decode($value, true, flags: JSON_THROW_ON_ERROR)
+            : $value;
+    }
+
+    /*
+     | The value as a save checks it: still data, with what a read would give
+     | it filled in. Only a field holding others has anything to fill -- see
+     | Blocks. `$stored` is true for what a row already holds, where what the
+     | field no longer reads is left out rather than refused.
+     */
+    public function complete(mixed $value, bool $stored = false): mixed
+    {
+        return $value;
+    }
 
     /* The JSON Schema fragment, before nullability is applied to it. */
     abstract protected function json(): array;

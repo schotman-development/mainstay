@@ -656,11 +656,7 @@ class ContentSchema
     {
         if ($field !== null) {
             try {
-                $value = $field->backfill();
-
-                /* A json column is written from the array its field
-                   serializes to, as the store writes one. */
-                return is_array($value) ? json_encode($value, JSON_THROW_ON_ERROR) : $value;
+                return $field->encode($field->backfill());
             } catch (InvalidArgumentException) {
                 /* No empty value of its own; the column's type answers. */
             }

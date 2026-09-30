@@ -224,7 +224,7 @@ class ContentStore
             [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
             try {
-                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale)), $internal), $data, $locale, $translations->has($locale), $reads);
+                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal), $data, $locale, $translations->has($locale), $reads);
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -604,7 +604,7 @@ class ContentStore
 
         /* A tree is not a value to compare, and Postgres has no operator to
            compare a json column with anyway. */
-        if ($this->json($field)) {
+        if ($field->keptAsJson()) {
             throw new InvalidArgumentException("{$type}::\${$key} is kept as JSON, which is not filtered or sorted on.");
         }
 
@@ -725,12 +725,15 @@ class ContentStore
      | out instead, which the validator then reports as missing.
      |
      | Except a tree, which the rules check as the array a read hands back
-     | and not as the string it is kept in. Through cast() and back for that,
-     | so the save checks what a read would see: a block whose type the
-     | field no longer lists is not there, and one stored before a field was
-     | added to it has that field's default.
+     | and not as the string it is kept in. Decoded, and left as data rather
+     | than read through cast() -- validate() completes it as a read would
+     | see it -- so a value inside it that breaks a rule is refused naming
+     | where it is, as a column's is. One that does not decode stays the
+     | string it is, which the rules refuse by name. An internal one the
+     | caller may not see is not decoded at all: nothing checks it, and no
+     | error may name it.
      */
-    private function stored(string $type, object $row, ?object $translation): array
+    private function stored(string $type, object $row, ?object $translation, bool $internal): array
     {
         $stored = [];
 
@@ -739,37 +742,24 @@ class ContentStore
 
             if ($source !== null) {
                 $value = $source->{Str::snake($name)};
-                $stored[$name] = $this->json($field) ? $field->serialize($field->cast($this->decode($type, $field, $value))) : $value;
+
+                try {
+                    $stored[$name] = $internal || ! $field->internal ? $field->decode($value) : $value;
+                } catch (JsonException) {
+                    $stored[$name] = $value;
+                }
             }
         }
 
         return $stored;
     }
 
-    /* Whether the field's column holds JSON, which the store encodes and
-       decodes so a field type only ever handles the array. */
-    private function json(Field $field): bool
-    {
-        return in_array($field->column()[0], ['json', 'jsonb'], true);
-    }
-
-    private function encode(Field $field, mixed $value): mixed
-    {
-        return $this->json($field) && $value !== null
-            ? json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-            : $value;
-    }
-
     /* A column that does not parse was written around the layer, and is
        named as a row a field cannot read is. */
     private function decode(string $type, Field $field, mixed $value): mixed
     {
-        if (! $this->json($field) || ! is_string($value)) {
-            return $value;
-        }
-
         try {
-            return json_decode($value, true, flags: JSON_THROW_ON_ERROR);
+            return $field->decode($value);
         } catch (JsonException $exception) {
             throw new InvalidArgumentException("{$type}::\${$field->name} holds something that is not JSON: {$exception->getMessage()}.", previous: $exception);
         }
@@ -812,12 +802,19 @@ class ContentStore
            default, has nothing valid to hold, and the write is refused as a
            question of access, which it is, without naming the field. */
         foreach (array_diff_key($this->mainstay->fields($type), $data, $stored) as $name => $field) {
-            $property = new ReflectionProperty($type, $name);
-
-            if ($property->hasDefaultValue()) {
-                $values[$name] = $property->getDefaultValue();
+            if ($field->hasDefault) {
+                $values[$name] = $field->default;
             } elseif (! $internal && $field->internal && $field->isRequired()) {
                 throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, make it optional, or write with access to it.');
+            }
+        }
+
+        /* Each value as a read would hand it back, still as data: a field a
+           block was written without holds its default, and a block of a type
+           its field no longer lists is left out of what is stored. */
+        foreach ($fields as $name => $field) {
+            if (array_key_exists($name, $values)) {
+                $values[$name] = $field->complete($values[$name], array_key_exists($name, $stored) && ! array_key_exists($name, $data));
             }
         }
 
@@ -843,7 +840,35 @@ class ContentStore
             $messages['template.in'] = 'The :attribute field is one of the views this type renders with: '.implode(', ', $views).'.';
         }
 
-        Validator::make($values, $rules, $messages)->validate();
+        $validator = Validator::make($values, $rules, $messages);
+
+        /*
+         | What JSON cannot hold -- bytes that are not UTF-8, a number too large
+         | to be finite once its field serializes it -- passes every rule a
+         | value inside the tree answers to, and the encoder would refuse it
+         | inside the write. Asked once the rules pass, of what the write
+         | encodes: the value serialized, where it is given or a new row takes
+         | it. What a row holds already came out of JSON.
+         */
+        $validator->after(function () use ($validator, $fields, $values, $data, $stored) {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            foreach ($fields as $name => $field) {
+                if (! $field->keptAsJson() || (! array_key_exists($name, $data) && array_key_exists($name, $stored))) {
+                    continue;
+                }
+
+                try {
+                    $field->encode($field->serialize($values[$name] ?? null));
+                } catch (JsonException $exception) {
+                    $validator->errors()->add($name, "The {$validator->getDisplayableAttribute($name)} field holds something JSON cannot: {$exception->getMessage()}.");
+                }
+            }
+        });
+
+        $validator->validate();
 
         return $values;
     }
@@ -864,7 +889,7 @@ class ContentStore
         $handle = $type::handle();
         $site = $this->site();
         [$localized, $shared] = $this->columns($type);
-        $serialize = fn (array $fields) => array_map(fn (Field $field) => $this->encode($field, $field->serialize($values[$field->name] ?? null)), $fields);
+        $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->encode($field->serialize($values[$field->name] ?? null)), $fields);
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
         /* Blank is no view of its own, which is how one is taken off. */
         $template = array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];

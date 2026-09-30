@@ -4,6 +4,7 @@ namespace Mainstay\Fields;
 
 use Attribute;
 use Closure;
+use InvalidArgumentException;
 use Mainstay\Content\Document;
 use ReflectionProperty;
 
@@ -41,11 +42,15 @@ class RichText extends Field
         }];
     }
 
-    /* Anything but an array is a row this cannot read, and it reads as a
-       document that renders nothing. */
+    /* Anything but a tree with a doc at its root was written around the
+       layer -- a column that held plain text or blocks before it held
+       documents, say -- and is named, as a column that does not parse is,
+       rather than read as a blank page. */
     protected function from(mixed $value): mixed
     {
-        return $value instanceof Document ? $value : new Document(is_array($value) ? $value : []);
+        return is_array($value) && ($value['type'] ?? null) === 'doc'
+            ? new Document($value)
+            : throw new InvalidArgumentException("{$this->name} holds something that is not a document.");
     }
 
     protected function to(mixed $value): mixed

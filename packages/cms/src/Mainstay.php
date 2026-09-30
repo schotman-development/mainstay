@@ -106,6 +106,12 @@ class Mainstay
      */
     public function fields(string $type): array
     {
+        /* Asked once per block read, and by then usually spelled as it was
+           reflected, so a known name skips the reflection canonical() does. */
+        if (isset($this->fields[$type])) {
+            return $this->fields[$type];
+        }
+
         $type = $this->canonical($type);
 
         return $this->fields[$type] ??= $this->reflect($type);

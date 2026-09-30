@@ -24,8 +24,10 @@ use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Blanks;
 use Mainstay\Tests\Fixtures\Blocks\Concealed;
+use Mainstay\Tests\Fixtures\Blocks\Dated;
 use Mainstay\Tests\Fixtures\Blocks\Identified;
 use Mainstay\Tests\Fixtures\Blocks\Looped;
+use Mainstay\Tests\Fixtures\Blocks\Loud;
 use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
 use Mainstay\Tests\Fixtures\Blocks\Slide;
 use Mainstay\Tests\Fixtures\Blocks\Translated;
@@ -149,6 +151,17 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
+    public function a_block_field_left_out_is_checked_with_its_default(): void
+    {
+        $blocks = (new Blocks(of: [Loud::class]))->bind(new ReflectionProperty(Guide::class, 'blocks'));
+        $value = $blocks->complete([['type' => 'loud', 'data' => []]]);
+        $validator = (new Factory(new Translator(new ArrayLoader, 'en')))->make(['blocks' => $value], $blocks->rulesAt('blocks', $value));
+
+        $this->assertSame('loud', $value[0]['data']['tone']);
+        $this->assertSame(['blocks.0.data.tone'], $validator->errors()->keys(), 'A default is checked as a value written is, not written unchecked.');
+    }
+
+    #[Test]
     public function a_blocks_field_refuses_what_it_cannot_hold(): void
     {
         foreach ([
@@ -159,6 +172,11 @@ class DeclarationTest extends TestCase
             [fn () => (new Blocks(of: [Translated::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Translated::$title is localized, and a block is translated with the field that holds it.'],
             [fn () => (new Blocks(of: [Concealed::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Concealed::$note is internal, and a block is read whole.'],
             [fn () => (new Blocks(of: [Identified::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Identified::$id is called id, which every block keeps for itself.'],
+            [fn () => (new Blocks(of: [Dated::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Dated::$on has no default and no value to read a block stored without it as. Give it a default, or declare it nullable; required: true still asks every write for it.'],
+            [function () {
+                $this->mainstay->fields(Slide::class);
+                $this->mainstay->fields(OtherSlide::class);
+            }, 'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide, and a block\'s handle names the view that draws it. Give one of them a handle() of its own.'],
             [fn () => (new Blocks(of: [Slide::class]))->bind(new ReflectionProperty(Guide::class, 'title')), 'Mainstay\Tests\Fixtures\Guide::$title is typed string, and a blocks field stores a list of blocks.'],
         ] as [$declare, $message]) {
             try {

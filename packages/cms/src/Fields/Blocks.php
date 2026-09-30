@@ -10,6 +10,7 @@ use Mainstay\Content\Block;
 use Mainstay\Mainstay;
 use ReflectionClass;
 use ReflectionProperty;
+use TypeError;
 
 /*
  | An ordered list of blocks, stored as `{ id, type, data }` in a json column of
@@ -18,11 +19,12 @@ use ReflectionProperty;
  | block may be Blocks itself, which is all a repeater is.
  |
  | Written as that list of arrays, or as the blocks a read handed out. A block
- | given no id is given one, and keeps it.
+ | given no id, or a blank one, is given one, and keeps it.
  |
  | Translated whole or not at all, so a field inside a block is neither
  | localized nor internal. A field added to a block already in use needs a
- | default or has to be nullable: the blocks stored before it do not have it.
+ | default, or has to be one that reads nothing as something -- nullable, or
+ | a type with an empty value: the blocks stored before it do not have it.
  */
 #[Attribute(Attribute::TARGET_PROPERTY)]
 class Blocks extends Field
@@ -34,6 +36,12 @@ class Blocks extends Field
 
     /** @var array<string, class-string<Block>> by handle */
     private array $blocks = [];
+
+    /* Each block's class and its fields' properties, reflected once for as
+       long as the registry keeps this field rather than once per block read.
+
+       @var array<class-string<Block>, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
+    private array $reflected = [];
 
     /** @param list<class-string<Block>> $of */
     public function __construct(
@@ -77,6 +85,7 @@ class Blocks extends Field
                     $name === 'id' => 'is called id, which every block keeps for itself',
                     $field->localized => 'is localized, and a block is translated with the field that holds it',
                     $field->internal => 'is internal, and a block is read whole',
+                    ! $field->hasDefault && ! $this->readsNothing($field) => 'has no default and no value to read a block stored without it as. Give it a default, or declare it nullable; required: true still asks every write for it',
                     default => null,
                 };
 
@@ -118,7 +127,9 @@ class Blocks extends Field
 
     /*
      | Each item by its own block's rules, reported where it is:
-     | `blocks.0.data.heading`, and a repeater's items below that.
+     | `blocks.0.data.heading`, and a repeater's items below that. A field an
+     | item was written without holds its default by now -- see complete() --
+     | so the default is checked as a value given is.
      */
     public function rulesAt(string $attribute, mixed $value = null): array
     {
@@ -131,7 +142,8 @@ class Blocks extends Field
 
             $rules[$at] = ['array:id,type,data'];
             $rules["{$at}.type"] = ['required', 'string', Rule::in(array_keys($this->blocks))];
-            $rules["{$at}.id"] = ['sometimes', 'string', 'max:255'];
+            /* Null or blank is no id, and to() gives the block one. */
+            $rules["{$at}.id"] = ['nullable', 'string', 'max:255'];
 
             /* Data is checked against the block its type names, and only
                the type is wrong when that is not one of these. */
@@ -143,47 +155,120 @@ class Blocks extends Field
             $rules["{$at}.data"] = ['sometimes', 'array:'.implode(',', array_keys($fields))];
 
             foreach ($fields as $name => $field) {
-                $nested = $field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null);
-
-                /* Left out, it takes the default its property declares, as
-                   an entry's field does. */
-                if ((new ReflectionProperty($class, $name))->hasDefaultValue()) {
-                    array_unshift($nested["{$at}.data.{$name}"], 'sometimes');
-                }
-
-                $rules = [...$rules, ...$nested];
+                $rules = [...$rules, ...$field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null)];
             }
         }
 
         /* Last: Laravel merges a wildcard's rules into the keys already
-           written, and a key written after it replaces them. */
-        return [...$rules, "{$attribute}.*.id" => ['distinct']];
+           written, and a key written after it replaces them. Strict, or '1'
+           and '01' are one id. */
+        return [...$rules, "{$attribute}.*.id" => ['distinct:strict']];
     }
 
     /*
-     | The blocks, each field cast through its type. An item this cannot read
-     | -- a type the field no longer lists, a shape that is not a block's -- is
-     | not there, as an unknown node is not in a document. A field an item was
-     | stored without keeps the default its property declares, or is cast from
-     | nothing.
+     | Each block's data with the default its property declares for a field
+     | it was written without, all the way down, so the rules check what a
+     | read would hand back. What is stored keeps only what a read shows: a
+     | block of a type the field no longer lists, a key its block no longer
+     | declares, is left out rather than refused, where one written is
+     | refused.
      */
-    protected function from(mixed $value): mixed
+    public function complete(mixed $value, bool $stored = false): mixed
     {
-        $blocks = [];
+        if (! is_array($value) || ! array_is_list($value)) {
+            return $value;
+        }
 
-        foreach (is_array($value) ? $value : [] as $item) {
-            if (($class = $this->block($item)) === null || ! is_string($item['id'] ?? null) || ! is_array($data = $item['data'] ?? [])) {
+        $items = [];
+
+        foreach ($value as $item) {
+            if (($class = $this->block($item)) === null) {
+                if (! $stored) {
+                    $items[] = $item;
+                }
+
                 continue;
             }
 
-            $block = (new ReflectionClass($class))->newInstanceWithoutConstructor();
-            $block->id = $item['id'];
+            if (is_array($data = $item['data'] ?? [])) {
+                $fields = $this->fields($class);
+                $data = $stored ? array_intersect_key($data, $fields) : $data;
+
+                foreach ($fields as $name => $field) {
+                    if (array_key_exists($name, $data)) {
+                        $data[$name] = $field->complete($data[$name], $stored);
+                    } elseif ($field->hasDefault) {
+                        $data[$name] = $field->complete($field->default);
+                    }
+                }
+
+                $item['data'] = $data;
+            }
+
+            $items[] = $stored ? array_intersect_key($item, array_flip(['id', 'type', 'data'])) : $item;
+        }
+
+        return $items;
+    }
+
+    /*
+     | The blocks, each field cast through its type. An item of a type the
+     | field does not list -- one it has stopped listing, or something that
+     | is not a block at all -- is not there, as an unknown node is not in a
+     | document. A block of a type it lists is read whole or named: an id
+     | that is not a string, data that is not a map, or a value its field
+     | cannot read fails the read, as a column that does not parse does,
+     | rather than dropping the block the next write would then delete.
+     |
+     | A blank id is given one, which the block keeps once the list is
+     | written. A field the block was stored without keeps the default its
+     | property declares, or is read from nothing -- which bind() made sure
+     | every field without a default can be.
+     */
+    protected function from(mixed $value): mixed
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            throw new InvalidArgumentException("{$this->name} holds something that is not a list of blocks.");
+        }
+
+        $blocks = [];
+
+        foreach ($value as $item) {
+            if (($class = $this->block($item)) === null) {
+                continue;
+            }
+
+            /* Where the read puts it, which is where a save reports it too:
+               the blocks left out ahead of it do not count. */
+            $at = "the {$item['type']} at {$this->name}.".count($blocks);
+            $id = $item['id'] ?? null;
+            $id = $id === null || (is_string($id) && trim($id) === '') ? (string) Str::ulid() : $id;
+            $data = $item['data'] ?? [];
+
+            if (! is_string($id) || ! is_array($data)) {
+                throw new InvalidArgumentException(ucfirst($at).(is_string($id) ? ' has data that is not a map.' : ' has an id that is not a string.'));
+            }
+
+            [$reflection, $properties] = $this->reflection($class);
+            $block = $reflection->newInstanceWithoutConstructor();
+            $block->id = $id;
 
             foreach ($this->fields($class) as $name => $field) {
-                $property = new ReflectionProperty($class, $name);
+                if (! array_key_exists($name, $data) && $field->hasDefault) {
+                    continue;
+                }
 
-                if (array_key_exists($name, $data) || ! $property->hasDefaultValue()) {
-                    $property->setValue($block, $field->cast($data[$name] ?? null));
+                try {
+                    /* A tree where a scalar is kept -- a document left by a
+                       field that was rich text before -- is coerced to 0 or
+                       true by one type and refused by PHP for another. */
+                    if (is_array($data[$name] ?? null) && ! $field->keptAsJson()) {
+                        throw new InvalidArgumentException('a list or a map is stored for it.');
+                    }
+
+                    $properties[$name]->setValue($block, $field->cast($data[$name] ?? null));
+                } catch (InvalidArgumentException|TypeError $exception) {
+                    throw new InvalidArgumentException("{$class}::\${$name} cannot read {$at}: {$exception->getMessage()}", previous: $exception);
                 }
             }
 
@@ -194,22 +279,22 @@ class Blocks extends Field
     }
 
     /* The list as stored: each block's own id or a new one, its type, and
-       every field serialized by its type. */
+       every field serialized by its type. A field left out holds its
+       default, which a save has already put there and checked. */
     protected function to(mixed $value): mixed
     {
         $items = [];
 
         foreach ($value as $item) {
             $item = $item instanceof Block ? $item->toArray() : $item;
-            $class = $this->blocks[$item['type']];
             $data = $item['data'] ?? [];
 
             $items[] = [
-                'id' => $item['id'] ?? (string) Str::ulid(),
+                'id' => blank($item['id'] ?? null) ? (string) Str::ulid() : $item['id'],
                 'type' => $item['type'],
                 'data' => array_map(
-                    fn (Field $field) => $field->serialize(array_key_exists($field->name, $data) ? $data[$field->name] : $this->default($class, $field->name)),
-                    $this->fields($class),
+                    fn (Field $field) => $field->serialize(array_key_exists($field->name, $data) ? $data[$field->name] : $field->default),
+                    $this->fields($this->blocks[$item['type']]),
                 ),
             ];
         }
@@ -237,11 +322,26 @@ class Blocks extends Field
         return is_array($item) && is_string($item['type'] ?? null) ? $this->blocks[$item['type']] ?? null : null;
     }
 
-    private function default(string $class, string $name): mixed
+    /* Whether a block stored without this field can still be read: the
+       field reads nothing as null, or as its type's empty value. */
+    private function readsNothing(Field $field): bool
     {
-        $property = new ReflectionProperty($class, $name);
+        try {
+            $field->cast(null);
 
-        return $property->hasDefaultValue() ? $property->getDefaultValue() : null;
+            return true;
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+    }
+
+    /** @return array{0: ReflectionClass, 1: array<string, ReflectionProperty>} */
+    private function reflection(string $class): array
+    {
+        return $this->reflected[$class] ??= [
+            new ReflectionClass($class),
+            array_map(fn (Field $field) => new ReflectionProperty($class, $field->name), $this->fields($class)),
+        ];
     }
 
     /** @return array<string, Field> */
