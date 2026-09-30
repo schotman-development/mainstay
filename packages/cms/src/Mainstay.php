@@ -7,6 +7,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
+use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
 use Mainstay\Content\Route;
@@ -29,6 +30,9 @@ class Mainstay
 
     /** @var array<class-string, array<string, Field>> */
     private array $fields = [];
+
+    /** @var array<string, class-string<Block>> by handle */
+    private array $blocks = [];
 
     /** @var array<class-string, string|array<string, string>|null> */
     private array $routes = [];
@@ -458,6 +462,22 @@ class Mainstay
 
     private function reflect(string $type): array
     {
+        /*
+         | A block's handle names the view that draws it, whichever field lists
+         | it, so two blocks of one handle in two fields would draw with one
+         | view -- one of them with markup written for the other's properties.
+         | Recorded before its fields are read, so a block holding another of
+         | its own handle is caught as well; and every block a field lists is
+         | read here, since Blocks reads each one as it is bound.
+         */
+        if (is_subclass_of($type, Block::class)) {
+            if (($read = $this->blocks[$type::handle()] ?? $type) !== $type) {
+                throw new InvalidArgumentException("Two blocks are called \"{$type::handle()}\": {$read} and {$type}, and a block's handle names the view that draws it. Give one of them a handle() of its own.");
+            }
+
+            $this->blocks[$type::handle()] = $type;
+        }
+
         $fields = [];
         $reflection = new ReflectionClass($type);
 

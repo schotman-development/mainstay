@@ -25,7 +25,8 @@ abstract class Block implements Arrayable, Htmlable
        tells a block moved from a block replaced. */
     public string $id;
 
-    /* What a stored block's `type` says, and its view's name. */
+    /* What a stored block's `type` says, and its view's name, so one block's
+       alone: two blocks of one handle are refused, in whichever fields. */
     public static function handle(): string
     {
         return Str::snake(class_basename(static::class));

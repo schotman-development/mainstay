@@ -12,6 +12,10 @@ use Illuminate\Testing\TestResponse;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
+use Mainstay\Fields\Blocks;
+use Mainstay\Mainstay as Registry;
+use Mainstay\Tests\Fixtures\Blocks\Nested\Slide as NestedSlide;
+use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
@@ -22,6 +26,7 @@ use Mainstay\Tests\Fixtures\Shadowed;
 use Orchestra\Testbench\Attributes\DefineEnvironment;
 use Orchestra\Testbench\Attributes\DefineRoute;
 use PHPUnit\Framework\Attributes\Test;
+use ReflectionProperty;
 
 /*
  | The phase 4 check: an entry written through the query layer, visited at
@@ -442,5 +447,21 @@ class RenderTest extends DatabaseTestCase
 
         /* Named and not there is an error, as an entry's view is. */
         $this->assertThrows(fn () => $guide->blocks[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
+
+        /* A second block of that handle, in another field, would draw with
+           the same view. */
+        $this->assertThrows(
+            fn () => (new Blocks(of: [OtherSlide::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')),
+            InvalidArgumentException::class,
+            'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
+        );
+
+        /* Or inside the block itself, read before it is finished. */
+        $this->app->instance(Registry::class, $registry = new Registry);
+        $this->assertThrows(
+            fn () => $registry->fields(NestedSlide::class),
+            InvalidArgumentException::class,
+            'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Nested\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
+        );
     }
 }
