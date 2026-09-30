@@ -33,6 +33,15 @@ class RichText extends Field
         return ['json'];
     }
 
+    /* What sync writes into rows a required body is added to: the empty
+       document. One write, in development, where a document that prints an
+       empty paragraph beats a column that cannot be added -- and the `[]`
+       a json column would otherwise be given is not a document at all. */
+    public function backfill(): mixed
+    {
+        return ['type' => 'doc', 'content' => [['type' => 'paragraph']]];
+    }
+
     public function rules(): array
     {
         return [...parent::rules(), 'array', function (string $attribute, mixed $value, Closure $fail) {

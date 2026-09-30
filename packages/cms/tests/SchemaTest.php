@@ -14,14 +14,17 @@ use InvalidArgumentException;
 use Mainstay\Database\ContentSchema;
 use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Bodied\Article as BodiedArticle;
 use Mainstay\Tests\Fixtures\Broken\Collided;
 use Mainstay\Tests\Fixtures\Broken\Reserved;
 use Mainstay\Tests\Fixtures\Broken\Templated;
 use Mainstay\Tests\Fixtures\Broken\Uris;
 use Mainstay\Tests\Fixtures\Coded\Article as CodedArticle;
 use Mainstay\Tests\Fixtures\Moody\Article as MoodyArticle;
+use Mainstay\Tests\Fixtures\Prose\Article as ProseArticle;
 use Mainstay\Tests\Fixtures\Recoded\Article as RecodedArticle;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
+use Mainstay\Tests\Fixtures\Rich\Article as RichArticle;
 use Mainstay\Tests\Fixtures\Setted\Article as SettedArticle;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use Mainstay\Tests\Fixtures\Slid\Article as SlidArticle;
@@ -284,6 +287,97 @@ class SchemaTest extends DatabaseTestCase
         $this->artisan('mainstay:sync --force')->assertSuccessful();
 
         $this->assertSame([], json_decode(DB::table('article')->value('slides'), true));
+        $this->assertSame([], app(ContentSchema::class)->diff());
+    }
+
+    #[Test]
+    public function a_json_column_holding_what_its_field_cannot_read_is_drift(): void
+    {
+        $this->declare(ProseArticle::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        DB::table('article')->insert(['site_id' => 1, 'summary' => 'Plain prose summary']);
+
+        $this->declare(RichArticle::class);
+        $diff = app(ContentSchema::class)->diff();
+
+        /* SQLite and SQL Server keep json as text, so only the rows tell the
+           prose from a document. Postgres and MySQL see the retype, and
+           refuse the prose when sync would convert it. */
+        if (in_array(DB::getDriverName(), ['sqlite', 'sqlsrv'], true)) {
+            $this->assertSame(['summary'], array_keys($diff['article']['unreadable']));
+            $this->assertSame([], $diff['article']['change']);
+        } else {
+            $this->assertArrayHasKey('summary', $diff['article']['change']);
+            $this->assertThrows(fn () => app(ContentSchema::class)->lossy($diff), InvalidArgumentException::class, 'Change them by hand first.');
+        }
+
+        $this->assertSame(1, Artisan::call('mainstay:schema:check'));
+        $this->assertStringContainsString('article.summary', Artisan::output());
+
+        /* JSON that is not a tree, on every driver, whether sync retyped the
+           column or had nothing to retype. */
+        DB::table('article')->update(['summary' => '42']);
+        $this->artisan('mainstay:sync --force')->assertFailed();
+
+        $this->assertSame(1, Artisan::call('mainstay:schema:check'));
+        $this->assertMatchesRegularExpression('/article\.summary: declared json, and row \d+ holds what its field cannot read: summary holds something that is not a document/', Artisan::output());
+
+        /* A list of blocks, left by a field that was blocks before it was a
+           document: json to json, on every driver. */
+        DB::table('article')->update(['summary' => '[{"id": "a", "type": "slide", "data": {"title": "One"}}]']);
+        $this->assertSame(['summary'], array_keys(app(ContentSchema::class)->diff()['article']['unreadable']));
+
+        /* What reads, however it is spelled, is not drift: a JSON null in a
+           field that may be null. */
+        foreach (['{"type": "doc", "content": [{"type": "paragraph"}]}', 'null'] as $summary) {
+            DB::table('article')->update(['summary' => $summary]);
+            $this->assertSame([], app(ContentSchema::class)->diff());
+        }
+    }
+
+    #[Test]
+    public function a_stored_block_its_field_can_no_longer_read_is_drift(): void
+    {
+        $this->declare(SlidArticle::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+
+        /* Its title a tree, as a field that was rich text before it was text
+           leaves it. */
+        $id = $this->insertArticle(['slides' => json_encode([['id' => 'a', 'type' => 'slide', 'data' => ['title' => ['type' => 'doc']]]])]);
+
+        $this->assertSame(1, Artisan::call('mainstay:schema:check'));
+        $this->assertStringContainsString("article.slides: declared json, and row {$id} holds what its field cannot read: Mainstay\\Tests\\Fixtures\\Blocks\\Slide::\$title cannot read the slide at slides.0: a list or a map is stored for it", Artisan::output());
+        $this->artisan('mainstay:sync --force')->assertFailed();
+
+        /* One a cast coerces rather than refuses -- 'heavy' in what is now a
+           number reads as 0 -- is seen by the rules a save checks it by. */
+        foreach (['weight' => 'The slides.0.data.weight field must be a number', 'shown' => 'The slides.0.data.shown field must be accepted'] as $key => $refusal) {
+            DB::table('article')->update(['slides' => json_encode([['id' => 'a', 'type' => 'slide', 'data' => ['title' => 'One', $key => 'heavy']]])]);
+            $this->assertSame(1, Artisan::call('mainstay:schema:check'));
+            $this->assertStringContainsString("article.slides: declared json, and row {$id} holds what its field refuses: {$refusal}", Artisan::output());
+        }
+
+        /* What reads and is only missing something is not drift: no blocks
+           at all where some are required, as sync fills them, a block of a
+           type the field no longer lists, and a box that must be ticked left
+           unticked. */
+        foreach (['{}', '[{"id": "g", "type": "banner", "data": {}}]', '[{"id": "a", "type": "slide", "data": {"title": "One", "shown": false}}]'] as $slides) {
+            DB::table('article')->update(['slides' => $slides]);
+            $this->assertSame([], app(ContentSchema::class)->diff(), $slides);
+        }
+    }
+
+    #[Test]
+    public function sync_gives_rows_an_empty_document_for_a_body_they_must_have(): void
+    {
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->insertArticle();
+
+        $this->declare(BodiedArticle::class);
+        $this->artisan('mainstay:sync --force')->assertSuccessful();
+
+        $this->assertSame(['type' => 'doc', 'content' => [['type' => 'paragraph']]], json_decode(DB::table('article')->value('body'), true));
         $this->assertSame([], app(ContentSchema::class)->diff());
     }
 
