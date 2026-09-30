@@ -83,7 +83,17 @@ export const schema = new Schema({
           },
         },
       },
-      parseDOM: [{ tag: 'ol', getAttrs: (dom) => ({ order: Number.parseInt(dom.getAttribute('start') ?? '1', 10) || 1 }) }],
+      parseDOM: [
+        {
+          tag: 'ol',
+          // A start of 0 is a start; only one that is not a number is none.
+          getAttrs: (dom) => {
+            const start = Number.parseInt(dom.getAttribute('start') ?? '', 10)
+
+            return { order: Number.isNaN(start) ? 1 : start }
+          },
+        },
+      ],
       toDOM: (node) => (node.attrs.order === 1 ? ['ol', 0] : ['ol', { start: node.attrs.order }, 0]),
     },
     list_item: {

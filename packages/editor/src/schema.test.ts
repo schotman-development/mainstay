@@ -1,4 +1,4 @@
-import { Node } from 'prosemirror-model'
+import { DOMParser, Node } from 'prosemirror-model'
 import { expect, test } from 'vitest'
 import document from '../../cms/tests/Fixtures/document.json'
 import { schema } from './schema'
@@ -27,4 +27,14 @@ test('refuses what Document::problem() refuses', () => {
   expect(() => load(paragraph({ type: 'text', text: 'x', marks: [{ type: 'strong' }, { type: 'link', attrs: { href: '/x' } }] }))).not.toThrow()
   expect(() => load(paragraph({ type: 'text', text: 'x', marks: [{ type: 'link', attrs: { href: 'java\tscript:alert(1)' } }] }))).toThrow(RangeError)
   expect(() => load({ type: 'doc', content: [] })).toThrow(RangeError)
+})
+
+test('keeps the start a pasted list gives, 0 included', () => {
+  const order = (html: string) =>
+    DOMParser.fromSchema(schema).parse(new window.DOMParser().parseFromString(html, 'text/html').body).firstChild?.attrs.order
+
+  expect(order('<ol start="0"><li><p>x</p></li></ol>')).toBe(0)
+  expect(order('<ol start="3"><li><p>x</p></li></ol>')).toBe(3)
+  expect(order('<ol><li><p>x</p></li></ol>')).toBe(1)
+  expect(order('<ol start="first"><li><p>x</p></li></ol>')).toBe(1)
 })
