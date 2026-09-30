@@ -4,11 +4,14 @@ namespace Mainstay\Content;
 
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Htmlable;
+use JsonSerializable;
 
 /*
  | A rich text field's value: a ProseMirror document, which is a node tree and
  | therefore data, and the HTML it renders to. Htmlable, so a template prints
  | it with `{{ $entry->body }}` and Blade does not escape the markup it made.
+ | JsonSerializable, so `@json`, a JSON response or a page's props carry the
+ | tree rather than the `{}` its private property would encode as.
  |
  | The node schema is closed, and it is the one packages/editor/src/schema.ts
  | declares -- the same names, the same nesting, the same attributes -- so a
@@ -20,7 +23,7 @@ use Illuminate\Contracts\Support\Htmlable;
  | an unknown node, or one whose shape is wrong, renders as nothing, and an
  | unknown mark leaves its text unmarked.
  */
-final class Document implements Arrayable, Htmlable
+final class Document implements Arrayable, Htmlable, JsonSerializable
 {
     /*
      | Each node's group, what it holds -- a group or a node -- and the
@@ -54,6 +57,11 @@ final class Document implements Arrayable, Htmlable
     public function __construct(private array $tree) {}
 
     public function toArray(): array
+    {
+        return $this->tree;
+    }
+
+    public function jsonSerialize(): array
     {
         return $this->tree;
     }

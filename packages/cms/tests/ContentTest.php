@@ -1251,6 +1251,7 @@ class ContentTest extends DatabaseTestCase
         $this->assertInstanceOf(CarbonImmutable::class, $callout->on);
         $this->assertSame('2026-09-30', $callout->on->format('Y-m-d'));
         $this->assertSame('<p>Careful</p>', $callout->text->toHtml());
+        $this->assertStringContainsString('"text":{"type":"doc"', json_encode($read->blocks), 'A document inside a block encodes as the tree it is.');
         $this->assertInstanceOf(Gallery::class, $gallery);
         $this->assertSame(['One', 'Two'], array_map(fn (Slide $slide) => $slide->title, $gallery->slides));
         $this->assertCount(4, array_unique($ids($read)), 'Every block, the repeater\'s included, is given an id of its own.');

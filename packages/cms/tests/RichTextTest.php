@@ -22,6 +22,7 @@ class RichTextTest extends TestCase
         $document = new Document(json_decode(file_get_contents(__DIR__.'/Fixtures/document.json'), true));
 
         $this->assertNull(Document::problem($document->toArray()));
+        $this->assertSame(json_encode($document->toArray()), json_encode($document), 'Encoded as JSON, it is the tree.');
         $this->assertSame(
             '<h2>Declared in code</h2>'
             .'<p>A type is a <strong>class</strong>, its fields are <em>properties</em> and <code>#[Text]</code> declares one.<br>'
