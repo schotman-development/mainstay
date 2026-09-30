@@ -825,7 +825,7 @@ class ContentStore
         $rules = $messages = [];
 
         foreach ($fields as $name => $field) {
-            $rules[$name] = $field->rules();
+            $rules = [...$rules, ...$field->rulesAt($name, $values[$name] ?? null)];
         }
 
         foreach ($routed as $name) {

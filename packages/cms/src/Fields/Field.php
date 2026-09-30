@@ -219,6 +219,17 @@ abstract class Field
         return [$this->isRequired() ? 'required' : 'nullable'];
     }
 
+    /*
+     | The rules keyed by what they check, for this field at `$attribute`
+     | holding `$value`. A field holding others -- Blocks -- adds theirs under
+     | keys of their own, which only its value can say: which block each item
+     | is decides which rules its data answers to.
+     */
+    public function rulesAt(string $attribute, mixed $value = null): array
+    {
+        return [$attribute => $this->rules()];
+    }
+
     public function schema(): array
     {
         $json = $this->json();

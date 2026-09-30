@@ -24,6 +24,7 @@ use Mainstay\Tests\Fixtures\Recoded\Article as RecodedArticle;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\Setted\Article as SettedArticle;
 use Mainstay\Tests\Fixtures\SiteSettings;
+use Mainstay\Tests\Fixtures\Slid\Article as SlidArticle;
 use Mainstay\Tests\Fixtures\Tiered\Article as TieredArticle;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
@@ -269,6 +270,20 @@ class SchemaTest extends DatabaseTestCase
             $this->assertFalse($columns[$column]['nullable'], "{$column} ends NOT NULL, as declared.");
         }
 
+        $this->assertSame([], app(ContentSchema::class)->diff());
+    }
+
+    #[Test]
+    public function sync_gives_rows_an_empty_list_of_blocks_added_to_their_table(): void
+    {
+        $this->declare(Article::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->insertArticle();
+
+        $this->declare(SlidArticle::class);
+        $this->artisan('mainstay:sync --force')->assertSuccessful();
+
+        $this->assertSame([], json_decode(DB::table('article')->value('slides'), true));
         $this->assertSame([], app(ContentSchema::class)->diff());
     }
 

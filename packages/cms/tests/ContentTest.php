@@ -18,6 +18,9 @@ use Mainstay\Content\Document;
 use Mainstay\Content\Entry;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Article;
+use Mainstay\Tests\Fixtures\Blocks\Callout;
+use Mainstay\Tests\Fixtures\Blocks\Gallery;
+use Mainstay\Tests\Fixtures\Blocks\Slide;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Hooked;
 use Mainstay\Tests\Fixtures\Listed;
@@ -1223,8 +1226,135 @@ class ContentTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function blocks_are_written_and_read_back_as_blocks(): void
+    {
+        $careful = ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Careful']]]]];
+
+        $id = Mainstay::create(Guide::class, ['title' => 'Blocks', 'blocks' => [
+            ['type' => 'callout', 'data' => ['heading' => 'Note', 'text' => $careful, 'on' => '2026-09-30']],
+            ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [
+                ['type' => 'slide', 'data' => ['title' => 'One']],
+                ['type' => 'slide', 'data' => ['title' => 'Two']],
+            ]]],
+        ]], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Guide::class, $id, ['title' => 'Blokken', 'blocks' => [
+            ['id' => 'kept', 'type' => 'callout', 'data' => ['heading' => 'Let op', 'tone' => 'warning']],
+        ]], locale: 'nl', overrideAccess: true);
+
+        $read = Mainstay::findById(Guide::class, $id, locale: 'en');
+        [$callout, $gallery] = $read->blocks;
+        $ids = fn (Guide $guide) => [$guide->blocks[0]->id, $guide->blocks[1]->id, ...array_map(fn (Slide $slide) => $slide->id, $guide->blocks[1]->slides)];
+
+        $this->assertInstanceOf(Callout::class, $callout);
+        $this->assertSame('Note', $callout->heading);
+        $this->assertSame('info', $callout->tone, 'Left out, a field takes the default its property declares.');
+        $this->assertInstanceOf(CarbonImmutable::class, $callout->on);
+        $this->assertSame('2026-09-30', $callout->on->format('Y-m-d'));
+        $this->assertSame('<p>Careful</p>', $callout->text->toHtml());
+        $this->assertInstanceOf(Gallery::class, $gallery);
+        $this->assertSame(['One', 'Two'], array_map(fn (Slide $slide) => $slide->title, $gallery->slides));
+        $this->assertCount(4, array_unique($ids($read)), 'Every block, the repeater\'s included, is given an id of its own.');
+
+        /* A save of another field keeps every block as it was, and blocks
+           written back as a read handed them out keep their ids. */
+        Mainstay::update(Guide::class, $id, ['title' => 'Every block'], locale: 'en', overrideAccess: true);
+        Mainstay::update(Guide::class, $id, ['blocks' => $read->blocks], locale: 'en', overrideAccess: true);
+        $this->assertSame($ids($read), $ids(Mainstay::findById(Guide::class, $id, locale: 'en')));
+
+        $nl = Mainstay::findById(Guide::class, $id, locale: 'nl');
+        $this->assertCount(1, $nl->blocks);
+        $this->assertSame('kept', $nl->blocks[0]->id);
+        $this->assertSame('warning', $nl->blocks[0]->tone);
+
+        $this->artisan('mainstay:schema:check')->assertSuccessful();
+    }
+
+    #[Test]
+    public function a_block_is_checked_by_its_own_rules_where_it_is(): void
+    {
+        foreach ([
+            [[
+                ['type' => 'callout', 'data' => ['heading' => 'Fine']],
+                ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'Fine']], ['type' => 'slide', 'data' => []]]]],
+                ['type' => 'banner', 'data' => []],
+                ['type' => 'callout', 'data' => ['heading' => 'Late', 'on' => 'not a date']],
+                ['type' => 'callout', 'data' => ['heading' => 'Red', 'colour' => 'red']],
+                ['type' => 'callout', 'data' => ['heading' => 'Tagged'], 'tags' => ['new']],
+            ], ['blocks.1.data.slides.1.data.title', 'blocks.2.type', 'blocks.3.data.on', 'blocks.4.data', 'blocks.5']],
+            [[
+                ['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'One']],
+            ], ['blocks.0.type']],
+            [[
+                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'One']],
+                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'Two']],
+            ], ['blocks.0.id', 'blocks.1.id']],
+            [['type' => 'callout', 'data' => ['heading' => 'Keyed']], ['blocks']],
+        ] as [$blocks, $keys]) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'Refused', 'blocks' => $blocks], locale: 'en', overrideAccess: true);
+                $this->fail('Blocks their rules refuse were written.');
+            } catch (ValidationException $exception) {
+                $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
+            }
+        }
+
+        $this->assertSame(0, DB::table('guide')->count());
+    }
+
+    #[Test]
+    public function blocks_built_by_hand_are_checked_as_blocks_written_as_data_are(): void
+    {
+        $slide = new Slide;
+        $slide->title = 'Built';
+        $gallery = new Gallery;
+        $gallery->slides = [$slide];
+        $stray = new Callout;
+        $stray->heading = 'In the wrong list';
+        $unfinished = new Gallery;
+        $unfinished->slides = [new Slide];
+
+        foreach ([
+            [[$gallery, ['type' => 'gallery', 'data' => ['slides' => [$stray]]]], ['blocks.1.data.slides.0.type']],
+            [[$unfinished], ['blocks.0.data.slides.0.data.title']],
+        ] as [$blocks, $keys]) {
+            try {
+                Mainstay::create(Guide::class, ['title' => 'By hand', 'blocks' => $blocks], locale: 'en', overrideAccess: true);
+                $this->fail('Blocks their rules refuse were written.');
+            } catch (ValidationException $exception) {
+                $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
+            }
+        }
+
+        $id = Mainstay::create(Guide::class, ['title' => 'By hand', 'blocks' => [$gallery]], locale: 'en', overrideAccess: true)->id;
+
+        $this->assertSame('Built', Mainstay::findById(Guide::class, $id, locale: 'en')->blocks[0]->slides[0]->title);
+    }
+
+    #[Test]
+    public function a_block_the_field_no_longer_lists_is_not_there(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Old', 'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Kept']]]], locale: 'en', overrideAccess: true)->id;
+
+        /* A block of a type the field has since stopped listing, and one
+           stored before its tone was declared. */
+        $stored = json_decode(DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), true);
+        unset($stored[0]['data']['tone']);
+        $stored[] = ['id' => 'gone', 'type' => 'banner', 'data' => ['text' => 'Retired']];
+        DB::table('guide_locales')->where('parent_id', $id)->update(['blocks' => json_encode($stored)]);
+
+        Mainstay::update(Guide::class, $id, ['title' => 'Still saves'], locale: 'en', overrideAccess: true);
+        $read = Mainstay::findById(Guide::class, $id, locale: 'en');
+
+        $this->assertSame('Still saves', $read->title);
+        $this->assertCount(1, $read->blocks);
+        $this->assertSame('info', $read->blocks[0]->tone, 'A field a block was stored without takes its default.');
+        $this->assertStringContainsString('Retired', DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), 'Nothing is thrown away until the blocks are written.');
+    }
+
+    #[Test]
     public function rich_text_is_not_filtered_or_sorted_on(): void
     {
+        $this->assertThrows(fn () => Mainstay::find(Guide::class, where: ['blocks' => ['!=' => null]]), InvalidArgumentException::class, 'Guide::$blocks is kept as JSON, which is not filtered or sorted on.');
         $this->assertThrows(fn () => Mainstay::find(Guide::class, where: ['body' => null]), InvalidArgumentException::class, 'Guide::$body is kept as JSON, which is not filtered or sorted on.');
         $this->assertThrows(fn () => Mainstay::find(Guide::class, sort: 'aside'), InvalidArgumentException::class, 'Guide::$aside is kept as JSON, which is not filtered or sorted on.');
     }

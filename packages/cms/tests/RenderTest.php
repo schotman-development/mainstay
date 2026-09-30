@@ -5,12 +5,14 @@ namespace Mainstay\Tests;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Testing\TestResponse;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
+use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
 use Mainstay\Tests\Fixtures\Lost;
@@ -40,7 +42,7 @@ class RenderTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class);
+        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class, Guide::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -422,5 +424,23 @@ class RenderTest extends DatabaseTestCase
         }
 
         $this->assertThrows(fn () => Mainstay::find(Post::class, locale: 'en'), InvalidArgumentException::class, 'serves en and nl at the same base');
+    }
+
+    #[Test]
+    public function a_block_is_drawn_by_its_view(): void
+    {
+        $id = Mainstay::create(Guide::class, ['title' => 'Drawn', 'blocks' => [
+            ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Careful']]]]]]],
+            ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]],
+        ]], locale: 'en', overrideAccess: true)->id;
+        $guide = Mainstay::findById(Guide::class, $id, locale: 'en');
+
+        $this->assertSame(
+            "<aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<figure><p>One</p><figcaption>Shots</figcaption></figure>\n",
+            Blade::render('@foreach ($blocks as $block){{ $block }}@endforeach', ['blocks' => $guide->blocks]),
+        );
+
+        /* Named and not there is an error, as an entry's view is. */
+        $this->assertThrows(fn () => $guide->blocks[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
     }
 }

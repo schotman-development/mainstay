@@ -4,11 +4,14 @@ namespace Mainstay\Tests\Fixtures;
 
 use Mainstay\Content\Document;
 use Mainstay\Content\Entry;
+use Mainstay\Fields\Blocks;
 use Mainstay\Fields\RichText;
 use Mainstay\Fields\Text;
+use Mainstay\Tests\Fixtures\Blocks\Callout;
+use Mainstay\Tests\Fixtures\Blocks\Gallery;
 
 /* Rich text on both tables: a body translated with the title, and an aside
-   every locale shares. */
+   every locale shares. Blocks translated whole, one of them a repeater. */
 class Guide extends Entry
 {
     #[Text(required: true, localized: true)]
@@ -19,4 +22,7 @@ class Guide extends Entry
 
     #[RichText]
     public ?Document $aside;
+
+    #[Blocks(of: [Callout::class, Gallery::class], localized: true)]
+    public array $blocks;
 }

@@ -10,6 +10,7 @@ use Illuminate\Validation\Factory;
 use InvalidArgumentException;
 use Mainstay\Content\Entry;
 use Mainstay\Content\Route;
+use Mainstay\Fields\Blocks;
 use Mainstay\Fields\Boolean;
 use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
@@ -22,7 +23,14 @@ use Mainstay\Mainstay;
 use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Blanks;
+use Mainstay\Tests\Fixtures\Blocks\Concealed;
+use Mainstay\Tests\Fixtures\Blocks\Identified;
+use Mainstay\Tests\Fixtures\Blocks\Looped;
+use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
+use Mainstay\Tests\Fixtures\Blocks\Slide;
+use Mainstay\Tests\Fixtures\Blocks\Translated;
 use Mainstay\Tests\Fixtures\ColorPicker;
+use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\NewsItem;
 use Mainstay\Tests\Fixtures\Revised\Article as RevisedArticle;
 use Mainstay\Tests\Fixtures\SiteSettings;
@@ -112,6 +120,54 @@ class DeclarationTest extends TestCase
             'required' => ['title', 'summary', 'readingMinutes', 'featured', 'publishedAt', 'status'],
             'additionalProperties' => false,
         ], $this->mainstay->schema(Article::class));
+    }
+
+    #[Test]
+    public function a_list_of_blocks_is_described_block_by_block(): void
+    {
+        $schema = $this->mainstay->schema(Guide::class)['properties'];
+        $blocks = $schema['blocks']['items']['oneOf'];
+
+        $this->assertSame(['type' => ['object', 'null'], 'properties' => ['type' => ['const' => 'doc'], 'content' => ['type' => 'array']], 'required' => ['type', 'content']], $schema['body']);
+        $this->assertSame('array', $schema['blocks']['type'], 'A list of blocks holds an empty list rather than null.');
+        $this->assertSame(['callout', 'gallery'], array_map(fn (array $block) => $block['properties']['type']['const'], $blocks));
+        $this->assertSame(['id', 'type', 'data'], $blocks[0]['required']);
+        $this->assertSame(['heading', 'text', 'on', 'tone'], array_keys($blocks[0]['properties']['data']['properties']));
+        $this->assertSame('slide', $blocks[1]['properties']['data']['properties']['slides']['items']['oneOf'][0]['properties']['type']['const'], 'A repeater is described as the list it is.');
+    }
+
+    #[Test]
+    public function a_list_of_blocks_is_required_only_when_it_says_so(): void
+    {
+        $fields = $this->mainstay->fields(Guide::class);
+        $gallery = $this->mainstay->fields(Fixtures\Blocks\Gallery::class);
+
+        $this->assertFalse($fields['blocks']->isRequired(), 'public array holds an empty list, which required refuses.');
+        $this->assertSame(['nullable', 'array', 'list'], $fields['blocks']->rulesAt('blocks')['blocks']);
+        $this->assertSame(['required', 'array', 'list'], $gallery['slides']->rulesAt('slides')['slides']);
+        $this->assertSame(['required', 'string', 'max:255'], $gallery['slides']->rulesAt('slides', [['type' => 'slide', 'data' => []]])['slides.0.data.title'], 'Each item is checked where it is, by its own block\'s rules.');
+    }
+
+    #[Test]
+    public function a_blocks_field_refuses_what_it_cannot_hold(): void
+    {
+        foreach ([
+            [fn () => new Blocks, 'A blocks field lists the blocks it holds: #[Blocks(of: [Hero::class])].'],
+            [fn () => new Blocks(of: [Fixtures\Post::class]), 'Mainstay\Tests\Fixtures\Post is not a block. A block is a class extending Mainstay\Content\Block.'],
+            [fn () => new Blocks(of: [Slide::class, OtherSlide::class]), 'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide.'],
+            [fn () => $this->mainstay->fields(Looped::class), 'Mainstay\Tests\Fixtures\Blocks\Looped holds itself through its blocks, so there is no end to reading it.'],
+            [fn () => (new Blocks(of: [Translated::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Translated::$title is localized, and a block is translated with the field that holds it.'],
+            [fn () => (new Blocks(of: [Concealed::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Concealed::$note is internal, and a block is read whole.'],
+            [fn () => (new Blocks(of: [Identified::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')), 'Mainstay\Tests\Fixtures\Blocks\Identified::$id is called id, which every block keeps for itself.'],
+            [fn () => (new Blocks(of: [Slide::class]))->bind(new ReflectionProperty(Guide::class, 'title')), 'Mainstay\Tests\Fixtures\Guide::$title is typed string, and a blocks field stores a list of blocks.'],
+        ] as [$declare, $message]) {
+            try {
+                $declare();
+                $this->fail("Declared: {$message}");
+            } catch (InvalidArgumentException $exception) {
+                $this->assertSame($message, $exception->getMessage());
+            }
+        }
     }
 
     #[Test]
