@@ -26,7 +26,7 @@ Facade::setFacadeApplication($app);
 
 /*
  | The Blade behind a story that shows several components at once -- three
- | buttons in a row, the size ladder, a form -- lives here rather than in
+ | buttons in a row, a form -- lives here rather than in
  | resources/views, so that theme.css can scan the components without having to
  | exclude the workshop from its own directory. Its own namespace, so the
  | adapter still finds a view name for it and <x-mainstay::...> inside it keeps
