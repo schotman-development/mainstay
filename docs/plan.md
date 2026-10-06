@@ -278,15 +278,105 @@ field on a row that already holds both, and the drift check passing over the jso
 
 ## Phase 6 — Media
 
-Upload, then derivatives generated immediately and written as plain files. Originals kept
-permanently. Derivative filenames are the original's content hash plus the size and crop parameters,
-so regenerating writes new files and no cache needs invalidating.
+Images, and only raster ones: JPEG, PNG, GIF and WebP, recognised by their bytes rather than their
+name. Other downloads and SVG wait for a site that needs them; an SVG can carry script. A seeder
+uploads a file through `Mainstay::media()` and gets a `Media` back, and an entry's field holds its id.
+Every declared size is written at upload, in AVIF and in WebP, as plain files.
 
-Sizes are declared in code beside the field. Crops and focal points are data on the media record, so
-reprocessing honours them. `mainstay:media:reprocess` runs on the queue.
+**The library** is `mainstay_media`, a package migration, installation-wide rather than per site: the
+SHA-256 of the original's bytes, unique; its type, its name as uploaded and its byte size; its width
+and height once upright; a focal point; alt text; the timestamps and `deleted_at`. `owner_id` waits
+for phase 9, where it is one migration of one table, and the name joins the tables a content type
+cannot take. Uploading bytes the library holds is refused naming the image that holds them, trashed or
+not: an upload neither edits an image nor restores one. The unique index decides two uploads racing
+with the same bytes, in a savepoint, so the refusal leaves a seeder's transaction usable on Postgres.
 
-Upload is a call from code first, so a seeder attaches an image the same way it writes a title. The
-picker and the browser are the admin's, in phase 10.
+Alt text belongs to the image, per locale, in a `json` column -- Payload's model. An upload names
+every content locale, an empty string marking an image decorative, so a language left out is refused
+rather than shipped undescribed; an update merges the locales it names. A locale added later reads as
+null until someone writes it. The focal point is a whole percentage across and down, `[50, 50]` until
+one is set.
+
+**Files.** The original is kept permanently on `mainstay.media.originals`, Laravel's private `local`,
+as `media/{hash}.{ext}`, and never served: it carries the camera's EXIF, GPS included, which the
+re-encoded copies do not. The copies go to `mainstay.media.disk`, `public`, as
+`media/{hash}-{w}x{h}-{x}-{y}.{avif|webp}` for a size that crops and `media/{hash}-{w}.{avif|webp}` for
+one that only scales, so moving the point leaves the scaled files alone. Every file is written under a
+temporary name and moved into place, each step checked whatever the disk's `throw` says, so a name
+that exists is a whole file: generating skips it, and nothing needs invalidating. Files are written
+before the row. Moving the point writes new files beside the old, and old URLs go on serving what they
+served. A removed size orphans its files until something prunes them, as `decisions.md` accepted.
+
+**Processing** is `spatie/image` on GD everywhere, chosen explicitly since the package prefers
+Imagick: one engine is one set of tests proving the output. `loadFile()` turns the image upright from
+its EXIF orientation. A crop is `manualCrop()` of a region Mainstay works out around the focal point,
+then `resize()` -- spatie's `focalCrop()` takes a centre in pixels and does not scale, and
+`focalCropAndResize()` enlarges. `Mainstay\Media\Size` gives the region, the size written and what a
+template is told, so they cannot disagree. GD decodes into PHP's memory, so an image over what
+`memory_limit` leaves room for, at ten bytes a pixel and read from its header, is refused before it is
+decoded. A GD that cannot write AVIF or WebP refuses the upload naming which.
+
+**Sizes** are declared on the field:
+`#[Image(sizes: ['cover' => [1600, 900], 'card' => [640]])] public ?Media $cover`. A width and a
+height crop to fill that shape around the focal point; a width alone scales to it. Neither enlarges:
+an original smaller than the size is written at its own size, in the shape asked for. An upload does
+not know which field it is for, so it writes every size any registered type or block declares, and a
+size two fields declare alike is one file. `mainstay:media:reprocess` queues a `Reprocess` job per
+image out of the trash, writing what the current declarations name and nothing written yet.
+
+**The field** stores a plain id in an `unsignedBigInteger` column, and inside a block's JSON the same
+way, with no foreign key. The property is nullable, refused otherwise: null is no image chosen, and
+`required: true` makes a write need one. A write takes a Media or an id, and refuses on the field one
+that is not an id, or that the call gives and the field does not already hold and the library does
+not hold out of its trash. What a row holds is never asked about again, so trashing an image stops no
+save and fails no `mainstay:schema:check`, which still names a value inside a block that is not an id.
+
+An image trashed or gone reads as a Media marked `missing` that keeps its id: `picture()` prints
+nothing, `url()` gives null, and writing it back writes the id. So a list of blocks saved while it is
+away keeps the reference, and its return brings back every place it was used.
+
+A read loads the images its rows hold in one query, nested blocks included, inlined with
+`whereIntegerInRaw` past SQL Server's 2100 parameters. `Field::images()` names the ids a value holds,
+Blocks walking its items by their declarations, and `cast()` is handed what was loaded, which Blocks
+passes down. This is the reshape of the contract's storage half phase 1 expected: a field lives as
+long as the process, so what one read loaded travels with the cast. A cast handed nothing -- the entry
+a write shows Gate -- reads every image as missing. Every read resolves its images; whether depth 0
+hands back the id instead is phase 7's question.
+
+**In a template** `$entry->cover` has `alt` in the locale it was read in, `url('card')` for the WebP
+and `url('card', 'avif')`, and `width('card')` and `height('card')` as written. `picture('card')`
+prints a `<picture>` with the AVIF as its source and the WebP as the `<img>`, alt and dimensions on it,
+lazy unless the attributes passed say otherwise. A Media from `find()` or `upload()`, read through no
+field, has no sizes and says so. A `srcset` across sizes waits until a site's templates repeat one;
+an image inside rich text waits too, since a node for one changes the closed schema in both places.
+
+`Mainstay::media()` takes `upload()`, `find()`, `update()` and `delete()`, which ask `Gate` through a
+`MediaPolicy` shaped like `EntryPolicy`: reading is open, and until phase 9 a write needs
+`overrideAccess: true`. Delete trashes and the files stay; restore is phase 8's.
+
+**The site.** Articles have a cover, drawn above the body and as a card in the blog listing and the
+front page's latest articles; the Hero block has a screenshot under its text and code. The images are
+screenshots of the site and of the admin's design in Storybook, uploaded once each by the seeder with
+English and Dutch alt text -- the post list is both the Hero's and an article's, one image. The site
+links `storage`, and its tests fake both disks.
+
+**Locally** the host's PHP has neither GD nor Imagick. The `mainstay-php-sqlsrv` podman image has GD
+with JPEG, WebP and AVIF, exif, every PDO driver and composer, and runs every driver's suite and the
+site's `composer content` and tests; the dev server stays on the host's PHP, serving plain files. CI's
+runners have GD and exif; whether their GD writes AVIF is what the first push confirms. MediaTest runs
+in the Postgres, MySQL and SQL Server jobs beside the three suites they already ran.
+
+The check is `MediaTest`, on all four drivers: the original kept privately and every declared size
+written in both formats under its hash; a second upload refused naming the first, from a second
+connection racing it too, inside a caller's transaction and out; a JPEG with an EXIF rotation upright;
+a crop holding the focal point's colour where the point lands, and moving it writing new files beside
+the old; nothing enlarged, and every file the size a template is told; a file that is not an image, one
+too large for memory, and alt or a focal point out of shape refused with nothing written; a failed write
+leaving no row and no part of a file; images read back through an entry and two blocks down with alt
+in two locales; a listing's images in one query; a write naming an image the library does not hold
+refused where it is; writes refused without the override; a trashed image read as missing and kept
+through saves and the drift check; and reprocess queueing one job per image and writing a size declared
+since.
 
 ## Phase 7 — Globals, taxonomies and relations
 
