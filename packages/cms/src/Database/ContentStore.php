@@ -24,6 +24,7 @@ use InvalidArgumentException;
 use JsonException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\Media;
 use Mainstay\Content\Route;
 use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
@@ -100,10 +101,10 @@ class ContentStore
         $locale = $this->locale($locale);
         $internal = $this->reads($type, $overrideAccess);
 
-        return $this->select($type, $locale, $where, $sort, $internal)
-            ->limit($limit)
-            ->get()
-            ->map(fn (object $row) => $this->hydrate($type, $row, $locale, $internal));
+        $rows = $this->select($type, $locale, $where, $sort, $internal)->limit($limit)->get();
+        $media = $this->images($type, $rows, $locale, $internal);
+
+        return $rows->map(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, media: $media));
     }
 
     /**
@@ -122,9 +123,10 @@ class ContentStore
         $locale = $this->locale($locale);
         $internal = $this->reads($type, $overrideAccess);
 
-        return $this->select($type, $locale, $where, $sort, $internal)
-            ->paginate($perPage, page: $page)
-            ->through(fn (object $row) => $this->hydrate($type, $row, $locale, $internal));
+        $entries = $this->select($type, $locale, $where, $sort, $internal)->paginate($perPage, page: $page);
+        $media = $this->images($type, $entries->items(), $locale, $internal);
+
+        return $entries->through(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, media: $media));
     }
 
     /**
@@ -279,7 +281,38 @@ class ContentStore
 
         return $row === null
             ? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.")
-            : $this->hydrate($type, $row, $locale, $internal, $only);
+            : $this->hydrate($type, $row, $locale, $internal, $only, $this->images($type, [$row], $locale, $internal));
+    }
+
+    /*
+     | The images the rows hold, every field and every block of them, loaded
+     | in one query however many there are, for hydrate() to hand the fields
+     | casting them. A column that does not parse holds none; hydrate() names
+     | it.
+     |
+     | @return array<int, Media>
+     */
+    private function images(string $type, iterable $rows, string $locale, bool $internal): array
+    {
+        $ids = [];
+
+        foreach ($rows as $row) {
+            foreach ($this->mainstay->fields($type) as $name => $field) {
+                $column = Str::snake($name);
+
+                if (! property_exists($row, $column) || ($field->internal && ! $internal)) {
+                    continue;
+                }
+
+                try {
+                    array_push($ids, ...array_values($field->images($field->decode($row->{$column}), $name)));
+                } catch (JsonException) {
+                    continue;
+                }
+            }
+        }
+
+        return $this->mainstay->media()->load($ids, $locale);
     }
 
     /*
@@ -868,6 +901,31 @@ class ContentStore
             }
         });
 
+        /*
+         | An image a save is given has to be in the library and out of its
+         | trash. Asked of what the call gives that the field does not hold
+         | already: an image trashed since it was chosen is the field's to keep
+         | while it is away, and a list of blocks written back as a read handed
+         | it out gives it again.
+         */
+        $validator->after(function () use ($validator, $fields, $values, $data, $stored) {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            $given = [];
+
+            foreach ($fields as $name => $field) {
+                if (array_key_exists($name, $data)) {
+                    $given += array_diff($field->images($values[$name] ?? null, $name), $field->images($stored[$name] ?? null, $name));
+                }
+            }
+
+            foreach (array_diff($given, $this->mainstay->media()->present(array_values($given))) as $at => $id) {
+                $validator->errors()->add($at, "The {$validator->getDisplayableAttribute($at)} field names image {$id}, which is not in the media library or is in its trash.");
+            }
+        });
+
         $validator->validate();
 
         return $values;
@@ -1106,9 +1164,10 @@ class ContentStore
      | A row as the declared class. `$locale` is null for the entry a write
      | asks Gate about, which is the main row alone -- its owner and its
      | shared fields, what a policy decides on -- so its locale, its path and
-     | its localized fields are not set.
+     | its localized fields are not set, and nothing loads its images, which
+     | read as missing.
      */
-    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null): Entry
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null, array $media = []): Entry
     {
         [$class, $properties] = $this->reflection($type);
         $entry = $class->newInstanceWithoutConstructor();
@@ -1165,7 +1224,7 @@ class ContentStore
                rather than refusing the caller in that field's name. A read
                still fails on it, naming the declaration. */
             try {
-                $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column})));
+                $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column}), $media));
             } catch (InvalidArgumentException $exception) {
                 if ($locale !== null) {
                     throw $exception;
