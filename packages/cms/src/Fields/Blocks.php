@@ -211,6 +211,32 @@ class Blocks extends Field
         return $items;
     }
 
+    /* The images a read loaded go down to the fields inside the blocks,
+       which from() alone has no way to be handed. */
+    public function cast(mixed $value, array $media = []): mixed
+    {
+        return $this->blank($value) ? parent::cast($value) : $this->from($value, $media);
+    }
+
+    /* Each block's images where it is, `blocks.0.data.image`, by the index
+       rulesAt() reports an item at. */
+    public function images(mixed $value, string $at): array
+    {
+        $images = [];
+
+        foreach (is_array($value) && array_is_list($value) ? $value : [] as $index => $item) {
+            if (($class = $this->block($item)) === null || ! is_array($data = $item['data'] ?? [])) {
+                continue;
+            }
+
+            foreach ($this->fields($class) as $name => $field) {
+                $images += $field->images($data[$name] ?? null, "{$at}.{$index}.data.{$name}");
+            }
+        }
+
+        return $images;
+    }
+
     /*
      | The blocks, each field cast through its type. An item of a type the
      | field does not list -- one it has stopped listing, or something that
@@ -225,7 +251,7 @@ class Blocks extends Field
      | property declares, or is read from nothing -- which bind() made sure
      | every field without a default can be.
      */
-    protected function from(mixed $value): mixed
+    protected function from(mixed $value, array $media = []): mixed
     {
         if (! is_array($value) || ! array_is_list($value)) {
             throw new InvalidArgumentException("{$this->name} holds something that is not a list of blocks.");
@@ -266,7 +292,7 @@ class Blocks extends Field
                         throw new InvalidArgumentException('a list or a map is stored for it.');
                     }
 
-                    $properties[$name]->setValue($block, $field->cast($data[$name] ?? null));
+                    $properties[$name]->setValue($block, $field->cast($data[$name] ?? null, $media));
                 } catch (InvalidArgumentException|TypeError $exception) {
                     throw new InvalidArgumentException("{$class}::\${$name} cannot read {$at}: {$exception->getMessage()}", previous: $exception);
                 }

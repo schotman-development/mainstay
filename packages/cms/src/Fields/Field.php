@@ -233,6 +233,20 @@ abstract class Field
         return $value;
     }
 
+    /*
+     | The ids of the images a value holds, keyed by where each one is, from
+     | `$at` down: `cover`, `blocks.0.data.image`. A read loads them in one
+     | query before casting, and a save asks the library about the ones it
+     | was given. Nothing, for a field that holds none -- which is every
+     | field but Image and the ones holding others.
+     |
+     | @return array<string, int>
+     */
+    public function images(mixed $value, string $at): array
+    {
+        return [];
+    }
+
     /* The JSON Schema fragment, before nullability is applied to it. */
     abstract protected function json(): array;
 
@@ -307,8 +321,14 @@ abstract class Field
      |
      | from() sees only real values. to() sees one more: the empty value a
      | non-nullable field falls back to, since that is what gets written.
+     |
+     | `$media` is what the read loaded beside its rows, by id: the images
+     | every field of them holds, nested ones included -- see images(). Handed
+     | in rather than kept on the field, since the registry keeps one field
+     | for as long as the process lives and a read is one call. Only a field
+     | holding images reads it, overriding this to.
      */
-    public function cast(mixed $value): mixed
+    public function cast(mixed $value, array $media = []): mixed
     {
         if (! $this->blank($value)) {
             return $this->from($value);
