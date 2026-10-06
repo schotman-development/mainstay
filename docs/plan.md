@@ -3,11 +3,13 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 to 4 are done: content types are declared, reflected into a field list, synced into
+Phases 1 to 5 are done: content types are declared, reflected into a field list, synced into
 tables that `mainstay:schema:check` holds CI to, read and written from PHP through one query
-layer, and served at their paths in Blade by a host site, `mainstay-site`. `packages/ui` is ahead
-of the package — Blade components, a theme, and a behaviour layer in `src/js` — and
-`packages/editor` is a built ProseMirror island.
+layer, and served at their paths in Blade by a host site, `mainstay-site`. Rich text and blocks
+are field types like the scalars, each kept in a `json` column of its own, and the site's bodies
+and front page are written in them. `packages/ui` is ahead of the package — Blade components, a
+theme, and a behaviour layer in `src/js` — and `packages/editor` is a built ProseMirror island
+declaring the document schema the package renders.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
