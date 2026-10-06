@@ -28,6 +28,10 @@ use ReflectionUnionType;
  */
 abstract class Field
 {
+    /* An id as it is written: what `integer` lets through and an id is not
+       -- `true`, ` 1`, `+1` -- refused. */
+    protected const ID = 'regex:/\A[1-9][0-9]*\z/';
+
     /*
      | Bound from the property the attribute sits on. Reflection is already
      | reading the name and the type to build the list, so a declaration never
@@ -193,15 +197,20 @@ abstract class Field
      | in and decodes it on the way out, so the field type only ever handles
      | the array, and a field nested in a block's JSON serializes to the same
      | thing a column of its own is written from.
+     |
+     | Null for a field kept in rows of its own rather than a column -- Terms,
+     | in its taxonomy's pivot -- which the schema plan, the read's select and
+     | a write's row all leave out, and which the layer reads and writes
+     | itself.
      */
-    abstract public function column(): array;
+    abstract public function column(): ?array;
 
     /* Whether the column holds JSON, which the layer encodes on the way in
        and decodes on the way out. A type storing a tree in a column of
        another kind overrides this. */
     public function keptAsJson(): bool
     {
-        return in_array($this->column()[0], ['json', 'jsonb'], true);
+        return in_array($this->column()[0] ?? null, ['json', 'jsonb'], true);
     }
 
     /* A serialized value as the column takes it: the store's write and
@@ -234,15 +243,17 @@ abstract class Field
     }
 
     /*
-     | The ids of the images a value holds, keyed by where each one is, from
-     | `$at` down: `cover`, `blocks.0.data.image`. A read loads them in one
-     | query before casting, and a save asks the library about the ones it
-     | was given. Nothing, for a field that holds none -- which is every
-     | field but Image and the ones holding others.
+     | What a value points at -- images, and the entries a relation or a
+     | Terms field names -- keyed by where each one is, from `$at` down:
+     | `cover`, `blocks.0.data.image`, `related.2`. Each is its class, Media
+     | for an image, and its id. A read loads them, one query per class, before
+     | casting, and a save asks whether the ones it was given are there.
+     | Nothing, for a field that points at nothing -- which is every field but
+     | Image, Relation, Terms and the ones holding others.
      |
-     | @return array<string, int>
+     | @return array<string, array{0: class-string, 1: int}>
      */
-    public function images(mixed $value, string $at): array
+    public function references(mixed $value, string $at): array
     {
         return [];
     }
@@ -322,13 +333,14 @@ abstract class Field
      | from() sees only real values. to() sees one more: the empty value a
      | non-nullable field falls back to, since that is what gets written.
      |
-     | `$media` is what the read loaded beside its rows, by id: the images
-     | every field of them holds, nested ones included -- see images(). Handed
-     | in rather than kept on the field, since the registry keeps one field
-     | for as long as the process lives and a read is one call. Only a field
-     | holding images reads it, overriding this to.
+     | `$loaded` is what the read loaded beside its rows, by class and then
+     | id: the images and entries every field of them points at, nested ones
+     | included -- see references(). Handed in rather than kept on the field,
+     | since the registry keeps one field for as long as the process lives and
+     | a read is one call. Only a field pointing at something reads it,
+     | overriding this to.
      */
-    public function cast(mixed $value, array $media = []): mixed
+    public function cast(mixed $value, array $loaded = []): mixed
     {
         if (! $this->blank($value)) {
             return $this->from($value);

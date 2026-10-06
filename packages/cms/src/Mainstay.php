@@ -10,12 +10,14 @@ use InvalidArgumentException;
 use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Route;
 use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
+use Mainstay\Fields\Terms;
 use Mainstay\Media\Library;
 use ReflectionAttribute;
 use ReflectionClass;
@@ -271,6 +273,18 @@ class Mainstay
     public function delete(string $type, mixed ...$arguments): void
     {
         $this->store()->delete($type, ...$arguments);
+    }
+
+    /* A global, `Mainstay::global(Footer::class)`: this site's one, in the
+       locale read, or null where it has not been written in it. */
+    public function global(string $type, mixed ...$arguments): ?GlobalSet
+    {
+        return $this->store()->global($type, ...$arguments);
+    }
+
+    public function saveGlobal(string $type, mixed ...$arguments): GlobalSet
+    {
+        return $this->store()->saveGlobal($type, ...$arguments);
     }
 
     private function store(): ContentStore
@@ -571,7 +585,36 @@ class Mainstay
             }
         }
 
+        $this->terms($type, $fields);
+
         return $fields;
+    }
+
+    /*
+     | Terms on an entry only, one field per taxonomy. A term's page lists the
+     | entries holding it, so a block's terms are ones it could not see and a
+     | global's ones it has nothing to list; and the pivot says which entry a
+     | row is for, not which of its fields.
+     */
+    private function terms(string $type, array $fields): void
+    {
+        $taxonomies = [];
+
+        foreach ($fields as $name => $field) {
+            if (! $field instanceof Terms) {
+                continue;
+            }
+
+            if (! is_subclass_of($type, Entry::class)) {
+                throw new InvalidArgumentException("{$type}::\${$name} is a terms field, and only an entry holds terms: a term's page lists the entries holding it. Point at the terms with a relation instead.");
+            }
+
+            if (($other = $taxonomies[$field->of] ?? null) !== null) {
+                throw new InvalidArgumentException("{$type}::\${$other} and \${$name} both hold {$field->of}'s terms, and its pivot does not say which field a term is in. Keep them in one field.");
+            }
+
+            $taxonomies[$field->of] = $name;
+        }
     }
 
     /* Whether a class this one extends carries a field attribute on the

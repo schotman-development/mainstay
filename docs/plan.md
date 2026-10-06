@@ -3,13 +3,16 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 to 5 are done: content types are declared, reflected into a field list, synced into
+Phases 1 to 7 are done: content types are declared, reflected into a field list, synced into
 tables that `mainstay:schema:check` holds CI to, read and written from PHP through one query
 layer, and served at their paths in Blade by a host site, `mainstay-site`. Rich text and blocks
 are field types like the scalars, each kept in a `json` column of its own, and the site's bodies
-and front page are written in them. `packages/ui` is ahead of the package — Blade components, a
-theme, and a behaviour layer in `src/js` — and `packages/editor` is a built ProseMirror island
-declaring the document schema the package renders.
+and front page are written in them. Images live in an installation-wide library, written at every
+declared size in AVIF and WebP when they are uploaded. Entries point at each other through
+relations a read follows to a depth, tags are the entries of a taxonomy found again through its
+pivot, and a global holds the site's menu and footer. `packages/ui` is ahead of the package —
+Blade components, a theme, and a behaviour layer in `src/js` — and `packages/editor` is a built
+ProseMirror island declaring the document schema the package renders.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
@@ -24,7 +27,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Eleven things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Fifteen things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -71,6 +74,22 @@ rather than edited into the log, which is append-only by construction.
 - **`mainstay.locales` is a map, not a list.** The localization entry has it carrying "`locales`, a
   required default, and a fallback flag." It maps each locale to where it is served, the first
   being the default, and there is no fallback flag until phase 12 makes fallback an opt-in.
+- **Terms are entries.** The globals and taxonomies entry has three shapes of content, and the public
+  pages entry keeps `template` an entry's alone, "so globals and taxonomies keep the name for their
+  fields". `Taxonomy extends Entry`, so a term has the column and may name a view, and is a shape of
+  its own only in being what a Terms field points at.
+- **The term pivot is a table per taxonomy.** The same entry has "a single polymorphic table of
+  `(term_id, entry_type, entry_id)`" with a real foreign key. Each taxonomy's terms are a table of
+  their own numbering its own rows, so one table would need a taxonomy column and could carry no
+  foreign key. It is `{handle}_entries`, one per taxonomy, built by sync -- still no table per pairing.
+- **A global's row exists once it is written.** The trash entry has it that "their row always exists,
+  one per site". Nothing creates it before the first save -- sync is off in production, and a
+  migration inserting content is a migration per global -- so one not written yet reads as null. It is
+  still never deleted.
+- **A relation whose target is away keeps its place.** The relations entry has the renderer skip what
+  it cannot load, and phase 7's check had a trashed target skipped. Phase 6 read an image that is away
+  as a Media marked missing and kept it through saves, and a relation does the same; the template is
+  what skips it.
 
 ## Phase 1 — Declarations
 
@@ -380,19 +399,133 @@ since.
 
 ## Phase 7 — Globals, taxonomies and relations
 
-Globals reuse the field attributes and phase 3's layer, and differ only in having no route, no slug,
-and one row per site. The draft row and the revisions table reach them in phase 8, alongside
-entries.
+Three ways content points at other content, and `depth` to follow them. Every target is read through
+the query every read starts from, so the site, the locale, the trash and Gate apply to it as to
+anything else read.
 
-A relation is a field storing a plain ID, resolved defensively at every `depth`. This is where
-`depth` first has something to follow.
+**Relations.** `#[Relation(to: Article::class)]` points at entries. With one type in `to:` it stores a
+plain id: `public ?Article $author` in an `unsignedBigInteger` column of its own, which a `where` can
+filter on, `where: ['author' => 3]`, and `public array $related` as a JSON list of ids. With several,
+`to: [Page::class, Blog::class, Docs::class]`, each reference is `{type, id}` by the type's handle, in
+JSON whether one or a list, since an id alone does not say which table: each type numbers its own
+rows. The property says one or a list: nullable and typed as the target or a union of the targets for
+one, `array` for a list, which holds none rather than null. No foreign key, in a column or inside a
+block, as `decisions.md` chose. `to:` names entries, and a reference to a type that is not registered
+is refused the first time one is read or written, since types register after the attributes are
+read. A global is no target: there is nothing to choose between. Changing a one-type `to:` to another type points every
+stored id at the new type's rows, and nothing can tell: a stored id says no type. That is a migration
+of the ids, by hand.
 
-Taxonomies are the deliberate exception to the relations decision: a term page exists to run the
-reverse query, so the pivot is real. One polymorphic `(term_id, entry_type, entry_id)` indexed both
-ways. Terms are flat, take `#[Template]`, and route through the same lookup table.
+A write takes an entry or an id, or for several types an entry or `['type' => 'page', 'id' => 3]`. It
+refuses on the field, at its path, a type the field does not name, a list naming one target twice
+(at the second), and a target the call gives and the field does not already hold that the writer
+cannot read -- absent, trashed, on another site, or of a type the writer may not read, in one
+wording, so the refusal does not tell them apart. The locale is not asked: a target not translated
+into the write's locale is written, and reads as missing there. What a row already holds is not
+asked about again, as with images.
 
-The check is one call returning identical shapes at depth 0 and depth 1, and a trashed target
-skipped rather than failing the read.
+**Depth.** Every read takes `depth`, 1 unless the call says otherwise: `find`, `findById`,
+`findByUri`, `paginate` and `global`. At 1 a relation holds the entry it points at, read as its type's
+own read would read it at depth 0, with its internal fields shown or not by its own type's policy;
+at 2 that entry's relations are read too. A write hands back what a read at the default depth would.
+No cap here; phase 11 caps what a request may ask, and a cycle only costs the levels asked for.
+
+A target not loaded is an object of its class holding only its id, `missing` true, as an image is:
+depth ran out, or it is trashed, gone, untranslated in the locale, or of a type the reader may not
+read. Every field is absent, `url()` is null, and writing it back writes the reference, so a list of
+blocks or of relations saved while it is away keeps it, and its return brings back every place it was
+used. A list keeps it in its place, so a template skips it: `@continue($related->missing)`. The
+property is the same type at every depth, which is the check. A reference whose type the field no
+longer names is left out of a read and of the next save, as a block whose type its field no longer
+lists is. `missing` is a public bool on `Entry`, as on `Media`, and joins the reserved names: a type
+redeclaring it as a bool is refused by sync, and one redeclaring it as anything else fails to load
+with PHP's message about types.
+
+A level costs one query per target type and one per Terms field's pivot, for all the rows read,
+however many: the references they hold are gathered first, nested blocks included, and each type's
+ids read in one `whereIntegerInRaw`, past SQL Server's 2100 parameters. A Terms field's pivot is read
+at depth 0 too, since the ids are there and nowhere else. Images are not a hop. Every entry loaded at
+any level has its images, one query a level, so a related article's card has its cover and a listing
+at depth 0 still prints covers; `missing` on an image keeps meaning trashed or gone. Phase 6's
+`images()` becomes `references()`, naming the images and entries a value holds by path, and `cast()`
+is handed what the read loaded of both, which Blocks passes down: the same reshape carried a step
+further rather than a second mechanism beside it.
+
+**Globals.** `Mainstay::global(Layout::class)` reads one and `Mainstay::saveGlobal(Layout::class,
+[...], locale: 'en')` writes one, through phase 3's validation, locales and Gate. A global has no
+route, no slug, no view, and one row per site, which a unique index on `site_id` holds -- a declared
+key, so the drift check sees it. Its read is the entry read without the lookup join and the
+`template` column, which a global does not have and may name a field after; hydrating it hands back a
+`ContentType`. One nobody has written, or not written in the locale read, is null, which is what
+"absent, not a fallback" means for a global: `Mainstay::global(Layout::class)?->footer`. The first
+save creates the row; two racing for it leave one, in a savepoint so Postgres keeps a caller's
+transaction usable, and the loser reads the winner's row again with a lock where a plain read would
+answer from its snapshot -- MySQL inside a caller's transaction -- and updates it. Without a locale a
+save updates the global as the request's locale reads it and is refused where that has no row, as an
+update is: the request's language never creates content. A global is never deleted. Gate answers for
+a global with `GlobalPolicy` unless the host chose another: reading is open, and every save asks
+`update` about the type, whether or not the row exists yet, which until phase 9 needs
+`overrideAccess: true`. `find()` and the other entry calls go on refusing a global. The draft row and
+revisions reach globals in phase 8.
+
+**Taxonomies.** A taxonomy's terms are entries: `Taxonomy extends Entry`, so `class Tag extends
+Taxonomy` has its tables, a route, a view, `url()`, the reads and the writes with nothing new. What is
+new is that a Terms field points at it and a read filters by it. A term may name a view of its own, as
+any entry may, and phase 8 decides whether terms get drafts.
+
+`#[Terms(of: Tag::class)] public array $tags` holds an entry's terms in the order given, and refuses
+one named twice. It is the first field with no column: `column()` answers null, and the schema plan,
+the read's select, a write's row and what `stored()` reads all skip it; its values come from the
+pivot when a save loads what is stored, validates it and hands it back. Its rows are in
+`tag_entries`, which sync builds beside `tag` and `tag_locales`: an `id`, `term_id` with a real
+foreign key to `tag`, `entry_type` and `entry_id` for whichever type holds the field, and a position.
+Unique on `(term_id, entry_type, entry_id)` and indexed on `(entry_type, entry_id)`, so each direction
+is one index, both named short and explicitly, since Laravel's generated names pass MySQL's 64
+characters for a handle past 21. The drift check compares keys today by their columns as a set and
+reads only unique ones, so it learns plain indexes, compared in column order. A type whose handle ends
+in `_entries` is refused as `_locales` is. The store writes the rows in the save's transaction, only
+what changed, as it writes paths. The pivot has no locale, so an entry's terms are the same in every
+language and the field refuses `localized`. It is refused inside a block, where the reverse query
+could not see it, and on a global; two Terms fields of one taxonomy on one type are refused, since a
+row does not say which field it is for.
+
+The reverse query is a `where`, so it pages and sorts as any filter:
+`Mainstay::paginate(Article::class, where: ['tags' => $tag->id], sort: '-publishedOn')`. `=` finds
+entries holding a term and `in` entries holding any of several, each an exists on the pivot; the other
+operators and a sort on the field are refused until something needs them. Only terms out of the trash
+count, so a trashed term gathers nothing, and its pivot rows stay for its restore. A term in a Terms
+field is otherwise a relation's target: what a write gives is checked, one not loaded is `missing`,
+and depth follows it.
+
+**The site.** A `Layout` global holds the header menu, a relation to Page, Blog and Docs kept per
+language, so the Dutch menu can differ from the English, and the footer text; `menuPosition` goes from
+the three types. Articles get tags: `Tag`, a title and a slug, at `/blog/tag/{slug}` and
+`/nieuws/tag/{slug}`, each page listing its articles newest first with paging, and an article's tags
+linked from its page. And related articles, `#[Relation(to: Article::class)] public array $related`,
+drawn as cards under the body. The blog listing reads at depth 0, since it draws no related articles.
+The seeder writes the global in both languages, a few tags, and the links between articles. The site's
+tests visit every entry of every type but the global, which `find()` refuses, and count the tag pages
+among them; keep the listing's covers to the one query they were; and see the menu in both languages,
+a tag page's second page, and an article's related cards with their covers.
+
+The check is `RelationTest`, on all four drivers, beside the suites each driver's job already runs:
+relations written as an entry and as an id, one and a list, one type and several, in a column and two
+blocks down, read at depth 0, 1 and 2 with the property the same class throughout; depth 1 over a
+listing costing one query per target type, one per Terms pivot and one for images, whatever the row
+count; a target's internal field shown or not by its own type's policy; a trashed, untranslated, other
+site's and unreadable target read as missing in its place and kept through saves of the blocks and the
+list and through the drift check; a write naming a target that is absent, trashed, or of a type the
+writer may not read refused at its path in the same words, with nothing written; a repeat refused; an
+untranslated target written; a single relation filtered on and a list refused as JSON. A global null
+before its first save and in an untranslated locale, the second save updating the first's row, two
+first saves racing from a second connection leaving one row, inside a caller's transaction whose
+snapshot was taken before the other committed and out of one, a save without a locale refused where
+the request's has no row, writes refused without the override, and `SiteSettings`, whose field is
+called `template`, read and written. Terms written and read in order; a repeat refused; the reverse
+query paging with `=` and `in`; a trashed term gathering nothing and keeping its rows; a term page
+served by the catch-all in two locales with its own view; a Terms field refused localized, in a block,
+on a global and twice for one taxonomy; and the drift check failing on a pivot without its foreign
+key, without its unique index and without its plain one, each on its own.
 
 ## Phase 8 — Drafts, publishing, revisions, trash
 

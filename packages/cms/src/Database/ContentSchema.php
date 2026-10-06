@@ -16,7 +16,10 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use JsonException;
 use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
+use Mainstay\Content\Taxonomy;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Terms;
 use Mainstay\Mainstay;
 use TypeError;
 
@@ -38,7 +41,8 @@ class ContentSchema
      | Two tables per type, always: the main row, and a `_locales` sibling for
      | the localized fields. The sibling exists even with nothing localized
      | yet, because a locale with no row is how an untranslated entry is told
-     | apart from a translated one.
+     | apart from a translated one. A taxonomy has a third, `_entries`, its
+     | terms' pivot, and a global's main table holds one row per site.
      |
      | `columns` and `keys` are separate because the comparison builds
      | `columns` under a scratch name, where a foreign key would reference a
@@ -54,7 +58,8 @@ class ContentSchema
         $tables = [];
 
         foreach ($this->mainstay->registered() as $handle => $type) {
-            $fields = $this->mainstay->fields($type);
+            /* A field kept in rows of its own has no column here. */
+            $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $field->column() !== null);
             $columns = collect($fields)->keyBy(fn (Field $field) => Str::snake($field->name));
 
             /*
@@ -68,18 +73,26 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            /* An entry's own view. A global or a term renders nothing of its
-               own, so the name is left to its fields. */
+            /* An entry's own view, and what marks one a relation did not load.
+               A global has neither, so the names are left to its fields. */
             $entry = is_subclass_of($type, Entry::class);
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template', 'missing'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
             }
 
-            if (in_array($handle, ['sites', 'uris', 'migrations', 'mainstay_media'], true) || str_ends_with($handle, '_locales')) {
+            if (in_array($handle, ['sites', 'uris', 'migrations', 'mainstay_media'], true) || str_ends_with($handle, '_locales') || str_ends_with($handle, '_entries')) {
                 throw new InvalidArgumentException("{$type} would be stored in {$handle}, a table Mainstay keeps for itself. Rename the class.");
+            }
+
+            /* A Terms field's rows are in its taxonomy's pivot, which only a
+               registered taxonomy has. */
+            foreach ($this->mainstay->fields($type) as $name => $field) {
+                if ($field instanceof Terms && ($this->mainstay->registered()[$field->of::handle()] ?? null) !== $field->of) {
+                    throw new InvalidArgumentException("{$type}::\${$name} holds {$field->of}'s terms, and {$field->of} is not registered, so it has no pivot to keep them in. Register it with Mainstay::types().");
+                }
             }
 
             [$localized, $shared] = $columns->partition(fn (Field $field) => $field->localized)->map->all();
@@ -103,8 +116,12 @@ class ContentSchema
                     $table->datetimes();
                     $table->softDeletes();
                 },
-                'keys' => function (Blueprint $table) {
+                'keys' => function (Blueprint $table) use ($type) {
                     $table->foreign('site_id')->references('id')->on('sites');
+
+                    if (is_subclass_of($type, GlobalSet::class)) {
+                        $table->unique('site_id');
+                    }
                 },
                 'fields' => $shared,
             ];
@@ -125,6 +142,32 @@ class ContentSchema
                 },
                 'fields' => $localized,
             ];
+
+            /*
+             | Which entries hold which terms, for every type with a Terms
+             | field on this taxonomy: a real key to the term, and the entry by
+             | its type's handle and id. Unique one way and indexed the other,
+             | so a term's entries and an entry's terms are each one index.
+             | Named short, since Laravel's names pass MySQL's 64 characters
+             | for a handle past 21.
+             */
+            if (is_subclass_of($type, Taxonomy::class)) {
+                $tables["{$handle}_entries"] = [
+                    'columns' => function (Blueprint $table) {
+                        $table->id();
+                        $table->unsignedBigInteger('term_id');
+                        $table->string('entry_type');
+                        $table->unsignedBigInteger('entry_id');
+                        $table->unsignedInteger('position');
+                    },
+                    'keys' => function (Blueprint $table) use ($handle) {
+                        $table->foreign('term_id')->references('id')->on($handle);
+                        $table->unique(['term_id', 'entry_type', 'entry_id'], "{$handle}_entries_unique");
+                        $table->index(['entry_type', 'entry_id'], "{$handle}_entries_entry");
+                    },
+                    'fields' => [],
+                ];
+            }
         }
 
         return $tables;
@@ -224,9 +267,11 @@ class ContentSchema
             foreach ($changes['keys'] as $key) {
                 $columns = implode(', ', $key['columns']);
 
-                $lines[] = $key['type'] === 'unique'
-                    ? "{$table}: declared unique on ({$columns}), and the database has no such index"
-                    : "{$table}: declared a foreign key on ({$columns}) referencing {$key['on']}.".implode(', ', $key['references']).', and the database has no such key';
+                $lines[] = match ($key['type']) {
+                    'unique' => "{$table}: declared unique on ({$columns}), and the database has no such index",
+                    'index' => "{$table}: declared an index on ({$columns}), and the database has no such index",
+                    default => "{$table}: declared a foreign key on ({$columns}) referencing {$key['on']}.".implode(', ', $key['references']).', and the database has no such key',
+                };
             }
 
             foreach ($changes['unreadable'] as $column => $reason) {
@@ -416,9 +461,11 @@ class ContentSchema
                    columns that are by now filled and required; duplicate rows
                    refuse it at this point. */
                 foreach ($changes['keys'] as $key) {
-                    $key['type'] === 'unique'
-                        ? $table->unique($key['columns'])
-                        : $table->foreign($key['columns'])->references($key['references'])->on($key['on']);
+                    match ($key['type']) {
+                        'unique' => $table->unique($key['columns'], $key['name']),
+                        'index' => $table->index($key['columns'], $key['name']),
+                        default => $table->foreign($key['columns'])->references($key['references'])->on($key['on']),
+                    };
                 }
 
                 if ($changes['drop'] !== []) {
@@ -588,18 +635,17 @@ class ContentSchema
      | closure records a command per key when the Blueprint is constructed, so
      | the declaration is asked what it wants rather than built to find out.
      | Names are left out of the comparison -- each driver names an index its
-     | own way, and a key is the columns it covers.
+     | own way, and a key is the columns it covers -- and kept for sync to
+     | write an index under the name it was declared with.
      |
-     | @return list<array{type: string, columns: list<string>, on?: string, references?: list<string>}>
+     | @return list<array{type: string, columns: list<string>, name?: string, on?: string, references?: list<string>}>
      */
     private function declared(string $table, Closure $keys): array
     {
         return collect((new Blueprint(Schema::getConnection(), $table, $keys))->getCommands())
             ->map(fn (Fluent $command) => match ($command->name) {
                 'foreign' => ['type' => 'foreign', 'columns' => $command->columns, 'on' => $command->on, 'references' => (array) $command->references],
-                'unique' => ['type' => 'unique', 'columns' => $command->columns],
-                /* Named rather than assumed: a plain index read as a unique one
-                   would have sync write a constraint nothing declared. */
+                'unique', 'index' => ['type' => $command->name, 'columns' => $command->columns, 'name' => $command->index],
                 default => throw new InvalidArgumentException("{$table} declares a {$command->name} key, which the drift check has no way to compare. Teach keys() to read it."),
             })
             ->all();
@@ -612,7 +658,9 @@ class ContentSchema
      | beside the first. A foreign key is not a set -- its columns pair
      | positionally with the ones they reference -- so only the unique arm
      | settles an order, and only to be compared by: sync writes the key as it
-     | was declared, which is the order the index is worth reading in.
+     | was declared, which is the order the index is worth reading in. A
+     | plain index is not a set either: it serves the queries that lead with
+     | its first column, so it compares in its order.
      */
     private function comparable(array $key): array
     {
@@ -620,20 +668,23 @@ class ContentSchema
             sort($key['columns']);
         }
 
+        unset($key['name']);
+
         return $key;
     }
 
     /* The live table's keys in the same shape, so the two compare directly.
        The primary key is left out: it arrives with id(), which sync does not
        touch, and the column comparison already reports a key of the wrong
-       type. */
+       type. An index nothing declared -- one MySQL builds under a foreign
+       key, one a host added for a query of its own -- is not compared. */
     private function keys(string $table): array
     {
         $prefix = Schema::getConnection()->getTablePrefix();
 
         return collect(Schema::getIndexes($table))
-            ->filter(fn (array $index) => $index['unique'] && ! $index['primary'])
-            ->map(fn (array $index) => ['type' => 'unique', 'columns' => $index['columns']])
+            ->reject(fn (array $index) => $index['primary'])
+            ->map(fn (array $index) => ['type' => $index['unique'] ? 'unique' : 'index', 'columns' => $index['columns']])
             ->merge(collect(Schema::getForeignKeys($table))->map(fn (array $key) => [
                 'type' => 'foreign',
                 'columns' => $key['columns'],

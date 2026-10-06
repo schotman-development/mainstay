@@ -24,12 +24,16 @@ use InvalidArgumentException;
 use JsonException;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Media;
 use Mainstay\Content\Route;
 use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Relation;
+use Mainstay\Fields\Terms;
 use Mainstay\Mainstay;
 use Mainstay\Policies\EntryPolicy;
+use Mainstay\Policies\GlobalPolicy;
 use ReflectionClass;
 use ReflectionProperty;
 use RuntimeException;
@@ -67,10 +71,17 @@ class ContentStore
      */
     private const ATTEMPTS = 3;
 
+    /* How far a read follows relations when the call does not say: to the
+       entries they point at, whose own relations it leaves unloaded. */
+    private const DEPTH = 1;
+
     /** @var array<class-string, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
     private array $reflected = [];
 
     private ?int $site = null;
+
+    /** @var array<string, bool> by type, whether the caller sees its internal fields */
+    private array $sees = [];
 
     /* The stamp columns, written and read as Date(time: true) writes and
        reads a moment: in UTC. Unbound, which serialize() and cast() only
@@ -89,7 +100,7 @@ class ContentStore
      * @param  class-string<T>  $type
      * @return Collection<int, T>
      */
-    public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false): Collection
+    public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): Collection
     {
         /* Nothing, on three drivers; everything, on SQL Server, whose grammar
            writes no `top` for it. Refused on all four instead. */
@@ -99,12 +110,14 @@ class ContentStore
 
         $type = $this->entry($type);
         $locale = $this->locale($locale);
+        $this->depth($depth);
         $internal = $this->reads($type, $overrideAccess);
 
         $rows = $this->select($type, $locale, $where, $sort, $internal)->limit($limit)->get();
-        $media = $this->images($type, $rows, $locale, $internal);
+        $this->attach($type, $rows);
+        $loaded = $this->resolve([$type => $rows], $locale, $overrideAccess, $depth);
 
-        return $rows->map(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, media: $media));
+        return $rows->map(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, loaded: $loaded));
     }
 
     /**
@@ -113,7 +126,7 @@ class ContentStore
      * @param  class-string<T>  $type
      * @return LengthAwarePaginator<int, T>
      */
-    public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false): LengthAwarePaginator
+    public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): LengthAwarePaginator
     {
         if ($perPage < 1) {
             throw new InvalidArgumentException("A page holds at least one entry; {$perPage} is not one.");
@@ -121,12 +134,14 @@ class ContentStore
 
         $type = $this->entry($type);
         $locale = $this->locale($locale);
+        $this->depth($depth);
         $internal = $this->reads($type, $overrideAccess);
 
         $entries = $this->select($type, $locale, $where, $sort, $internal)->paginate($perPage, page: $page);
-        $media = $this->images($type, $entries->items(), $locale, $internal);
+        $this->attach($type, $entries->items());
+        $loaded = $this->resolve([$type => $entries->items()], $locale, $overrideAccess, $depth);
 
-        return $entries->through(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, media: $media));
+        return $entries->through(fn (object $row) => $this->hydrate($type, $row, $locale, $internal, loaded: $loaded));
     }
 
     /**
@@ -135,9 +150,9 @@ class ContentStore
      * @param  class-string<T>  $type
      * @return T|null
      */
-    public function findById(string $type, int $id, ?string $locale = null, bool $overrideAccess = false): ?Entry
+    public function findById(string $type, int $id, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): ?Entry
     {
-        return $this->find($type, where: ['id' => $id], locale: $locale, overrideAccess: $overrideAccess)->first();
+        return $this->find($type, where: ['id' => $id], locale: $locale, overrideAccess: $overrideAccess, depth: $depth)->first();
     }
 
     /*
@@ -150,7 +165,7 @@ class ContentStore
      | segments, which no path is stored as and which MySQL and SQL Server
      | would still match to one by folding case.
      */
-    public function findByUri(string $uri, ?string $locale = null, bool $overrideAccess = false): ?Entry
+    public function findByUri(string $uri, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): ?Entry
     {
         $locale = $this->locale($locale);
 
@@ -165,7 +180,7 @@ class ContentStore
             return null;
         }
 
-        return $this->findById($type, (int) $row->entry_id, $locale, $overrideAccess);
+        return $this->findById($type, (int) $row->entry_id, $locale, $overrideAccess, $depth);
     }
 
     /**
@@ -185,9 +200,9 @@ class ContentStore
 
         [$internal, $reads] = $this->writes($type, 'create', $type, $overrideAccess);
 
-        $id = $this->write($type, null, $this->validate($type, $data, [], $internal), $data, $locale, false, $reads);
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads);
 
-        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
     }
 
     /**
@@ -226,7 +241,7 @@ class ContentStore
             [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
             try {
-                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal), $data, $locale, $translations->has($locale), $reads);
+                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess), $data, $locale, $translations->has($locale), $reads);
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -236,7 +251,7 @@ class ContentStore
             }
         }
 
-        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data));
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
     }
 
     /*
@@ -268,60 +283,248 @@ class ContentStore
     }
 
     /*
+     | This site's global in a locale, or null where it has not been written,
+     | or not in that locale: absent, as an untranslated entry is, rather than
+     | a global of defaults nobody stored.
+     */
+    public function global(string $type, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): ?GlobalSet
+    {
+        $type = $this->globalSet($type);
+        $locale = $this->locale($locale);
+        $this->depth($depth);
+        $internal = $this->reads($type, $overrideAccess);
+
+        if (($row = $this->query($type, $locale)->first()) === null) {
+            return null;
+        }
+
+        return $this->hydrate($type, $row, $locale, $internal, loaded: $this->resolve([$type => [$row]], $locale, $overrideAccess, $depth));
+    }
+
+    /*
+     | Writes this site's global: its row the first time, and a locale's row
+     | the first time that locale is written, as update() adds a translation.
+     | Only the keys given change. Without a locale it saves the global as the
+     | request's locale reads it, and is refused where that has no row: the
+     | request's language never creates content.
+     |
+     | Gate is asked for `update` about the type, the row there or not: a
+     | global is never created or deleted as far as anyone asking is
+     | concerned.
+     |
+     | Two first saves racing are settled by the unique index on site_id. The
+     | one refused runs again, finds the row the other wrote and updates it;
+     | its insert was in a transaction of the write's own, a savepoint inside
+     | a caller's, so a caller's Postgres transaction goes on. The rows are
+     | read again with a lock where a plain read would answer from the
+     | caller's older snapshot and miss them.
+     */
+    public function saveGlobal(string $type, array $data, ?string $locale = null, bool $overrideAccess = false): GlobalSet
+    {
+        $type = $this->globalSet($type);
+        $handle = $type::handle();
+        $asked = $locale !== null;
+        $locale = $this->locale($locale);
+
+        [$internal, $reads] = $this->writes($type, 'update', $type, $overrideAccess);
+
+        for ($attempt = 1; ; $attempt++) {
+            $lock = $attempt > 1 && $this->snapshotted(0);
+            $row = DB::table($handle)->where('site_id', $this->site())->when($lock, fn (Builder $query) => $query->lockForUpdate())->first();
+            $translations = $row === null ? collect() : DB::table("{$handle}_locales")->where('parent_id', $row->id)
+                ->when($lock, fn (Builder $query) => $query->lockForUpdate())->get()->keyBy('locale');
+
+            if (! $asked && ! $translations->has($locale)) {
+                throw $this->missing($type, $overrideAccess, "{$type} has no {$locale} translation to save. Pass locale: '{$locale}' to add one.");
+            }
+
+            try {
+                $stored = $row === null ? [] : $this->stored($type, $row, $translations->get($locale), $internal);
+                $id = $this->write($type, $row === null ? null : (int) $row->id, $this->validate($type, $data, $stored, $internal, $overrideAccess), $data, $locale, $translations->has($locale), $reads);
+
+                break;
+            } catch (UniqueConstraintViolationException $exception) {
+                if (($row !== null && $translations->has($locale)) || $attempt > 1) {
+                    throw $exception;
+                }
+            }
+        }
+
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
+    }
+
+    /*
      | What a write committed, whether or not the caller may read the type. A
      | public form that may create submissions and not read them would
      | otherwise commit the row and then be told it failed. A caller that may
      | not read is handed only what it wrote -- `$only`, the keys it gave --
      | and never an internal field it may not see. Gone only if a delete
-     | landed after the commit, which is what the caller is then told.
+     | landed after the commit, which is what the caller is then told. What
+     | it points at is loaded as a read at the default depth would load it.
      */
-    private function readBack(string $type, int $id, string $locale, bool $internal, ?array $only): Entry
+    private function readBack(string $type, int $id, string $locale, bool $internal, ?array $only, bool $overrideAccess): ContentType
     {
-        $row = $this->select($type, $locale, ['id' => $id], [], $internal)->first();
+        $row = $this->select($type, $locale, ['id' => $id], [], $internal)->first()
+            ?? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.");
 
-        return $row === null
-            ? throw new RecordNotFoundException("{$type} {$id} was written and is gone from {$locale}.")
-            : $this->hydrate($type, $row, $locale, $internal, $only, $this->images($type, [$row], $locale, $internal));
+        $this->attach($type, [$row]);
+
+        return $this->hydrate($type, $row, $locale, $internal, $only, $this->resolve([$type => [$row]], $locale, $overrideAccess, self::DEPTH));
+    }
+
+    /* A depth below none is a read that follows less than nothing. */
+    private function depth(int $depth): void
+    {
+        if ($depth < 0) {
+            throw new InvalidArgumentException("A read follows its relations to a depth of 0 or more; {$depth} is not one.");
+        }
     }
 
     /*
-     | The images the rows hold, every field and every block of them, loaded
-     | in one query however many there are, for hydrate() to hand the fields
-     | casting them. A column that does not parse holds none; hydrate() names
-     | it.
+     | What the rows point at, loaded, for hydrate() to hand the fields
+     | casting them: by class and then id. The images of every row, whatever
+     | the depth, since an image leads nowhere further; and at a depth of one
+     | or more the entries their relations and terms name, read as their own
+     | type's read would read them a level less deep. One query per class a
+     | level, however many rows -- the images, then each type the references
+     | name -- inlined with whereIntegerInRaw past SQL Server's 2100
+     | parameters, and the pivot of each Terms field the entries read hold.
      |
-     | @return array<int, Media>
+     | An entry not loaded -- the depth spent, or the entry trashed, gone,
+     | untranslated in the locale, on another site, or of a type the caller
+     | may not read -- is left for its field to read as one marked missing.
+     | A reference to a type that is not registered is refused here, at any
+     | depth. A cycle costs only the levels asked for.
+     |
+     | @param  array<class-string, iterable<object>>  $rows  by type
+     | @return array<class-string, array<int, object>>
      */
-    private function images(string $type, iterable $rows, string $locale, bool $internal): array
+    private function resolve(array $rows, string $locale, bool $overrideAccess, int $depth): array
     {
         $ids = [];
 
-        foreach ($rows as $row) {
-            foreach ($this->mainstay->fields($type) as $name => $field) {
-                $column = Str::snake($name);
+        foreach ($rows as $type => $list) {
+            $internal = $this->sees($type, $overrideAccess);
 
-                if (! property_exists($row, $column) || ($field->internal && ! $internal)) {
-                    continue;
-                }
+            foreach ($list as $row) {
+                foreach ($this->mainstay->fields($type) as $name => $field) {
+                    $column = Str::snake($name);
 
-                try {
-                    array_push($ids, ...array_values($field->images($field->decode($row->{$column}), $name)));
-                } catch (JsonException) {
-                    continue;
+                    if (! property_exists($row, $column) || ($field->internal && ! $internal)) {
+                        continue;
+                    }
+
+                    /* A column that does not parse points at nothing;
+                       hydrate() names it. */
+                    try {
+                        foreach ($field->references($field->decode($row->{$column}), $name) as [$class, $id]) {
+                            $ids[$class][$id] = $id;
+                        }
+                    } catch (JsonException) {
+                        continue;
+                    }
                 }
             }
         }
 
-        return $this->mainstay->media()->load($ids, $locale);
+        $loaded = [Media::class => $this->mainstay->media()->load(array_values($ids[Media::class] ?? []), $locale)];
+        unset($ids[Media::class]);
+
+        $types = array_map($this->entry(...), array_combine(array_keys($ids), array_keys($ids)));
+
+        if ($depth < 1 || $ids === []) {
+            return $loaded;
+        }
+
+        $next = [];
+
+        foreach ($ids as $class => $list) {
+            $target = $types[$class];
+
+            if ($overrideAccess || $this->gate($target)->allows('viewAny', $target)) {
+                $next[$target] = $this->query($target, $locale)->whereIntegerInRaw("{$target::handle()}.id", array_values($list))->get();
+                $this->attach($target, $next[$target]);
+            }
+        }
+
+        $deeper = $this->resolve($next, $locale, $overrideAccess, $depth - 1);
+
+        foreach ($next as $target => $list) {
+            foreach ($list as $row) {
+                $loaded[$target][(int) $row->id] = $this->hydrate($target, $row, $locale, $this->sees($target, $overrideAccess), loaded: $deeper);
+            }
+        }
+
+        return $loaded;
+    }
+
+    /* Whether the caller sees a type's internal fields: its own policy's
+       answer, asked once a call, for the type read and every type it points
+       at. */
+    private function sees(string $type, bool $overrideAccess): bool
+    {
+        return $overrideAccess || ($this->sees[$type] ??= $this->gate($type)->allows('viewInternal', $type));
     }
 
     /*
-     | The class as registered, which is the spelling every other lookup keys
-     | on. Globals and taxonomies are refused rather than read as entries:
-     | one row per site and a term's reverse query are rules this does not
-     | know yet, and reading them as entries would write rows that break them.
+     | Each row's terms, read from its taxonomy's pivot and set on the row
+     | under the field's column as the ids it holds in order, so every read,
+     | save and check after this takes it as it takes a column. One query per
+     | Terms field for all the rows.
+     */
+    private function attach(string $type, iterable $rows): void
+    {
+        $rows = collect($rows);
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            if (! $field instanceof Terms) {
+                continue;
+            }
+
+            $this->entry($field->of);
+
+            $held = $rows->isEmpty() ? collect() : DB::table($field->of::handle().'_entries')
+                ->where('entry_type', $type::handle())
+                ->whereIntegerInRaw('entry_id', $rows->map(fn (object $row) => (int) $row->id)->all())
+                ->orderBy('position')
+                ->orderBy('id')
+                ->get(['entry_id', 'term_id'])
+                ->groupBy(fn (object $pivot) => (int) $pivot->entry_id);
+
+            foreach ($rows as $row) {
+                $row->{Str::snake($name)} = $held->get((int) $row->id, collect())->map(fn (object $pivot) => (int) $pivot->term_id)->values()->all();
+            }
+        }
+    }
+
+    /*
+     | The entry type as registered, which is the spelling every other lookup
+     | keys on. A term is an entry. A global is refused rather than read as
+     | one: it is one row per site, which these calls do not hold to.
      */
     private function entry(string $type): string
+    {
+        $registered = $this->registered($type);
+
+        if (! is_subclass_of($registered, Entry::class)) {
+            throw new InvalidArgumentException("{$registered} is a global. Read it with Mainstay::global() and write it with Mainstay::saveGlobal().");
+        }
+
+        return $registered;
+    }
+
+    private function globalSet(string $type): string
+    {
+        $registered = $this->registered($type);
+
+        if (! is_subclass_of($registered, GlobalSet::class)) {
+            throw new InvalidArgumentException("{$registered} is not a global. Read entries with find() and write them with create() and update().");
+        }
+
+        return $registered;
+    }
+
+    private function registered(string $type): string
     {
         $registered = is_subclass_of($type, ContentType::class)
             ? $this->mainstay->registered()[$type::handle()] ?? null
@@ -329,10 +532,6 @@ class ContentStore
 
         if ($registered === null || strcasecmp(ltrim($type, '\\'), $registered) !== 0) {
             throw new InvalidArgumentException("{$type} is not a registered content type. Register it with Mainstay::types().");
-        }
-
-        if (! is_subclass_of($registered, Entry::class)) {
-            throw new InvalidArgumentException("{$registered} is not an entry. The query layer reads and writes entries only; globals and taxonomies are not reachable through it yet.");
         }
 
         return $registered;
@@ -379,7 +578,8 @@ class ContentStore
      | a host with members of its own, that would be a site visitor answering
      | Mainstay's policies.
      |
-     | EntryPolicy answers for the type unless the host chose another. Found
+     | EntryPolicy answers for the type unless the host chose another --
+     | GlobalPolicy for a global. Found
      | the way Laravel finds a policy -- Gate::policy() on the type,
      | #[UsePolicy] on it, Gate::policy() on a class or interface it extends
      | -- with one step taken out: guessing by name, turned off on the copy
@@ -395,7 +595,9 @@ class ContentStore
     {
         $gate = Gate::forUser($this->user())->guessPolicyNamesUsing(fn () => []);
 
-        return $gate->getPolicyFor($type) === null ? $gate->policy($type, EntryPolicy::class) : $gate;
+        return $gate->getPolicyFor($type) === null
+            ? $gate->policy($type, is_subclass_of($type, GlobalSet::class) ? GlobalPolicy::class : EntryPolicy::class)
+            : $gate;
     }
 
     /*
@@ -474,40 +676,46 @@ class ContentStore
      |
      | Only the main row's `deleted_at` is asked about. The sibling has one
      | too, for trashing a single translation, and nothing sets it yet.
+     |
+     | A global has neither a path nor a view of its own, and may name a field
+     | `template`, so its read leaves both out.
      */
     private function query(string $type, string $locale): Builder
     {
         $handle = $type::handle();
         $locales = "{$handle}_locales";
+        $routed = is_subclass_of($type, Entry::class);
         [$localized, $shared] = $this->columns($type);
 
         return DB::table($handle)
             ->join($locales, fn (JoinClause $join) => $join
                 ->on("{$locales}.parent_id", '=', "{$handle}.id")
                 ->where("{$locales}.locale", $locale))
-            ->leftJoin('uris', fn (JoinClause $join) => $join
+            ->when($routed, fn (Builder $query) => $query->leftJoin('uris', fn (JoinClause $join) => $join
                 ->on('uris.entry_id', '=', "{$handle}.id")
                 ->on('uris.site_id', '=', "{$handle}.site_id")
                 ->where('uris.type', $handle)
-                ->where('uris.locale', $locale))
+                ->where('uris.locale', $locale)))
             ->where("{$handle}.site_id", $this->site())
             ->whereNull("{$handle}.deleted_at")
             ->select([
-                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'template', 'created_at', 'updated_at', ...array_keys($shared)]),
+                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', ...($routed ? ['template'] : []), 'created_at', 'updated_at', ...array_keys($shared)]),
                 ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
-                'uris.uri',
+                ...($routed ? ['uris.uri'] : []),
             ]);
     }
 
     /*
      | The fields by column, localized ones and the rest, split the way
-     | ContentSchema::tables() splits them onto the two tables.
+     | ContentSchema::tables() splits them onto the two tables. A field kept
+     | in rows of its own has no column on either.
      |
      | @return array{0: array<string, Field>, 1: array<string, Field>}
      */
     private function columns(string $type): array
     {
         return collect($this->mainstay->fields($type))
+            ->reject(fn (Field $field) => $field->column() === null)
             ->keyBy(fn (Field $field) => Str::snake($field->name))
             ->partition(fn (Field $field) => $field->localized)
             ->map->all()
@@ -531,6 +739,12 @@ class ContentStore
            them"; `in` says which. */
         if (is_array($condition) && array_is_list($condition)) {
             throw new InvalidArgumentException("The condition on {$key} is a list. For any one of several values, write ['in' => [...]].");
+        }
+
+        if ($field instanceof Terms) {
+            $this->tagged($query, $type, $key, $field, is_array($condition) ? $condition : ['=' => $condition]);
+
+            return;
         }
 
         foreach (is_array($condition) ? $condition : ['=' => $condition] as $operator => $value) {
@@ -563,6 +777,53 @@ class ContentStore
                 default => throw new InvalidArgumentException("{$key} is compared with {$operator} against nothing. Only = and != take null."),
             };
         }
+    }
+
+    /*
+     | The reverse query: entries holding a term, `=`, or any of several,
+     | `in` -- an exists on the taxonomy's pivot, so it pages and sorts as any
+     | filter does. Only a term out of the trash counts, so a trashed one
+     | gathers nothing while its rows wait for its restore. The other
+     | operators wait for something that needs them.
+     */
+    private function tagged(Builder $query, string $type, string $key, Terms $field, array $condition): void
+    {
+        $handle = $type::handle();
+        $taxonomy = $field->of::handle();
+
+        foreach ($condition as $operator => $value) {
+            if ($operator !== '=' && $operator !== 'in') {
+                throw new InvalidArgumentException("{$key} holds terms, and a where finds the entries holding one with = or any of several with in.");
+            }
+
+            $terms = array_map(fn (mixed $term) => $this->reference($key, $field, $term), $operator === 'in' ? (array) $value : [$this->single($key, $operator, $value)]);
+
+            $query->whereExists(fn (Builder $exists) => $exists->selectRaw('1')
+                ->from("{$taxonomy}_entries as mainstay_pivot")
+                ->join("{$taxonomy} as mainstay_term", 'mainstay_term.id', '=', 'mainstay_pivot.term_id')
+                ->whereColumn('mainstay_pivot.entry_id', "{$handle}.id")
+                ->where('mainstay_pivot.entry_type', $handle)
+                ->whereNull('mainstay_term.deleted_at')
+                ->whereIn('mainstay_pivot.term_id', $terms));
+        }
+    }
+
+    /*
+     | What a where names on a relation of one type or on terms: an entry of
+     | that type, or its id. An entry of another type would compare its id
+     | with another table's, and a word would match nothing without saying
+     | so, so both are refused.
+     */
+    private function reference(string $key, Relation $field, mixed $value): int
+    {
+        $type = $field->to[0];
+        $id = match (true) {
+            $value instanceof Entry => $value::class === $type ? $value->id : false,
+            is_int($value), is_string($value) => filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]),
+            default => false,
+        };
+
+        return $id === false ? throw new InvalidArgumentException("The condition on {$key} names something that is not a {$type::handle()} or a {$type::handle()}'s id.") : $id;
     }
 
     /* in and not_in, with a null among the values meaning what = and !=
@@ -600,6 +861,10 @@ class ContentStore
         $key = $descending ? substr($key, 1) : $key;
         [$column, $field] = $this->column($type, $key, $internal);
 
+        if ($column === null) {
+            throw new InvalidArgumentException("{$type}::\${$key} holds terms, which are not sorted on.");
+        }
+
         /* Nulls last whichever way, on every driver. Left to the driver,
            Postgres puts them last ascending and first descending and the
            other three the opposite, so `-publishedAt` floats the undated
@@ -613,13 +878,14 @@ class ContentStore
 
     /*
      | The qualified column a caller's key is stored in, and the field that
-     | stores it -- null for a stamp.
+     | stores it -- null for a stamp. No column for a field kept in rows of
+     | its own, which the caller filters on by those.
      |
      | An internal field the caller cannot see is refused in the words an
      | unknown one is. A refusal of its own would confirm the field exists,
      | and a filter on it would read its value back off which entries match.
      |
-     | @return array{0: string, 1: ?Field}
+     | @return array{0: ?string, 1: ?Field}
      */
     private function column(string $type, string $key, bool $internal): array
     {
@@ -633,6 +899,10 @@ class ContentStore
 
         if ($field === null || ($field->internal && ! $internal)) {
             throw new InvalidArgumentException("{$type} has no field called {$key} to filter or sort on.");
+        }
+
+        if ($field->column() === null) {
+            return [null, $field];
         }
 
         /* A tree is not a value to compare, and Postgres has no operator to
@@ -658,7 +928,8 @@ class ContentStore
     private function value(?Field $field, string $key, mixed $value): mixed
     {
         return match (true) {
-            $field !== null && $value === null => $this->unset($field),
+            $field !== null && ($value === null || ($field instanceof Relation && blank($value))) => $this->unset($field),
+            $field instanceof Relation => $this->reference($key, $field, $value),
             $field !== null => $field->serialize($value),
             $value === null => null,
             $key === 'id' => (int) $value,
@@ -685,8 +956,8 @@ class ContentStore
     }
 
     /*
-     | The main row and every locale's row, by locale. Out of the trash and on
-     | this site, or not found -- see missing().
+     | The main row, with its terms, and every locale's row, by locale. Out of
+     | the trash and on this site, or not found -- see missing().
      |
      | @return array{0: object, 1: Collection<string, object>}
      */
@@ -700,6 +971,8 @@ class ContentStore
             ->where('id', $id)
             ->first()
             ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not there to write.");
+
+        $this->attach($type, [$row]);
 
         return [$row, DB::table("{$handle}_locales")->where('parent_id', $id)->when($lock, fn (Builder $query) => $query->lockForUpdate())->get()->keyBy('locale')];
     }
@@ -809,12 +1082,23 @@ class ContentStore
      | unknown key is, and what is stored in it is not checked, so no error
      | names it either.
      */
-    private function validate(string $type, array $data, array $stored, bool $internal): array
+    private function validate(string $type, array $data, array $stored, bool $internal, bool $overrideAccess): array
     {
         $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $internal || ! $field->internal);
+        /* An entry's own view is a key of its own beside the fields. A global
+           has none, and `template` is a field's name there like any other. */
+        $entry = is_subclass_of($type, Entry::class);
 
-        if (($unknown = array_diff_key($data, $fields, ['template' => null])) !== []) {
+        if (($unknown = array_diff_key($data, $fields, $entry ? ['template' => null] : [])) !== []) {
             throw new InvalidArgumentException("{$type} has no field called ".implode(' or ', array_keys($unknown)).' to write.');
+        }
+
+        /* A taxonomy that is not registered has no pivot to write to, which
+           is refused before the row is. */
+        foreach ($this->mainstay->fields($type) as $field) {
+            if ($field instanceof Terms) {
+                $this->entry($field->of);
+            }
         }
 
         /* What a read handed out -- a document, a list of blocks, a block
@@ -867,7 +1151,7 @@ class ContentStore
            against a type's fields. Checked when it is written and not again:
            a view taken off the list since breaks the page, rather than every
            save of the entry after it. */
-        if (array_key_exists('template', $data)) {
+        if ($entry && array_key_exists('template', $data)) {
             $views = $this->mainstay->templates($type);
             $rules['template'] = ['bail', 'nullable', 'string', Rule::in($views)];
             $messages['template.in'] = 'The :attribute field is one of the views this type renders with: '.implode(', ', $views).'.';
@@ -902,13 +1186,17 @@ class ContentStore
         });
 
         /*
-         | An image a save is given has to be in the library and out of its
-         | trash. Asked of what the call gives that the field does not hold
-         | already: an image trashed since it was chosen is the field's to keep
-         | while it is away, and a list of blocks written back as a read handed
-         | it out gives it again.
+         | What a save is given has to be there: an image in the library and
+         | out of its trash, an entry a relation or a Terms field names out of
+         | its trash on this site, in any locale -- one not translated into
+         | this one is written, and reads as missing here. Asked of what the
+         | call gives that the field does not hold already: an image or entry
+         | trashed since it was chosen is the field's to keep while it is
+         | away, and a list written back as a read handed it out gives it
+         | again. An entry of a type the caller may not read is not there to
+         | it, in the words an absent one is not.
          */
-        $validator->after(function () use ($validator, $fields, $values, $data, $stored) {
+        $validator->after(function () use ($validator, $fields, $values, $data, $stored, $overrideAccess) {
             if ($validator->errors()->isNotEmpty()) {
                 return;
             }
@@ -916,13 +1204,29 @@ class ContentStore
             $given = [];
 
             foreach ($fields as $name => $field) {
-                if (array_key_exists($name, $data)) {
-                    $given += array_diff($field->images($values[$name] ?? null, $name), $field->images($stored[$name] ?? null, $name));
+                if (! array_key_exists($name, $data)) {
+                    continue;
+                }
+
+                $held = array_map(fn (array $reference) => implode(':', $reference), $field->references($stored[$name] ?? null, $name));
+
+                foreach ($field->references($values[$name] ?? null, $name) as $at => [$class, $id]) {
+                    if (! in_array("{$class}:{$id}", $held, true)) {
+                        $given[$class][$at] = $id;
+                    }
                 }
             }
 
-            foreach (array_diff($given, $this->mainstay->media()->present(array_values($given))) as $at => $id) {
-                $validator->errors()->add($at, "The {$validator->getDisplayableAttribute($at)} field names image {$id}, which is not in the media library or is in its trash.");
+            foreach ($given as $class => $ids) {
+                $present = $class === Media::class
+                    ? $this->mainstay->media()->present(array_values($ids))
+                    : $this->present($this->entry($class), array_values(array_unique($ids)), $overrideAccess);
+
+                foreach (array_diff($ids, $present) as $at => $id) {
+                    $validator->errors()->add($at, $class === Media::class
+                        ? "The {$validator->getDisplayableAttribute($at)} field names image {$id}, which is not in the media library or is in its trash."
+                        : "The {$validator->getDisplayableAttribute($at)} field names {$class::handle()} {$id}, which is not there to point at.");
+                }
             }
         });
 
@@ -932,7 +1236,26 @@ class ContentStore
     }
 
     /*
-     | The row, the locale's row and every locale's path, or none of them.
+     | Which of `$ids` are entries of `$type` out of the trash on this site,
+     | in any locale. None, to a caller that may not read the type: what a
+     | refusal names is then what the caller gave, and not which of it is
+     | there.
+     |
+     | @return list<int>
+     */
+    private function present(string $type, array $ids, bool $overrideAccess): array
+    {
+        if ($ids === [] || ! ($overrideAccess || $this->gate($type)->allows('viewAny', $type))) {
+            return [];
+        }
+
+        return DB::table($type::handle())->where('site_id', $this->site())->whereNull('deleted_at')->whereIntegerInRaw('id', $ids)
+            ->pluck('id')->map(fn (mixed $id) => (int) $id)->all();
+    }
+
+    /*
+     | The row, the locale's row, its terms and every locale's path, or none
+     | of them.
      |
      | A row inserted -- a create, or a locale's first -- gets every column
      | from the validated values, so a field left off it holds its declared
@@ -949,10 +1272,11 @@ class ContentStore
         [$localized, $shared] = $this->columns($type);
         $serialize = fn (array $fields) => array_map(fn (Field $field) => $field->encode($field->serialize($values[$field->name] ?? null)), $fields);
         $changed = fn (array $fields) => array_filter($fields, fn (Field $field) => array_key_exists($field->name, $given));
+        $routed = is_subclass_of($type, Entry::class);
         /* Blank is no view of its own, which is how one is taken off. */
-        $template = array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
+        $template = $routed && array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
 
-        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template) {
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template, $routed, $values, $given) {
             $created = $id === null;
 
             $now = $this->stamp(CarbonImmutable::now());
@@ -983,10 +1307,58 @@ class ContentStore
                 DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale)->update($serialize($columns));
             }
 
-            $this->paths($type, (int) $id, $site, $created, $reads, $this->snapshotted(1));
+            $this->terms($type, (int) $id, $values, $given, $created, $this->snapshotted(1));
+
+            if ($routed) {
+                $this->paths($type, (int) $id, $site, $created, $reads, $this->snapshotted(1));
+            }
 
             return (int) $id;
         }, self::ATTEMPTS);
+    }
+
+    /*
+     | Each Terms field's rows in its taxonomy's pivot, as the save leaves the
+     | field: a term taken off deleted, one added inserted, one moved given its
+     | new place, and the rest not touched. Only the fields the call gave, or
+     | every one on a new entry. The upsert settles an insert racing another
+     | save's for the same term. Where a plain read answers from a caller's
+     | older snapshot -- `$nested`, see snapshotted() -- the rows held are read
+     | with a lock, as paths() reads its own.
+     */
+    private function terms(string $type, int $id, array $values, array $given, bool $created, bool $nested): void
+    {
+        $handle = $type::handle();
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            if (! $field instanceof Terms || ! ($created || array_key_exists($name, $given))) {
+                continue;
+            }
+
+            $table = $field->of::handle().'_entries';
+            $wanted = array_map(fn (mixed $term) => (int) $term, array_values($values[$name] ?? []));
+            $held = $created ? [] : DB::table($table)->where('entry_type', $handle)->where('entry_id', $id)
+                ->when($nested, fn (Builder $query) => $query->lockForUpdate())
+                ->pluck('position', 'term_id')
+                ->mapWithKeys(fn (mixed $position, mixed $term) => [(int) $term => (int) $position])
+                ->all();
+
+            if (($gone = array_diff(array_keys($held), $wanted)) !== []) {
+                DB::table($table)->where('entry_type', $handle)->where('entry_id', $id)->whereIn('term_id', array_values($gone))->delete();
+            }
+
+            $rows = [];
+
+            foreach ($wanted as $position => $term) {
+                if (($held[$term] ?? null) !== $position) {
+                    $rows[] = ['term_id' => $term, 'entry_type' => $handle, 'entry_id' => $id, 'position' => $position];
+                }
+            }
+
+            if ($rows !== []) {
+                DB::table($table)->upsert($rows, ['term_id', 'entry_type', 'entry_id'], ['position']);
+            }
+        }
     }
 
     /*
@@ -1162,12 +1534,12 @@ class ContentStore
 
     /*
      | A row as the declared class. `$locale` is null for the entry a write
-     | asks Gate about, which is the main row alone -- its owner and its
-     | shared fields, what a policy decides on -- so its locale, its path and
-     | its localized fields are not set, and nothing loads its images, which
-     | read as missing.
+     | asks Gate about, which is the main row alone -- its owner, its shared
+     | fields and its terms, what a policy decides on -- so its locale, its
+     | path and its localized fields are not set, and nothing loads what it
+     | points at, which reads as missing.
      */
-    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null, array $media = []): Entry
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null, array $loaded = []): ContentType
     {
         [$class, $properties] = $this->reflection($type);
         $entry = $class->newInstanceWithoutConstructor();
@@ -1196,14 +1568,16 @@ class ContentStore
             $entry->updatedAt = blank($row->updated_at) ? null : $this->moment->cast($row->updated_at);
         }
 
-        if ($only === null || in_array('template', $only, true)) {
+        $routed = $entry instanceof Entry;
+
+        if ($routed && ($only === null || in_array('template', $only, true))) {
             (new ReflectionProperty(Entry::class, 'template'))->setValue($entry, $row->template);
         }
 
         if ($locale !== null) {
             $entry->locale = $locale;
 
-            if ($only === null) {
+            if ($routed && $only === null) {
                 $entry->uri = $row->uri;
             }
         }
@@ -1224,7 +1598,7 @@ class ContentStore
                rather than refusing the caller in that field's name. A read
                still fails on it, naming the declaration. */
             try {
-                $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column}), $media));
+                $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column}), $loaded));
             } catch (InvalidArgumentException $exception) {
                 if ($locale !== null) {
                     throw $exception;
@@ -1255,7 +1629,7 @@ class ContentStore
        cannot be unset at all, so one the caller is not handed keeps the
        default its declaration gave: declared rather than stored, so nothing
        read leaks through it. */
-    private function absent(Entry $entry, ReflectionProperty $property): void
+    private function absent(ContentType $entry, ReflectionProperty $property): void
     {
         if ($property->isInitialized($entry) && ! (method_exists($property, 'hasHooks') && $property->hasHooks())) {
             $name = $property->getName();
