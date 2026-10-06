@@ -11,8 +11,10 @@ between the two.
 > **Status: early.** Content types are declared in PHP, `mainstay:sync` alters the database to match
 > them, content is read and written from PHP through `Mainstay::find()`, `create()`, `update()`
 > and `delete()`, and an entry is served at the path its type's `#[Route]` builds, in a Blade
-> template, in the language its host or path prefix names. There is no authentication, no admin
-> form, and no block editor. `docs/plan.md` has the order the rest arrives in.
+> template, in the language its host or path prefix names. Rich text, blocks, images, relations to
+> other entries and tags are fields like the rest, and a global holds a site's settings. There is
+> no authentication, no admin form, and no drafts yet. `docs/plan.md` has the order the rest
+> arrives in.
 
 ## Repository layout
 
