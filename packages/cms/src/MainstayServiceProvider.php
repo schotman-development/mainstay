@@ -6,6 +6,7 @@ use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Mainstay\Console\ReprocessCommand;
 use Mainstay\Console\SchemaCheckCommand;
 use Mainstay\Console\SyncCommand;
 use Mainstay\Database\ContentSchema;
@@ -72,7 +73,7 @@ class MainstayServiceProvider extends ServiceProvider
         }
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SyncCommand::class, SchemaCheckCommand::class]);
+            $this->commands([SyncCommand::class, SchemaCheckCommand::class, ReprocessCommand::class]);
 
             Event::listen(fn (CommandStarting $event) => $this->warnAboutSync($event));
 
