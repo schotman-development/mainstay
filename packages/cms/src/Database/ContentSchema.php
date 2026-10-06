@@ -68,11 +68,12 @@ class ContentSchema
                 throw new InvalidArgumentException("{$type} has two properties stored in the same column. Rename one of them.");
             }
 
-            /* An entry's own view. A global or a term renders nothing of its
-               own, so the name is left to its fields. */
+            /* An entry's own view, and what marks one a relation did not load.
+               A global or a term has neither, so the names are left to its
+               fields. */
             $entry = is_subclass_of($type, Entry::class);
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template', 'missing'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }

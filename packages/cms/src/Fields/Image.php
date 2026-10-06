@@ -72,12 +72,10 @@ class Image extends Field
 
     /* Whether the image is in the library is asked of what a save is given,
        once these pass -- see ContentStore::validate() -- and never of what a
-       row already holds, which is the field's to keep while it is away. The
-       pattern refuses what `integer` lets through and an id is not: `true`,
-       ` 1`, `+1`. */
+       row already holds, which is the field's to keep while it is away. */
     public function rules(): array
     {
-        return [...parent::rules(), 'bail', 'integer', 'min:1', 'regex:/\A[1-9][0-9]*\z/'];
+        return [...parent::rules(), 'bail', 'integer', 'min:1', self::ID];
     }
 
     /* A Media a read handed out, given back as the id it stands for. */
@@ -86,29 +84,29 @@ class Image extends Field
         return $value instanceof Media ? $value->id : $value;
     }
 
-    public function images(mixed $value, string $at): array
+    public function references(mixed $value, string $at): array
     {
         $id = filter_var($value instanceof Media ? $value->id : $value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 
-        return $id === false ? [] : [$at => $id];
+        return $id === false ? [] : [$at => [Media::class, $id]];
     }
 
     /* The image the read loaded, or one marked missing that keeps the id.
        Anything but an id was written around the layer, and is named as a
        column that does not parse is. */
-    public function cast(mixed $value, array $media = []): mixed
+    public function cast(mixed $value, array $loaded = []): mixed
     {
         if ($this->blank($value)) {
             return null;
         }
 
-        if (($id = $this->images($value, $this->name)) === []) {
+        if (($reference = $this->references($value, $this->name)) === []) {
             throw new InvalidArgumentException("{$this->name} holds something that is not an image's id.");
         }
 
-        $id = reset($id);
+        $id = reset($reference)[1];
 
-        return ($media[$id] ?? new Media($id))->sized($this->sizes);
+        return ($loaded[Media::class][$id] ?? new Media($id))->sized($this->sizes);
     }
 
     protected function to(mixed $value): mixed
@@ -117,7 +115,7 @@ class Image extends Field
     }
 
     /* The id, as it is stored. What a reader of the API is handed in its
-       place is phase 11's to decide, with depth from phase 7. */
+       place is phase 11's to decide. */
     protected function json(): array
     {
         return ['type' => 'integer'];
