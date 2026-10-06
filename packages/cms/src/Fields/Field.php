@@ -197,15 +197,20 @@ abstract class Field
      | in and decodes it on the way out, so the field type only ever handles
      | the array, and a field nested in a block's JSON serializes to the same
      | thing a column of its own is written from.
+     |
+     | Null for a field kept in rows of its own rather than a column -- Terms,
+     | in its taxonomy's pivot -- which the schema plan, the read's select and
+     | a write's row all leave out, and which the layer reads and writes
+     | itself.
      */
-    abstract public function column(): array;
+    abstract public function column(): ?array;
 
     /* Whether the column holds JSON, which the layer encodes on the way in
        and decodes on the way out. A type storing a tree in a column of
        another kind overrides this. */
     public function keptAsJson(): bool
     {
-        return in_array($this->column()[0], ['json', 'jsonb'], true);
+        return in_array($this->column()[0] ?? null, ['json', 'jsonb'], true);
     }
 
     /* A serialized value as the column takes it: the store's write and
@@ -238,13 +243,13 @@ abstract class Field
     }
 
     /*
-     | What a value points at -- images, and the entries a relation names --
-     | keyed by where each one is, from `$at` down:
+     | What a value points at -- images, and the entries a relation or a
+     | Terms field names -- keyed by where each one is, from `$at` down:
      | `cover`, `blocks.0.data.image`, `related.2`. Each is its class, Media
      | for an image, and its id. A read loads them, one query per class, before
      | casting, and a save asks whether the ones it was given are there.
      | Nothing, for a field that points at nothing -- which is every field but
-     | Image, Relation and the ones holding others.
+     | Image, Relation, Terms and the ones holding others.
      |
      | @return array<string, array{0: class-string, 1: int}>
      */

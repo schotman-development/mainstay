@@ -124,7 +124,7 @@ class Relation extends Field
         return $this->many ? [] : parent::empty();
     }
 
-    public function column(): array
+    public function column(): ?array
     {
         return $this->many || $this->several() ? ['json'] : ['unsignedBigInteger'];
     }

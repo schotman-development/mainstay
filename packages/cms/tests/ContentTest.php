@@ -1479,7 +1479,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function it_reads_registered_entries_and_nothing_else(): void
     {
-        $this->assertThrows(fn () => Mainstay::find(SiteSettings::class), InvalidArgumentException::class, 'SiteSettings is not an entry. Read a global with Mainstay::global()');
+        $this->assertThrows(fn () => Mainstay::find(SiteSettings::class), InvalidArgumentException::class, 'SiteSettings is a global. Read it with Mainstay::global()');
         $this->assertThrows(fn () => Mainstay::find(Article::class), InvalidArgumentException::class, 'is not a registered content type');
     }
 }
