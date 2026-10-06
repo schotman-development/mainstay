@@ -16,6 +16,7 @@ use Mainstay\Database\ContentStore;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
+use Mainstay\Media\Library;
 use ReflectionAttribute;
 use ReflectionClass;
 use ReflectionProperty;
@@ -275,6 +276,13 @@ class Mainstay
     private function store(): ContentStore
     {
         return new ContentStore($this);
+    }
+
+    /* The media library: `Mainstay::media()->upload(...)`, beside the
+       entries rather than among them, since an image is no type's. */
+    public function media(): Library
+    {
+        return new Library($this);
     }
 
     /*
