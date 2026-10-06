@@ -73,6 +73,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Media
+    |--------------------------------------------------------------------------
+    |
+    | Where uploaded images are kept. The copies an image field's sizes name
+    | go to a public disk and are linked to as plain files; the original goes
+    | to a private one and is never served, since it still carries the
+    | camera's EXIF, GPS included.
+    |
+    */
+
+    'media' => [
+        'disk' => env('MAINSTAY_MEDIA_DISK', 'public'),
+
+        'originals' => env('MAINSTAY_MEDIA_ORIGINALS', 'local'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Schema sync
     |--------------------------------------------------------------------------
     |

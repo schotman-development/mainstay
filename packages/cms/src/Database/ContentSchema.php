@@ -78,7 +78,7 @@ class ContentSchema
                 }
             }
 
-            if (in_array($handle, ['sites', 'uris', 'migrations'], true) || str_ends_with($handle, '_locales')) {
+            if (in_array($handle, ['sites', 'uris', 'migrations', 'mainstay_media'], true) || str_ends_with($handle, '_locales')) {
                 throw new InvalidArgumentException("{$type} would be stored in {$handle}, a table Mainstay keeps for itself. Rename the class.");
             }
 
