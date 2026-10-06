@@ -10,6 +10,7 @@ use InvalidArgumentException;
 use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Route;
 use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
@@ -271,6 +272,18 @@ class Mainstay
     public function delete(string $type, mixed ...$arguments): void
     {
         $this->store()->delete($type, ...$arguments);
+    }
+
+    /* A global, `Mainstay::global(Footer::class)`: this site's one, in the
+       locale read, or null where it has not been written in it. */
+    public function global(string $type, mixed ...$arguments): ?GlobalSet
+    {
+        return $this->store()->global($type, ...$arguments);
+    }
+
+    public function saveGlobal(string $type, mixed ...$arguments): GlobalSet
+    {
+        return $this->store()->saveGlobal($type, ...$arguments);
     }
 
     private function store(): ContentStore

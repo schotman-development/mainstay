@@ -162,7 +162,14 @@ class RenderTest extends DatabaseTestCase
             'The template field is one of the views this type renders with: leaf.',
         );
 
-        $this->assertSame(0, DB::table('post')->count() + DB::table('leaf')->count());
+        /* A path built from no field is no reason to skip the check. */
+        $this->assertThrows(
+            fn () => Mainstay::create(Home::class, ['title' => 'X', 'template' => 'leaf'], locale: 'en', overrideAccess: true),
+            ValidationException::class,
+            'The template field is one of the views this type renders with: pages.home, special.',
+        );
+
+        $this->assertSame(0, DB::table('post')->count() + DB::table('leaf')->count() + DB::table('home')->count());
         $this->assertSame(['pages.home', 'special'], Mainstay::templates(Home::class));
     }
 

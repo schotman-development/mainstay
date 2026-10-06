@@ -16,6 +16,7 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use JsonException;
 use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
 use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
 use TypeError;
@@ -38,7 +39,8 @@ class ContentSchema
      | Two tables per type, always: the main row, and a `_locales` sibling for
      | the localized fields. The sibling exists even with nothing localized
      | yet, because a locale with no row is how an untranslated entry is told
-     | apart from a translated one.
+     | apart from a translated one. A global's main table holds one row per
+     | site.
      |
      | `columns` and `keys` are separate because the comparison builds
      | `columns` under a scratch name, where a foreign key would reference a
@@ -104,8 +106,12 @@ class ContentSchema
                     $table->datetimes();
                     $table->softDeletes();
                 },
-                'keys' => function (Blueprint $table) {
+                'keys' => function (Blueprint $table) use ($type) {
                     $table->foreign('site_id')->references('id')->on('sites');
+
+                    if (is_subclass_of($type, GlobalSet::class)) {
+                        $table->unique('site_id');
+                    }
                 },
                 'fields' => $shared,
             ];
