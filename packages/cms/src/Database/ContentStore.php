@@ -15,13 +15,13 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use JsonException;
+use Mainstay\Auth\Gate;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
@@ -39,6 +39,7 @@ use Mainstay\Fields\Textarea;
 use Mainstay\Mainstay;
 use Mainstay\Policies\EntryPolicy;
 use Mainstay\Policies\GlobalPolicy;
+use Mainstay\Policies\TermPolicy;
 use ReflectionClass;
 use ReflectionProperty;
 use RuntimeException;
@@ -185,7 +186,7 @@ class ContentStore
         $row = DB::table('uris')->where('site_id', $this->site())->where('locale', $locale)->where('uri', $uri)->first(['type', 'entry_id']);
         $type = $row === null ? null : $this->mainstay->registered()[$row->type] ?? null;
 
-        if ($type === null || ! is_subclass_of($type, Entry::class) || ! ($overrideAccess || $this->gate($type)->allows('viewAny', $type))) {
+        if ($type === null || ! is_subclass_of($type, Entry::class) || ! ($overrideAccess || $this->gate($type)->allows('viewAny', [$type, $type]))) {
             return null;
         }
 
@@ -207,9 +208,12 @@ class ContentStore
         $type = $this->entry($type);
         $locale = $this->locale($locale);
 
-        [$internal, $reads] = $this->writes($type, 'create', $type, $overrideAccess);
+        /* Live at once, a publish with no draft before it: a role that may
+           draft and not publish would otherwise put content live through
+           here. So update() and saveGlobal() ask `publish` too. */
+        [$internal, $reads] = $this->writes($type, ['create', 'publish'], $type, $overrideAccess);
 
-        $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads);
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, Gate::user()?->getKey());
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
     }
@@ -247,7 +251,7 @@ class ContentStore
                 throw $this->missing($type, $overrideAccess, "{$type} {$id} has no {$locale} translation to update. Pass locale: '{$locale}' to add one.");
             }
 
-            [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+            [$internal, $reads] = $this->writes($type, ['update', 'publish'], fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
             try {
                 $values = $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess);
@@ -318,9 +322,9 @@ class ContentStore
      | request's locale reads it, and is refused where that has no row: the
      | request's language never creates content.
      |
-     | Gate is asked for `update` about the type, the row there or not: a
-     | global is never created or deleted as far as anyone asking is
-     | concerned.
+     | Gate is asked for `update` and `publish` about the type, the row there
+     | or not: a global is never created or deleted as far as anyone asking
+     | is concerned, and this writes it live.
      |
      | Two first saves racing are settled by the unique index on site_id. The
      | one refused runs again, finds the row the other wrote and updates it;
@@ -336,7 +340,7 @@ class ContentStore
         $asked = $locale !== null;
         $locale = $this->locale($locale);
 
-        [$internal, $reads] = $this->writes($type, 'update', $type, $overrideAccess);
+        [$internal, $reads] = $this->writes($type, ['update', 'publish'], $type, $overrideAccess);
 
         for ($attempt = 1; ; $attempt++) {
             $lock = $attempt > 1 && $this->snapshotted(0);
@@ -411,7 +415,7 @@ class ContentStore
         $asked = $locale !== null;
         $locale = $this->locale($locale);
         [$row, $translations] = $this->live($type, $entry, $overrideAccess);
-        [$internal] = $this->drafter($type, $entry, $row, $overrideAccess);
+        [$internal] = $this->drafter($type, $entry, $row, $overrideAccess, $held);
         $drafted = $held === null ? [] : $this->changes($held)['locales'];
 
         if (! $asked && $entry !== null && ! $translations->has($locale) && ! isset($drafted[$locale])) {
@@ -485,7 +489,7 @@ class ContentStore
                         return (int) $current->id;
                     }
 
-                    return (int) DB::table(self::DRAFTS)->insertGetId(['site_id' => $this->site(), 'type' => $type::handle(), 'entry_id' => $entry, 'changes' => $encoded, 'created_at' => $now, 'updated_at' => $now]);
+                    return (int) DB::table(self::DRAFTS)->insertGetId(['site_id' => $this->site(), 'type' => $type::handle(), 'entry_id' => $entry, 'changes' => $encoded, 'owner_id' => Gate::user()?->getKey(), 'created_at' => $now, 'updated_at' => $now]);
                 }, self::ATTEMPTS);
 
                 break;
@@ -545,7 +549,7 @@ class ContentStore
         $entry = $row->entry_id === null ? null : (int) $row->entry_id;
 
         [$live] = $this->live($type, $entry, $overrideAccess);
-        $this->drafter($type, $entry, $live, $overrideAccess);
+        $this->drafter($type, $entry, $live, $overrideAccess, $row);
 
         DB::table(self::DRAFTS)->where('id', $id)->delete();
     }
@@ -576,7 +580,11 @@ class ContentStore
         $entry = $draft->entry_id === null ? null : (int) $draft->entry_id;
         [$row] = $this->live($type, $entry, $overrideAccess);
 
-        [$internal, $reads] = $this->writes($type, 'publish', $entry === null || $global ? $type : fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+        [$internal, $reads] = $this->writes($type, 'publish', match (true) {
+            $global => $type,
+            $entry === null => fn () => $this->unpublished($type, $draft),
+            default => fn () => $this->hydrate($type, $row, null, true),
+        }, $overrideAccess);
 
         $nested = $this->snapshotted(0);
 
@@ -593,7 +601,8 @@ class ContentStore
                since. */
             $held = $global ? $this->live($type, 0, $overrideAccess)[0]?->id : $draft->entry_id;
             $held = $held === null ? null : (int) $held;
-            $published = $this->filed($type, $held, fn () => $this->published($type, $held, $changes, $internal, $reads, $overrideAccess, $nested));
+            $owner = $global || $draft->owner_id === null ? null : (int) $draft->owner_id;
+            $published = $this->filed($type, $held, fn () => $this->published($type, $held, $changes, $internal, $reads, $overrideAccess, $nested, $owner));
 
             DB::table(self::DRAFTS)->where('id', $id)->delete();
 
@@ -610,7 +619,7 @@ class ContentStore
      |
      | @return array{0: int, 1: string, 2: list<string>}
      */
-    private function published(string $type, ?int $id, array $changes, bool $internal, bool $reads, bool $overrideAccess, bool $nested): array
+    private function published(string $type, ?int $id, array $changes, bool $internal, bool $reads, bool $overrideAccess, bool $nested, ?int $owner): array
     {
         /* In the configured order, so a new entry is created in the first of
            its languages the config names; one the config no longer names is
@@ -632,7 +641,8 @@ class ContentStore
             $given = [...$given, ...array_keys($data)];
 
             if ($id === null) {
-                $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads);
+                /* Owned by who started the draft, whoever publishes it. */
+                $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, $owner);
 
                 continue;
             }
@@ -856,7 +866,7 @@ class ContentStore
             return null;
         }
 
-        $internal ??= $this->drafter($type, $entry, $row, $overrideAccess)[0];
+        $internal ??= $this->drafter($type, $entry, $row, $overrideAccess, $draft)[0];
         $changes = $this->changes($draft);
 
         if (! $translations->has($locale) && ! isset($changes['locales'][$locale])) {
@@ -935,19 +945,39 @@ class ContentStore
     }
 
     /*
-     | Gate, for a draft, as the write it becomes would ask: `create` about
-     | the type for an entry not published yet, `update` about the entry for
-     | one that is, and about the type for a global. Neither is public.
+     | Gate, for a draft, as the write it becomes would ask: `update` about
+     | the entry for one that is published, and about the type for a global;
+     | `create` about the type for the first save of an entry not published
+     | yet, and `update` about it, as its draft reads, for every call after --
+     | so another's unpublished draft is someone else's. Neither is public.
      |
      | @return array{0: bool, 1: bool}
      */
-    private function drafter(string $type, ?int $entry, ?object $row, bool $overrideAccess): array
+    private function drafter(string $type, ?int $entry, ?object $row, bool $overrideAccess, ?object $draft = null): array
     {
         return match (true) {
             is_subclass_of($type, GlobalSet::class) => $this->writes($type, 'update', $type, $overrideAccess),
-            $entry === null => $this->writes($type, 'create', $type, $overrideAccess),
-            default => $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess),
+            $entry !== null => $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess),
+            $draft === null => $this->writes($type, 'create', $type, $overrideAccess),
+            default => $this->writes($type, 'update', fn () => $this->unpublished($type, $draft), $overrideAccess),
         };
+    }
+
+    /* An entry not published yet, as Gate is asked about it: what its draft
+       holds, as a live entry's main row would -- the shared fields and the
+       view -- with no id, and the owner its draft names. */
+    private function unpublished(string $type, object $draft): Entry
+    {
+        $changes = $this->changes($draft);
+        $row = (object) ['id' => null, 'owner_id' => $draft->owner_id, 'template' => $changes['fields']['template'] ?? null, 'created_at' => null, 'updated_at' => null];
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            if (! $field->localized && array_key_exists($name, $changes['fields'])) {
+                $row->{Str::snake($name)} = $changes['fields'][$name];
+            }
+        }
+
+        return $this->hydrate($type, $row, null, true);
     }
 
     /* The draft of an entry, by its id or 0 for a global, read with a lock
@@ -1290,7 +1320,7 @@ class ContentStore
         foreach ($ids as $class => $list) {
             $target = $types[$class];
 
-            if ($overrideAccess || $this->gate($target)->allows('viewAny', $target)) {
+            if ($overrideAccess || $this->gate($target)->allows('viewAny', [$target, $target])) {
                 $next[$target] = $this->query($target, $locale)->whereIntegerInRaw("{$target::handle()}.id", array_values($list))->get();
                 $this->attach($target, $next[$target]);
             }
@@ -1312,7 +1342,7 @@ class ContentStore
        at. */
     private function sees(string $type, bool $overrideAccess): bool
     {
-        return $overrideAccess || ($this->sees[$type] ??= $this->gate($type)->allows('viewInternal', $type));
+        return $overrideAccess || ($this->sees[$type] ??= $this->gate($type)->allows('viewInternal', [$type, $type]));
     }
 
     /*
@@ -1418,72 +1448,59 @@ class ContentStore
         }
 
         $gate = $this->gate($type);
-        $gate->authorize('viewAny', $type);
+        $gate->authorize('viewAny', [$type, $type]);
 
-        return $gate->allows('viewInternal', $type);
+        return $gate->allows('viewInternal', [$type, $type]);
     }
 
     /*
-     | Gate, asked about Mainstay's own user and never the default guard's: on
-     | a host with members of its own, that would be a site visitor answering
-     | Mainstay's policies.
-     |
-     | EntryPolicy answers for the type unless the host chose another --
-     | GlobalPolicy for a global. Found
-     | the way Laravel finds a policy -- Gate::policy() on the type,
-     | #[UsePolicy] on it, Gate::policy() on a class or interface it extends
-     | -- with one step taken out: guessing by name, turned off on the copy
-     | forUser() hands back. Laravel would match App\Policies\PostPolicy to any
-     | class called Post, and a host's Eloquent Post and a content type called
-     | Post are different things: the host's policy, typed for its own users,
-     | would refuse every public read.
-     |
-     | On the copy, so the host's own Gate is left as Laravel would have it.
-     | Looked up on every call, so a policy the host registers later answers.
+     | Mainstay's Gate, with EntryPolicy answering for the type unless the
+     | host chose another -- GlobalPolicy for a global, TermPolicy for a
+     | taxonomy. One policy answers for every type of a shape, so a question
+     | about a type rather than an entry hands the type over as well: Gate
+     | takes the first of `[$type, $type]` to find the policy and drops it.
      */
     private function gate(string $type): AccessGate
     {
-        $gate = Gate::forUser($this->user())->guessPolicyNamesUsing(fn () => []);
-
-        return $gate->getPolicyFor($type) === null
-            ? $gate->policy($type, is_subclass_of($type, GlobalSet::class) ? GlobalPolicy::class : EntryPolicy::class)
-            : $gate;
+        return Gate::for($type, match (true) {
+            is_subclass_of($type, GlobalSet::class) => GlobalPolicy::class,
+            is_subclass_of($type, Taxonomy::class) => TermPolicy::class,
+            default => EntryPolicy::class,
+        });
     }
 
     /*
      | Whether the caller sees internal fields, and whether it may read the
-     | type, after asking whether it may make this write at all. The entry
-     | Gate is asked about comes as a closure, so a write that skips Gate
-     | never builds it.
+     | type, after asking whether it may make this write at all -- each
+     | ability given, about the entry or the type. The entry Gate is asked
+     | about comes as a closure, so a write that skips Gate never builds it.
      |
+     | @param  string|list<string>  $abilities
      | @return array{0: bool, 1: bool}
      */
-    private function writes(string $type, string $ability, string|Closure $subject, bool $overrideAccess): array
+    private function writes(string $type, string|array $abilities, string|Closure $subject, bool $overrideAccess): array
     {
         if ($overrideAccess) {
             return [true, true];
         }
 
         $gate = $this->gate($type);
-        $reads = $gate->allows('viewAny', $type);
-        $response = $gate->inspect($ability, $subject instanceof Closure ? $subject() : $subject);
+        $reads = $gate->allows('viewAny', [$type, $type]);
+        $subject = $subject instanceof Closure ? $subject() : [$subject, $subject];
 
-        /* Only where an entry is involved: a refused create has no entry
-           whose being there could leak, and keeps the policy's own words. */
-        if ($response->denied() && ! $reads && $ability !== 'create') {
-            throw $this->refused($type);
+        foreach ((array) $abilities as $ability) {
+            $response = $gate->inspect($ability, $subject);
+
+            /* Only where an entry is involved: a refused create has no entry
+               whose being there could leak, and keeps the policy's own words. */
+            if ($response->denied() && ! $reads && ! in_array('create', (array) $abilities, true)) {
+                throw $this->refused($type);
+            }
+
+            $response->authorize();
         }
 
-        $response->authorize();
-
-        return [$gate->allows('viewInternal', $type), $reads];
-    }
-
-    /* Nobody until phase 9, which hands over the guard's user here and
-       changes nothing else in this class. */
-    private function user(): ?object
-    {
-        return null;
+        return [$gate->allows('viewInternal', [$type, $type]), $reads];
     }
 
     private function select(string $type, string $locale, array $where, string|array $sort, bool $internal): Builder
@@ -1849,7 +1866,7 @@ class ContentStore
      */
     private function missing(string $type, bool $overrideAccess, string $message): RecordNotFoundException|AuthorizationException
     {
-        return $overrideAccess || $this->gate($type)->allows('viewAny', $type)
+        return $overrideAccess || $this->gate($type)->allows('viewAny', [$type, $type])
             ? new RecordNotFoundException($message)
             : $this->refused($type);
     }
@@ -2097,7 +2114,7 @@ class ContentStore
      */
     private function present(string $type, array $ids, bool $overrideAccess): array
     {
-        if ($ids === [] || ! ($overrideAccess || $this->gate($type)->allows('viewAny', $type))) {
+        if ($ids === [] || ! ($overrideAccess || $this->gate($type)->allows('viewAny', [$type, $type]))) {
             return [];
         }
 
@@ -2117,7 +2134,7 @@ class ContentStore
      | be validated, not to be written: written back, they would put a field
      | another save changed in the meantime back the way it was.
      */
-    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads): int
+    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads, ?int $owner = null): int
     {
         $handle = $type::handle();
         $site = $this->site();
@@ -2128,13 +2145,13 @@ class ContentStore
         /* Blank is no view of its own, which is how one is taken off. */
         $template = $routed && array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
 
-        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template, $routed, $values, $given) {
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template, $routed, $values, $given, $owner) {
             $created = $id === null;
 
             $now = $this->stamp(CarbonImmutable::now());
 
             if ($id === null) {
-                $id = DB::table($handle)->insertGetId(['site_id' => $site, ...$serialize($shared), ...$template, 'created_at' => $now, 'updated_at' => $now]);
+                $id = DB::table($handle)->insertGetId(['site_id' => $site, 'owner_id' => $owner, ...$serialize($shared), ...$template, 'created_at' => $now, 'updated_at' => $now]);
             } else {
                 /* Only while it is out of the trash, and asked again after. A
                    delete committed since the load leaves the update nothing

@@ -35,6 +35,9 @@ final class Media
         private readonly int $originalWidth = 0,
         private readonly int $originalHeight = 0,
         private readonly array $sizes = [],
+        /* Who uploaded it, none for code on its own authority: what
+           MediaPolicy asks. */
+        public readonly ?int $ownerId = null,
     ) {
         $this->missing = $hash === null;
     }
@@ -42,7 +45,7 @@ final class Media
     /* This image with the sizes of the field it is read through. */
     public function sized(array $sizes): self
     {
-        return new self($this->id, $this->alt, $this->hash, $this->type, $this->name, $this->focal, $this->originalWidth, $this->originalHeight, $sizes);
+        return new self($this->id, $this->alt, $this->hash, $this->type, $this->name, $this->focal, $this->originalWidth, $this->originalHeight, $sizes, $this->ownerId);
     }
 
     /* The copy's address, WebP unless AVIF is asked for. Null for an image

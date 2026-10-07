@@ -27,10 +27,11 @@ use Mainstay\Tests\Fixtures\Listed;
 use Mainstay\Tests\Fixtures\Memo;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
-use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
 use Mainstay\Tests\Fixtures\Policies\FormPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Policies\OwnerPolicy;
+use Mainstay\Tests\Fixtures\Policies\PublisherPolicy;
+use Mainstay\Tests\Fixtures\Policies\RecordingPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use Mainstay\Tests\Fixtures\Submission;
@@ -223,15 +224,14 @@ class ContentTest extends DatabaseTestCase
     {
         $id = $this->insert(['owner_id' => 7]);
 
-        $asked = null;
-        Gate::before(function (?object $user, string $ability, array $arguments) use (&$asked) {
-            $asked = $ability === 'update' ? $arguments[0] : $asked;
-        });
+        RecordingPolicy::$asked = [];
+        Gate::policy(Post::class, RecordingPolicy::class);
 
-        $this->assertThrows(fn () => Mainstay::update(Post::class, $id, ['featured' => true]), AuthorizationException::class);
+        Mainstay::update(Post::class, $id, ['featured' => true]);
+        [$asked] = RecordingPolicy::$asked;
         $this->assertInstanceOf(Post::class, $asked);
         $this->assertSame([$id, 7], [$asked->id, $asked->ownerId]);
-        $this->assertSame(7, Mainstay::findById(Post::class, $id)->ownerId);
+        $this->assertSame(7, Mainstay::findById(Post::class, $id, overrideAccess: true)->ownerId);
     }
 
     #[Test]
@@ -558,12 +558,11 @@ class ContentTest extends DatabaseTestCase
         $id = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en')->id;
         DB::table('submission')->update(['state' => '']);
 
-        $shown = null;
-        Gate::before(function (?object $user, string $ability, array $arguments) use (&$shown) {
-            $shown = $ability === 'update' ? $arguments[0] : $shown;
-        });
+        RecordingPolicy::$asked = [];
+        Gate::policy(Submission::class, RecordingPolicy::class);
 
         Mainstay::update(Submission::class, $id, ['message' => 'Hello'], locale: 'en');
+        [$shown] = RecordingPolicy::$asked;
 
         $this->assertInstanceOf(Submission::class, $shown);
         $this->assertFalse((new ReflectionProperty($shown, 'state'))->isInitialized($shown), 'Not the declared default in place of what is stored.');
@@ -658,14 +657,11 @@ class ContentTest extends DatabaseTestCase
     public function gate_is_not_shown_a_default_for_a_field_the_main_row_does_not_carry(): void
     {
         $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team', 'tagline' => 'Meet us'], locale: 'en', overrideAccess: true)->id;
-        Gate::policy(Page::class, FormPolicy::class);
-
-        $shown = null;
-        Gate::before(function (?object $user, string $ability, array $arguments) use (&$shown) {
-            $shown = $ability === 'update' ? $arguments[0] : $shown;
-        });
+        RecordingPolicy::$asked = [];
+        Gate::policy(Page::class, RecordingPolicy::class);
 
         Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en');
+        [$shown] = RecordingPolicy::$asked;
 
         /* tagline is translated, so it is on no row Gate is shown -- and
            not the declared 'Welcome' in place of the stored 'Meet us'. */
@@ -713,8 +709,8 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_writer_that_may_not_see_an_internal_field_cannot_write_it(): void
     {
-        Gate::policy(Post::class, EditorPolicy::class);
-        Gate::policy(Memo::class, EditorPolicy::class);
+        Gate::policy(Post::class, PublisherPolicy::class);
+        Gate::policy(Memo::class, PublisherPolicy::class);
         $post = $this->writePost(['editorNote' => 'Check the quote']);
 
         $this->assertThrows(
@@ -1245,7 +1241,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_stored_tree_the_caller_may_not_see_is_neither_checked_nor_named(): void
     {
-        Gate::policy(Guide::class, EditorPolicy::class);
+        Gate::policy(Guide::class, PublisherPolicy::class);
         $id = Mainstay::create(Guide::class, ['title' => 'Notes'], locale: 'en', overrideAccess: true)->id;
         $unreadable = ['42'];
 
@@ -1434,7 +1430,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_stored_block_its_fields_cannot_read_fails_the_read_and_the_save_by_name(): void
     {
-        Gate::policy(Guide::class, EditorPolicy::class);
+        Gate::policy(Guide::class, PublisherPolicy::class);
         $id = Mainstay::create(Guide::class, ['title' => 'Stored', 'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Note']]]], locale: 'en', overrideAccess: true)->id;
         [$stored] = json_decode(DB::table('guide_locales')->where('parent_id', $id)->value('blocks'), true);
         /* Behind a block of a type the field no longer lists, which a read

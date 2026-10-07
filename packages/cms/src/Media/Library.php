@@ -9,12 +9,12 @@ use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Mainstay\Auth\Gate;
 use Mainstay\Content\Media;
 use Mainstay\Fields\Blocks;
 use Mainstay\Fields\Image;
@@ -123,6 +123,7 @@ class Library
                 'focal_x' => $focal[0],
                 'focal_y' => $focal[1],
                 'alt' => json_encode($alt, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
+                'owner_id' => Gate::user()?->getKey(),
                 'created_at' => $now,
                 'updated_at' => $now,
             ]));
@@ -516,25 +517,17 @@ class Library
             focal: [(int) $row->focal_x, (int) $row->focal_y],
             originalWidth: (int) $row->width,
             originalHeight: (int) $row->height,
+            ownerId: $row->owner_id === null ? null : (int) $row->owner_id,
         );
     }
 
-    /*
-     | Gate, about Mainstay's own user, with MediaPolicy answering unless the
-     | host chose another -- found as ContentStore finds an entry's, with no
-     | guessing by name.
-     */
+    /* Mainstay's Gate, with MediaPolicy answering unless the host chose
+       another. */
     private function authorize(string $ability, mixed $subject, bool $overrideAccess): void
     {
-        if ($overrideAccess) {
-            return;
+        if (! $overrideAccess) {
+            Gate::for(Media::class, MediaPolicy::class)->inspect($ability, $subject)->authorize();
         }
-
-        /* Nobody until phase 9, as in ContentStore. */
-        $gate = Gate::forUser(null)->guessPolicyNamesUsing(fn () => []);
-        $gate = $gate->getPolicyFor(Media::class) === null ? $gate->policy(Media::class, MediaPolicy::class) : $gate;
-
-        $gate->inspect($ability, $subject)->authorize();
     }
 
     private function disk(): Filesystem

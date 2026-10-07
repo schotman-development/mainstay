@@ -83,7 +83,7 @@ class ContentSchema
                 }
             }
 
-            if (in_array($handle, ['sites', 'uris', 'migrations', 'mainstay_media', 'mainstay_drafts', 'mainstay_revisions'], true) || str_ends_with($handle, '_locales') || str_ends_with($handle, '_entries')) {
+            if (in_array($handle, ['sites', 'uris', 'migrations', 'mainstay_media', 'mainstay_drafts', 'mainstay_revisions', 'mainstay_roles', 'mainstay_users', 'mainstay_password_reset_tokens'], true) || str_ends_with($handle, '_locales') || str_ends_with($handle, '_entries')) {
                 throw new InvalidArgumentException("{$type} would be stored in {$handle}, a table Mainstay keeps for itself. Rename the class.");
             }
 
@@ -104,8 +104,10 @@ class ContentSchema
                     $this->fields($table, $shared);
                     /* On from the first row a site writes, for the reason
                        site_id is: added later, it is a migration of every
-                       table. Nothing fills owner_id before phase 9, and it
-                       has no key until there is a users table to point at.
+                       table. owner_id has no key: one here would make the
+                       users table a precondition of every sync and a line of
+                       every host's migrations, and the id a deleted account
+                       leaves belongs to nobody, which reads as someone else's.
                        dateTime rather than timestamp, the column a
                        Date(time: true) wants: MySQL shifts a timestamp by the
                        session's zone and stops it at 2038. */
