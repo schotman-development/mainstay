@@ -31,6 +31,10 @@ class Mainstay
 {
     public const VERSION = '0.1.0';
 
+    /* The first segments of the admin's own screens, which a type's handle,
+       naming its screens' segment, cannot be. */
+    private const ADMIN = ['media', 'login', 'logout'];
+
     /** @var array<string, class-string<ContentType>> */
     private array $types = [];
 
@@ -106,6 +110,12 @@ class Mainstay
                         throw new InvalidArgumentException("{$type} would derive the capability \"{$name}\", which {$claimed[$name]}. Rename the class.");
                     }
                 }
+            }
+
+            /* Nor one claiming a segment the admin draws a screen of its own
+               at: its list would be the library's or the login's address. */
+            if (in_array($handle, self::ADMIN, true)) {
+                throw new InvalidArgumentException("{$type} would be called \"{$handle}\", which the admin uses for a screen of its own. Rename the class.");
             }
 
             $this->types[$handle] = $type;
@@ -233,7 +243,7 @@ class Mainstay
     }
 
     /*
-     | The type as JSON Schema, which phase 11 serves from a discovery endpoint
+     | The type as JSON Schema, which phase 13 serves from a discovery endpoint
      | and writes out as a `.d.ts` -- from here rather than derived twice.
      |
      | It describes what a reader is handed, so an internal field is in it
@@ -328,6 +338,18 @@ class Mainstay
     public function destroy(string $type, mixed ...$arguments): void
     {
         $this->store()->destroy($type, ...$arguments);
+    }
+
+    /* The entry served at `/`, as [type, id], or null. */
+    public function frontPage(): ?array
+    {
+        return $this->store()->frontPage();
+    }
+
+    /* `Mainstay::setFrontPage(Page::class, 5)`, or null for none. */
+    public function setFrontPage(?string $type, mixed ...$arguments): void
+    {
+        $this->store()->setFrontPage($type, ...$arguments);
     }
 
     /* Drafts and revisions, beside the reads and writes of what is live:

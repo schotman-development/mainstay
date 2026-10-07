@@ -113,6 +113,29 @@ class DraftTest extends DatabaseTestCase
         return array_map(fn (string $name) => $read->{$name}, array_combine($names = array_keys(Mainstay::fields(Bulletin::class)), $names));
     }
 
+    #[Test]
+    public function every_draft_of_a_type_is_listed_newest_first_save_a_trashed_entrys(): void
+    {
+        $live = $this->story('Live');
+        $trashed = $this->story('Trashed');
+        Mainstay::drafts()->save(Story::class, ['title' => 'Trashed, changed'], entry: $trashed->id, locale: 'en', overrideAccess: true);
+        Mainstay::delete(Story::class, $trashed->id, overrideAccess: true);
+
+        $changed = Mainstay::drafts()->save(Story::class, ['title' => 'Live, changed'], entry: $live->id, locale: 'en', overrideAccess: true);
+        $new = Mainstay::drafts()->save(Story::class, ['title' => 'New', 'slug' => 'new'], locale: 'en', overrideAccess: true);
+        $dutch = Mainstay::drafts()->save(Story::class, ['title' => 'Nieuw', 'slug' => 'nieuw'], locale: 'nl', overrideAccess: true);
+        Mainstay::drafts()->save(Person::class, ['title' => 'Someone else', 'slug' => 'someone'], locale: 'en', overrideAccess: true);
+        DB::table('mainstay_drafts')->where('id', $changed->id)->update(['updated_at' => '2026-10-08 00:00:00']);
+
+        $all = Mainstay::drafts()->all(Story::class, locale: 'en', overrideAccess: true);
+        $this->assertSame([$changed->id, $new->id], $all->pluck('id')->all());
+        $this->assertSame([$live->id, null], $all->pluck('entryId')->all());
+        $this->assertSame(['Live, changed', 'New'], $all->map(fn ($draft) => $draft->entry->title)->all());
+
+        $this->assertSame([$dutch->id], Mainstay::drafts()->all(Story::class, locale: 'nl', overrideAccess: true)->pluck('id')->all(), 'In the locale each holds.');
+        $this->assertThrows(fn () => Mainstay::drafts()->all(Genre::class, overrideAccess: true), InvalidArgumentException::class, 'whose terms are written live');
+    }
+
     private function refusal(callable $write): array
     {
         try {
@@ -573,7 +596,7 @@ class DraftTest extends DatabaseTestCase
         }
 
         /* A path a locale's prefix has come to answer. */
-        $leaflet = Mainstay::create(Leaflet::class, ['slug' => 'nieuws'], locale: 'en', overrideAccess: true);
+        $leaflet = Mainstay::create(Leaflet::class, ['title' => 'News', 'slug' => 'nieuws'], locale: 'en', overrideAccess: true);
         Mainstay::delete(Leaflet::class, $leaflet->id, overrideAccess: true);
         config()->set('mainstay.locales', ['en' => '/', 'nl' => '/nieuws']);
 

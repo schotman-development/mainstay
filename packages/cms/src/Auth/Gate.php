@@ -4,6 +4,11 @@ namespace Mainstay\Auth;
 
 use Illuminate\Auth\Access\Gate as AccessGate;
 use Illuminate\Contracts\Auth\Access\Gate as GateContract;
+use Mainstay\Content\GlobalSet;
+use Mainstay\Content\Taxonomy;
+use Mainstay\Policies\EntryPolicy;
+use Mainstay\Policies\GlobalPolicy;
+use Mainstay\Policies\TermPolicy;
 
 /*
  | Laravel's Gate, asked about Mainstay's user and never the default guard's:
@@ -38,6 +43,22 @@ class Gate extends AccessGate
         $gate->defaultDenialResponse = $host->defaultDenialResponse;
 
         return $gate->getPolicyFor($class) === null ? $gate->policy($class, $policy) : $gate;
+    }
+
+    /*
+     | The gate for a content type, with EntryPolicy answering for it unless
+     | the host chose another -- GlobalPolicy for a global, TermPolicy for a
+     | taxonomy. One policy answers for every type of a shape, so a question
+     | about a type rather than an entry hands the type over as well: Gate
+     | takes the first of `[$type, $type]` to find the policy and drops it.
+     */
+    public static function about(string $type): self
+    {
+        return self::for($type, match (true) {
+            is_subclass_of($type, GlobalSet::class) => GlobalPolicy::class,
+            is_subclass_of($type, Taxonomy::class) => TermPolicy::class,
+            default => EntryPolicy::class,
+        });
     }
 
     /*

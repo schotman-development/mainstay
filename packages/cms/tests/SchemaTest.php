@@ -56,7 +56,7 @@ class SchemaTest extends DatabaseTestCase
     public function it_seeds_one_site_that_matches_any_host(): void
     {
         $this->assertEquals(
-            [(object) ['id' => 1, 'handle' => 'default', 'name' => config('app.name'), 'hostname' => null]],
+            [(object) ['id' => 1, 'handle' => 'default', 'name' => config('app.name'), 'hostname' => null, 'front_type' => null, 'front_id' => null]],
             DB::table('sites')->get()->all(),
         );
     }

@@ -37,9 +37,6 @@ use Mainstay\Fields\Terms;
 use Mainstay\Fields\Text;
 use Mainstay\Fields\Textarea;
 use Mainstay\Mainstay;
-use Mainstay\Policies\EntryPolicy;
-use Mainstay\Policies\GlobalPolicy;
-use Mainstay\Policies\TermPolicy;
 use ReflectionClass;
 use ReflectionProperty;
 use RuntimeException;
@@ -90,6 +87,9 @@ class ContentStore
 
     private ?int $site = null;
 
+    /** @var array{0: string, 1: int}|false|null the front page's handle and id, false for none, null unread */
+    private array|false|null $front = null;
+
     /** @var array<string, bool> by type, whether the caller sees its internal fields */
     private array $sees = [];
 
@@ -110,7 +110,7 @@ class ContentStore
      * @param  class-string<T>  $type
      * @return Collection<int, T>
      */
-    public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): Collection
+    public function find(string $type, array $where = [], string|array $sort = [], ?int $limit = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH, bool $trashed = false): Collection
     {
         /* Nothing, on three drivers; everything, on SQL Server, whose grammar
            writes no `top` for it. Refused on all four instead. */
@@ -123,7 +123,7 @@ class ContentStore
         $this->depth($depth);
         $internal = $this->reads($type, $overrideAccess);
 
-        $rows = $this->select($type, $locale, $where, $sort, $internal)->limit($limit)->get();
+        $rows = $this->select($type, $locale, $where, $sort, $internal, $trashed)->limit($limit)->get();
         $this->attach($type, $rows);
         $loaded = $this->resolve([$type => $rows], $locale, $overrideAccess, $depth);
 
@@ -136,7 +136,7 @@ class ContentStore
      * @param  class-string<T>  $type
      * @return LengthAwarePaginator<int, T>
      */
-    public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): LengthAwarePaginator
+    public function paginate(string $type, array $where = [], string|array $sort = [], int $perPage = 15, ?int $page = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH, bool $trashed = false): LengthAwarePaginator
     {
         if ($perPage < 1) {
             throw new InvalidArgumentException("A page holds at least one entry; {$perPage} is not one.");
@@ -147,7 +147,7 @@ class ContentStore
         $this->depth($depth);
         $internal = $this->reads($type, $overrideAccess);
 
-        $entries = $this->select($type, $locale, $where, $sort, $internal)->paginate($perPage, page: $page);
+        $entries = $this->select($type, $locale, $where, $sort, $internal, $trashed)->paginate($perPage, page: $page);
         $this->attach($type, $entries->items());
         $loaded = $this->resolve([$type => $entries->items()], $locale, $overrideAccess, $depth);
 
@@ -279,6 +279,12 @@ class ContentStore
         [$row] = $this->load($type, $id, $overrideAccess);
 
         $this->writes($type, 'delete', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+        /* `/` would answer nothing, and a visitor's first page is not one to
+           lose by tidying up. */
+        if ($this->front() === [$type::handle(), $id]) {
+            throw ValidationException::withMessages(['front' => 'This is the front page. Choose another before moving it to the trash.']);
+        }
 
         DB::transaction(function () use ($type, $id) {
             $now = $this->stamp(CarbonImmutable::now());
@@ -539,6 +545,32 @@ class ContentStore
         $row = $this->draftFor($type, $entry ?? 0);
 
         return $row === null ? null : $this->readDraft($type, $row, $locale, $overrideAccess, $depth, $internal);
+    }
+
+    /*
+     | Every draft of a type in a locale, newest first -- of entries live and
+     | of entries not published yet -- each read as findDraft() reads one, so
+     | a draft whose entry is in the trash, or that has nothing in the locale,
+     | is left out. So is one the caller may not read, which another's
+     | unpublished draft need not be: this is a list to draw, and a draft it
+     | leaves out is not refused but absent.
+     |
+     | @return Collection<int, Draft>
+     */
+    public function drafts(string $type, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): Collection
+    {
+        $type = $this->drafted($type);
+
+        return DB::table(self::DRAFTS)->where('site_id', $this->site())->where('type', $type::handle())->orderByDesc('updated_at')->orderByDesc('id')->get()
+            ->map(function (object $row) use ($type, $locale, $overrideAccess, $depth) {
+                try {
+                    return $this->readDraft($type, $row, $locale, $overrideAccess, $depth);
+                } catch (AuthorizationException) {
+                    return null;
+                }
+            })
+            ->filter()
+            ->values();
     }
 
     public function discardDraft(int $id, bool $overrideAccess = false): void
@@ -843,6 +875,77 @@ class ContentStore
             DB::table('uris')->where('type', $handle)->where('entry_id', $id)->delete();
             DB::table("{$handle}_locales")->where('parent_id', $id)->delete();
             DB::table($handle)->where('id', $id)->delete();
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | The entry served at `/`, as its type and id, or null: this site's
+     | choice, as WordPress's static front page is.
+     |
+     | @return array{0: class-string<Entry>, 1: int}|null
+     */
+    public function frontPage(): ?array
+    {
+        $front = $this->front();
+        $type = $front === null ? null : $this->mainstay->registered()[$front[0]] ?? null;
+
+        return $type === null ? null : [$type, $front[1]];
+    }
+
+    /*
+     | Makes an entry the front page, or none: its path becomes `/` in every
+     | locale it has, and the one it replaces takes its pattern's path again
+     | -- suffixed as a restore suffixes where that was taken while it was
+     | free, refused naming the path where no suffix frees one. Only a live
+     | entry of a routed type, and asking `publish` about each entry it
+     | moves, since each one's address changes for every visitor.
+     */
+    public function setFrontPage(?string $type, ?int $id = null, bool $overrideAccess = false): void
+    {
+        $new = null;
+
+        if ($type !== null) {
+            $type = $this->entry($type);
+
+            if ($this->patterns($type) === null) {
+                throw new InvalidArgumentException("{$type} has no #[Route], so it has no path to serve at /.");
+            }
+
+            [$row] = $this->load($type, $id ?? throw new InvalidArgumentException('Name the entry to make the front page.'), $overrideAccess);
+            $this->writes($type, 'publish', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+            $new = [$type::handle(), $id];
+        }
+
+        $old = $this->frontPage();
+
+        if ($old !== null && [$old[0]::handle(), $old[1]] !== $new) {
+            [$row] = $this->load($old[0], $old[1], $overrideAccess);
+            $this->writes($old[0], 'publish', fn () => $this->hydrate($old[0], $row, null, true), $overrideAccess);
+        }
+
+        DB::transaction(function () use ($type, $new, $old) {
+            DB::table('sites')->where('id', $this->site())->lockForUpdate()->value('id');
+            DB::table('sites')->where('id', $this->site())->update(['front_type' => $new[0] ?? null, 'front_id' => $new[1] ?? null]);
+            $this->front = $new ?? false;
+
+            /* The old one first, so `/` is free for the new one to take. */
+            if ($old !== null && [$old[0]::handle(), $old[1]] !== $new) {
+                $this->suffix($old[0], $old[1]);
+                $this->paths($old[0], $old[1], $this->site(), false, true, $this->snapshotted(1));
+            }
+
+            if ($new !== null) {
+                $locales = DB::table("{$new[0]}_locales")->where('parent_id', $new[1])->pluck('locale');
+                $held = DB::table('uris')->where('site_id', $this->site())->where('uri', '/')->whereIn('locale', $locales)
+                    ->where(fn (Builder $query) => $query->where('type', '!=', $new[0])->orWhere('entry_id', '!=', $new[1]))
+                    ->value('locale');
+
+                if ($held !== null) {
+                    throw ValidationException::withMessages(['front' => "The path / is already taken in {$held}."]);
+                }
+
+                $this->paths($type, $new[1], $this->site(), false, true, $this->snapshotted(1));
+            }
         }, self::ATTEMPTS);
     }
 
@@ -1453,20 +1556,11 @@ class ContentStore
         return $gate->allows('viewInternal', [$type, $type]);
     }
 
-    /*
-     | Mainstay's Gate, with EntryPolicy answering for the type unless the
-     | host chose another -- GlobalPolicy for a global, TermPolicy for a
-     | taxonomy. One policy answers for every type of a shape, so a question
-     | about a type rather than an entry hands the type over as well: Gate
-     | takes the first of `[$type, $type]` to find the policy and drops it.
-     */
+    /* Mainstay's Gate for the type, its shape's policy answering unless the
+       host chose another. */
     private function gate(string $type): AccessGate
     {
-        return Gate::for($type, match (true) {
-            is_subclass_of($type, GlobalSet::class) => GlobalPolicy::class,
-            is_subclass_of($type, Taxonomy::class) => TermPolicy::class,
-            default => EntryPolicy::class,
-        });
+        return Gate::about($type);
     }
 
     /*
@@ -1503,9 +1597,9 @@ class ContentStore
         return [$gate->allows('viewInternal', [$type, $type]), $reads];
     }
 
-    private function select(string $type, string $locale, array $where, string|array $sort, bool $internal): Builder
+    private function select(string $type, string $locale, array $where, string|array $sort, bool $internal, bool $trashed = false): Builder
     {
-        $query = $this->query($type, $locale);
+        $query = $this->query($type, $locale, $trashed);
 
         foreach ($where as $key => $condition) {
             $this->where($query, $type, (string) $key, $condition, $internal);
@@ -1542,12 +1636,14 @@ class ContentStore
      | paginate's count honest.
      |
      | Only the main row's `deleted_at` is asked about. The sibling has one
-     | too, for trashing a single translation, and nothing sets it yet.
+     | too, for trashing a single translation, and nothing sets it yet. Out
+     | of the trash, or with `$trashed` only in it -- where no path is, since
+     | the trash takes them.
      |
      | A global has neither a path nor a view of its own, and may name a field
      | `template`, so its read leaves both out.
      */
-    private function query(string $type, string $locale): Builder
+    private function query(string $type, string $locale, bool $trashed = false): Builder
     {
         $handle = $type::handle();
         $locales = "{$handle}_locales";
@@ -1564,7 +1660,7 @@ class ContentStore
                 ->where('uris.type', $handle)
                 ->where('uris.locale', $locale)))
             ->where("{$handle}.site_id", $this->site())
-            ->whereNull("{$handle}.deleted_at")
+            ->when($trashed, fn (Builder $query) => $query->whereNotNull("{$handle}.deleted_at"), fn (Builder $query) => $query->whereNull("{$handle}.deleted_at"))
             ->select([
                 ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', ...($routed ? ['template'] : []), 'created_at', 'updated_at', ...array_keys($shared)]),
                 ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
@@ -1589,9 +1685,21 @@ class ContentStore
             ->all();
     }
 
+    /* This site's front page as a handle and an id, read once for this
+       store, or null. */
+    private function front(): ?array
+    {
+        if ($this->front === null) {
+            $row = DB::table('sites')->where('id', $this->site())->first(['front_type', 'front_id']);
+            $this->front = $row?->front_type === null ? false : [$row->front_type, (int) $row->front_id];
+        }
+
+        return $this->front ?: null;
+    }
+
     /* The first site, read once for this store. Mainstay makes a store for
        every call, so nothing is kept past the call -- under Octane either --
-       and phase 12 matches the request's host here. */
+       and phase 14 matches the request's host here. */
     private function site(): int
     {
         return $this->site ??= (int) (DB::table('sites')->orderBy('id')->value('id')
@@ -2308,6 +2416,7 @@ class ContentStore
 
         $handle = $type::handle();
         $row = DB::table($handle)->where('id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->first();
+        $front = $this->front() === [$handle, $id];
         $wanted = [];
 
         foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
@@ -2315,7 +2424,7 @@ class ContentStore
                 continue;
             }
 
-            $uri = $this->built($type, $patterns[$translation->locale], $row, $translation);
+            $uri = $front ? '/' : $this->built($type, $patterns[$translation->locale], $row, $translation);
 
             /* The column's width, which the drivers other than SQLite enforce
                with an error nobody reading a form could act on. */

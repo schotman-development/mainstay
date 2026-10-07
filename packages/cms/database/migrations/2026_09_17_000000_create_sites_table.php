@@ -16,6 +16,10 @@ return new class extends Migration
             /* Null matches any host, which is what a single site wants: local,
                staging and production reach the same row. */
             $table->string('hostname')->nullable()->unique();
+            /* The entry served at `/`, chosen as WordPress chooses a static
+               front page: its type's handle and its id, or none. */
+            $table->string('front_type')->nullable();
+            $table->unsignedBigInteger('front_id')->nullable();
         });
 
         /* Seeded here rather than by a seeder, because every content table

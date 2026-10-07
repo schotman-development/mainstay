@@ -2,6 +2,7 @@
 
 namespace Mainstay\Tests;
 
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
@@ -133,7 +134,7 @@ class RenderTest extends DatabaseTestCase
     #[Test]
     public function a_view_named_and_missing_is_an_error_rather_than_a_step_down(): void
     {
-        Mainstay::create(Lost::class, [], locale: 'en', overrideAccess: true);
+        Mainstay::create(Lost::class, ['title' => 'Lost'], locale: 'en', overrideAccess: true);
         $id = $this->writePost()->id;
         /* A view deleted after the entry named it. */
         DB::table('post')->where('id', $id)->update(['template' => 'deleted']);
@@ -297,7 +298,7 @@ class RenderTest extends DatabaseTestCase
     #[Test]
     public function a_type_the_visitor_may_not_read_is_not_found_rather_than_refused(): void
     {
-        Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true);
+        Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true);
 
         $this->get('/about/team')->assertNotFound();
         $this->assertNull(Mainstay::findByUri('/about/team', locale: 'en'));
@@ -370,13 +371,13 @@ class RenderTest extends DatabaseTestCase
     public function with_the_admin_at_the_root_every_path_is_the_admins(): void
     {
         foreach ([
-            [Leaf::class, '/{slug}', ['title' => 'X', 'slug' => 'x']],
-            [Home::class, '/', ['title' => 'X']],
-        ] as [$type, $pattern, $data]) {
+            [Leaf::class, '/{slug}', ['title' => 'X', 'slug' => 'x'], 'mainstay.entries'],
+            [Home::class, '/', ['title' => 'X'], 'mainstay.admin'],
+        ] as [$type, $pattern, $data, $route]) {
             $this->assertThrows(
                 fn () => Mainstay::create($type, $data, locale: 'en', overrideAccess: true),
                 InvalidArgumentException::class,
-                "#[Route] pattern \"{$pattern}\" puts every en path under the route mainstay.admin, which answers it instead.",
+                "#[Route] pattern \"{$pattern}\" puts every en path under the route {$route}, which answers it instead.",
             );
         }
     }
@@ -470,5 +471,59 @@ class RenderTest extends DatabaseTestCase
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Nested\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );
+    }
+
+    #[Test]
+    public function the_front_page_is_served_at_the_root_in_every_locale_it_has(): void
+    {
+        $id = $this->writePost()->id;
+        $this->translate($id);
+
+        Mainstay::setFrontPage(Post::class, $id, overrideAccess: true);
+
+        $this->assertSame([Post::class, $id], Mainstay::frontPage());
+        $this->get('/')->assertSee('<h1>Hello</h1>', escape: false);
+        $this->get('/nl')->assertSee('<h1>Hallo</h1>', escape: false);
+        $this->get('/blog/hello')->assertNotFound();
+        $this->assertSame(url('/'), Mainstay::findById(Post::class, $id, locale: 'en')->url());
+
+        /* Kept there through a publish, which builds its paths as every
+           write does, and refused the trash while it is the front page. */
+        $draft = Mainstay::drafts()->save(Post::class, ['slug' => 'renamed'], entry: $id, locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->publish($draft->id, overrideAccess: true);
+        $this->get('/')->assertSee('<h1>Hello</h1>', escape: false);
+        $this->assertThrows(fn () => Mainstay::delete(Post::class, $id, overrideAccess: true), ValidationException::class, 'This is the front page.');
+
+        /* Its own path, taken while it was free, so it goes back beside it
+           when another is chosen. */
+        $this->writePost(['title' => 'Usurper', 'slug' => 'renamed']);
+        $next = $this->writePost(['title' => 'Next', 'slug' => 'next'])->id;
+        Mainstay::setFrontPage(Post::class, $next, overrideAccess: true);
+
+        $this->get('/')->assertSee('<h1>Next</h1>', escape: false);
+        $this->assertSame(['/blog/renamed-2', '/nieuws/hallo'], [Mainstay::findById(Post::class, $id, locale: 'en')->uri, Mainstay::findById(Post::class, $id, locale: 'nl')->uri]);
+        $this->assertSame('renamed-2', Mainstay::findById(Post::class, $id, locale: 'en')->slug, 'Slug and path agree, as after a restore.');
+
+        Mainstay::setFrontPage(null, overrideAccess: true);
+        $this->assertNull(Mainstay::frontPage());
+        $this->get('/blog/next')->assertSee('<h1>Next</h1>', escape: false);
+        $this->get('/')->assertNotFound();
+    }
+
+    #[Test]
+    public function the_front_page_is_refused_where_the_root_is_taken_or_cannot_be_given(): void
+    {
+        Mainstay::create(Home::class, ['title' => 'Home'], locale: 'en', overrideAccess: true);
+        $id = $this->writePost()->id;
+
+        $this->assertThrows(fn () => Mainstay::setFrontPage(Post::class, $id, overrideAccess: true), ValidationException::class, 'The path / is already taken in en.');
+        $this->assertNull(Mainstay::frontPage());
+        $this->assertSame('/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->uri);
+
+        $guide = Mainstay::create(Guide::class, ['title' => 'Guide'], locale: 'en', overrideAccess: true)->id;
+        $this->assertThrows(fn () => Mainstay::setFrontPage(Guide::class, $guide, overrideAccess: true), InvalidArgumentException::class, 'has no #[Route], so it has no path to serve at /.');
+
+        /* Nobody signed in, nobody moves a page every visitor sees first. */
+        $this->assertThrows(fn () => Mainstay::setFrontPage(Post::class, $id), AuthorizationException::class);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Mainstay\Database;
 
+use Illuminate\Support\Collection;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Draft;
 
@@ -28,6 +29,12 @@ class Drafts
     public function of(string $type, ?int $entry = null, ?string $locale = null, bool $overrideAccess = false, int $depth = 1): ?Draft
     {
         return $this->store->draftOf($type, $entry, $locale, $overrideAccess, $depth);
+    }
+
+    /** @return Collection<int, Draft> */
+    public function all(string $type, ?string $locale = null, bool $overrideAccess = false, int $depth = 1): Collection
+    {
+        return $this->store->drafts($type, $locale, $overrideAccess, $depth);
     }
 
     public function publish(int $id, bool $overrideAccess = false): ContentType

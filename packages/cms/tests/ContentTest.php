@@ -400,6 +400,19 @@ class ContentTest extends DatabaseTestCase
         $this->assertInstanceOf(Post::class, $page->items()[0]);
     }
 
+    #[Test]
+    public function a_read_of_the_trash_finds_what_is_in_it_and_nothing_else(): void
+    {
+        $kept = $this->writePost()->id;
+        $gone = $this->writePost(['slug' => 'gone'])->id;
+        Mainstay::delete(Post::class, $gone, overrideAccess: true);
+
+        $this->assertSame([$kept], $this->ids(Mainstay::find(Post::class, locale: 'en', overrideAccess: true)));
+        $this->assertSame([$gone], $this->ids(Mainstay::find(Post::class, locale: 'en', overrideAccess: true, trashed: true)));
+        $this->assertSame([$gone], $this->ids(Mainstay::paginate(Post::class, locale: 'en', overrideAccess: true, trashed: true)->items()));
+        $this->assertNull(Mainstay::find(Post::class, locale: 'en', overrideAccess: true, trashed: true)->sole()->uri, 'The trash took its path.');
+    }
+
     private function writePost(array $data = [], string $locale = 'en'): Post
     {
         return Mainstay::create(Post::class, ['title' => 'Hello', 'slug' => 'hello', 'status' => 'live', ...$data], locale: $locale, overrideAccess: true);
@@ -495,7 +508,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_caller_that_may_write_and_not_read_is_handed_what_it_wrote(): void
     {
-        $sent = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en');
+        $sent = Mainstay::create(Submission::class, ['title' => 'From Ann', 'name' => 'Ann'], locale: 'en');
 
         $this->assertSame('Ann', $sent->name);
         $this->assertFalse((new ReflectionProperty($sent, 'message'))->isInitialized($sent), 'Not written, so not handed back.');
@@ -534,19 +547,19 @@ class ContentTest extends DatabaseTestCase
     public function a_field_left_off_is_refused_by_its_rules_unless_the_writer_cannot_see_it(): void
     {
         /* Visible to the form, so its own rule answers, not access. */
-        $this->assertSame(['name'], array_keys($this->refusal(fn () => Mainstay::create(Submission::class, [], locale: 'en'))));
+        $this->assertSame(['title', 'name'], array_keys($this->refusal(fn () => Mainstay::create(Submission::class, [], locale: 'en'))));
 
         /* Hidden from nobody here, so the same. */
-        $this->assertSame(['state'], array_keys($this->refusal(fn () => Mainstay::create(Ticket::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true))));
+        $this->assertSame(['state'], array_keys($this->refusal(fn () => Mainstay::create(Ticket::class, ['title' => 'From Ann', 'name' => 'Ann'], locale: 'en', overrideAccess: true))));
     }
 
     #[Test]
     public function a_translations_first_row_takes_the_declared_defaults(): void
     {
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
         Mainstay::update(Page::class, $id, ['tagline' => 'Meet us'], locale: 'en', overrideAccess: true);
 
-        $dutch = Mainstay::update(Page::class, $id, ['slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
+        $dutch = Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
 
         $this->assertSame('Welcome', $dutch->tagline);
         $this->assertSame('Meet us', Mainstay::findById(Page::class, $id, locale: 'en', overrideAccess: true)->tagline, 'The translation that was there keeps its own.');
@@ -555,7 +568,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function gate_is_shown_an_unreadable_stored_value_as_absent_and_a_read_still_fails_on_it(): void
     {
-        $id = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en')->id;
+        $id = Mainstay::create(Submission::class, ['title' => 'From Ann', 'name' => 'Ann'], locale: 'en')->id;
         DB::table('submission')->update(['state' => '']);
 
         RecordingPolicy::$asked = [];
@@ -572,12 +585,12 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_caller_with_no_rights_cannot_tell_a_missing_entry_from_a_present_one(): void
     {
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
 
         /* Page's policy refuses everything, reads included. */
         foreach ([
             fn () => Mainstay::update(Page::class, 999, ['slug' => 'x'], locale: 'en'),
-            fn () => Mainstay::update(Page::class, $id, ['slug' => 'x'], locale: 'en'),
+            fn () => Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'x'], locale: 'en'),
             fn () => Mainstay::delete(Page::class, 999),
             fn () => Mainstay::delete(Page::class, $id),
         ] as $write) {
@@ -586,7 +599,7 @@ class ContentTest extends DatabaseTestCase
 
         /* Nor which translations it has. */
         App::setLocale('nl');
-        $this->assertThrows(fn () => Mainstay::update(Page::class, $id, ['slug' => 'x']), AuthorizationException::class);
+        $this->assertThrows(fn () => Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'x']), AuthorizationException::class);
 
         /* A caller that may read is told, since it could find() the same. */
         App::setLocale('en');
@@ -596,7 +609,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_caller_with_no_rights_gets_one_refusal_whatever_the_policy_says(): void
     {
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
         Gate::policy(Page::class, OwnerPolicy::class);
 
         $answer = function (callable $write): array {
@@ -614,7 +627,7 @@ class ContentTest extends DatabaseTestCase
                 Gate::defaultDenialResponse($default);
             }
 
-            $this->assertSame($answer(fn () => Mainstay::update(Page::class, 999, ['slug' => 'x'], locale: 'en')), $answer(fn () => Mainstay::update(Page::class, $id, ['slug' => 'x'], locale: 'en')));
+            $this->assertSame($answer(fn () => Mainstay::update(Page::class, 999, ['slug' => 'x'], locale: 'en')), $answer(fn () => Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'x'], locale: 'en')));
             $this->assertSame($answer(fn () => Mainstay::delete(Page::class, 999)), $answer(fn () => Mainstay::delete(Page::class, $id)));
         }
 
@@ -622,14 +635,14 @@ class ContentTest extends DatabaseTestCase
 
         /* A create involves no entry that could be there or not, so the
            policy's own words stand. */
-        $this->assertSame('New pages are closed until Monday.', $answer(fn () => Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'new'], locale: 'en'))[0]);
+        $this->assertSame('New pages are closed until Monday.', $answer(fn () => Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'work', 'slug' => 'new'], locale: 'en'))[0]);
     }
 
     #[Test]
     public function a_refused_path_is_not_spelled_out_to_a_caller_that_may_not_read(): void
     {
-        Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'team'], locale: 'en', overrideAccess: true);
-        $other = Mainstay::create(Page::class, ['section' => 'work', 'slug' => 'other'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'work', 'slug' => 'team'], locale: 'en', overrideAccess: true);
+        $other = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'work', 'slug' => 'other'], locale: 'en', overrideAccess: true)->id;
         Gate::policy(Page::class, FormPolicy::class);
 
         /* The path would give away the stored section, which this call did
@@ -656,7 +669,7 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function gate_is_not_shown_a_default_for_a_field_the_main_row_does_not_carry(): void
     {
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team', 'tagline' => 'Meet us'], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team', 'tagline' => 'Meet us'], locale: 'en', overrideAccess: true)->id;
         RecordingPolicy::$asked = [];
         Gate::policy(Page::class, RecordingPolicy::class);
 
@@ -672,13 +685,13 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_declared_default_fills_a_field_left_off_whoever_writes(): void
     {
-        $this->assertSame('new', Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en', overrideAccess: true)->state);
+        $this->assertSame('new', Mainstay::create(Submission::class, ['title' => 'From Ann', 'name' => 'Ann'], locale: 'en', overrideAccess: true)->state);
     }
 
     #[Test]
     public function a_stored_value_a_hidden_field_cannot_read_is_not_named_to_a_writer(): void
     {
-        $id = Mainstay::create(Submission::class, ['name' => 'Ann'], locale: 'en')->id;
+        $id = Mainstay::create(Submission::class, ['title' => 'From Ann', 'name' => 'Ann'], locale: 'en')->id;
         DB::table('submission')->update(['state' => '']);
 
         $this->assertSame('Hello', Mainstay::update(Submission::class, $id, ['message' => 'Hello'], locale: 'en')->message);
@@ -1019,8 +1032,8 @@ class ContentTest extends DatabaseTestCase
     public function a_save_inside_a_callers_transaction_builds_paths_from_what_is_stored_now(): void
     {
         config()->set('database.connections.beside', config('database.connections.testing'));
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
-        Mainstay::update(Page::class, $id, ['slug' => 'a'], locale: 'nl', overrideAccess: true);
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'a'], locale: 'nl', overrideAccess: true);
 
         DB::beginTransaction();
         DB::table('page')->count();
@@ -1041,14 +1054,14 @@ class ContentTest extends DatabaseTestCase
     public function a_save_inside_a_callers_transaction_sees_a_path_added_since(): void
     {
         config()->set('database.connections.beside', config('database.connections.testing'));
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
 
         DB::beginTransaction();
         DB::table('page')->count();
 
         /* Another request adds the Dutch translation, path and all. */
         $added = $this->beside(function () use ($id) {
-            DB::connection('beside')->table('page_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'slug' => 'ploeg', 'tagline' => 'Welkom']);
+            DB::connection('beside')->table('page_locales')->insert(['parent_id' => $id, 'site_id' => 1, 'locale' => 'nl', 'title' => 'Ploeg', 'slug' => 'ploeg', 'tagline' => 'Welkom']);
             DB::connection('beside')->table('uris')->insert(['site_id' => 1, 'locale' => 'nl', 'uri' => '/about/ploeg', 'type' => 'page', 'entry_id' => $id]);
         });
 
@@ -1081,8 +1094,8 @@ class ContentTest extends DatabaseTestCase
     #[Test]
     public function a_shared_field_in_the_pattern_moves_every_locales_path(): void
     {
-        $id = Mainstay::create(Page::class, ['section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
-        Mainstay::update(Page::class, $id, ['slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
+        $id = Mainstay::create(Page::class, ['title' => 'Team', 'section' => 'about', 'slug' => 'team'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::update(Page::class, $id, ['title' => 'Ploeg', 'slug' => 'ploeg'], locale: 'nl', overrideAccess: true);
 
         Mainstay::update(Page::class, $id, ['section' => 'work'], locale: 'en', overrideAccess: true);
 
