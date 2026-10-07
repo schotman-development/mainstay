@@ -1,0 +1,366 @@
+<?php
+
+namespace Mainstay\Tests;
+
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\TestResponse;
+use InvalidArgumentException;
+use Mainstay\Auth\Role;
+use Mainstay\Auth\User;
+use Mainstay\Facades\Mainstay;
+use Mainstay\Http\Form;
+use Mainstay\Tests\Fixtures\Accented\Article as Accented;
+use Mainstay\Tests\Fixtures\Broken\Login;
+use Mainstay\Tests\Fixtures\Post;
+use Mainstay\Tests\Fixtures\Signed\Banner;
+use Mainstay\Tests\Fixtures\Signed\Flyer;
+use Mainstay\Tests\Fixtures\Signed\Note;
+use Mainstay\Tests\Fixtures\Signed\Topic;
+use PHPUnit\Framework\Attributes\Test;
+
+/*
+ | The phase 10a check: the admin's frame, lists and scalar forms, over the
+ | query layer -- a round trip in two languages, saving and publishing, two
+ | editors on one draft, the list and the trash, who is offered what, terms,
+ | globals and the front page. The layer underneath runs on every driver in
+ | its own suites; this drives it through HTTP.
+ */
+class AdminTest extends DatabaseTestCase
+{
+    private int $made = 0;
+
+    protected function defineEnvironment($app): void
+    {
+        parent::defineEnvironment($app);
+
+        $app['config']->set('mainstay.locales', ['en' => '/', 'nl' => '/nl']);
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->signIn($this->user(role: 'administrator'));
+    }
+
+    /* Another account, in a session of its own: the last one's holds the
+       password hash AuthenticateSession checks, and would sign this one out. */
+    private function signIn(User $user): void
+    {
+        $this->flushSession();
+        $this->actingAs($user, 'mainstay');
+    }
+
+    private function user(array $capabilities = [], ?string $role = null): User
+    {
+        $n = ++$this->made;
+        $role = $role === null
+            ? Role::query()->create(['name' => "role-{$n}", 'capabilities' => $capabilities])
+            : Role::query()->where('name', $role)->sole();
+
+        return User::query()->create(['name' => "Ada {$n}", 'email' => "ada-{$n}@example.com", 'password' => 'correct horse battery', 'role_id' => $role->id]);
+    }
+
+    /* What a form drew as each field's fingerprint, and when its draft was
+       saved, as a browser would post them back. */
+    private function drawn(TestResponse $response): array
+    {
+        preg_match_all('/name="_seen\[(\w+)\]" value="(\w+)"/', $response->getContent(), $seen, PREG_SET_ORDER);
+        preg_match('/name="_draft_at" value="([^"]*)"/', $response->getContent(), $at);
+
+        return ['_seen' => array_column($seen, 2, 1), '_draft_at' => html_entity_decode($at[1] ?? '')];
+    }
+
+    private function values(array $fields = []): array
+    {
+        return ['title' => 'Hello', 'slug' => 'hello', 'status' => 'live', 'publishedAt' => '2026-10-07T14:30:00+02:00', 'featured' => '0', 'readingMinutes' => '4', 'template' => 'post', ...$fields];
+    }
+
+    #[Test]
+    public function an_article_written_in_the_admin_reads_back_through_the_layer_in_both_languages(): void
+    {
+        $saved = $this->post(route('mainstay.entries.store', 'post'), $this->values(['featured' => '1']));
+        $draft = Mainstay::drafts()->all(Post::class, locale: 'en')->sole();
+        $saved->assertRedirect(route('mainstay.drafts.edit', ['post', $draft->id]));
+        $this->assertNull(Mainstay::findByUri('/blog/hello', locale: 'en'), 'Saved as a draft, which the site does not show.');
+
+        $form = $this->get(route('mainstay.drafts.edit', ['post', $draft->id]))->assertOk()->assertSee('value="Hello"', escape: false);
+        $published = $this->post(route('mainstay.drafts.update', ['post', $draft->id]), [...$this->values(['featured' => '1']), ...$this->drawn($form), 'intent' => 'publish']);
+        $post = Mainstay::findByUri('/blog/hello', locale: 'en');
+        $published->assertRedirect(route('mainstay.entries.edit', ['post', $post->id]));
+
+        $this->assertSame(['Hello', 'hello', 'live', true, 4], [$post->title, $post->slug, $post->status, $post->featured, $post->readingMinutes]);
+        $this->assertEquals(CarbonImmutable::parse('2026-10-07 12:30:00', 'UTC'), $post->publishedAt, 'Posted with an offset, stored in UTC.');
+
+        /* The Dutch, from the toggle: the shared fields come filled in. */
+        $dutch = $this->get(route('mainstay.entries.edit', ['post', $post->id, 'locale' => 'nl']))->assertOk()->assertSee('There is no NL version yet', escape: false);
+        $this->post(route('mainstay.entries.update', ['post', $post->id, 'locale' => 'nl']), [
+            ...$this->values(['title' => 'Hallo', 'slug' => 'hallo', 'featured' => '1']), ...$this->drawn($dutch), 'intent' => 'publish',
+        ])->assertRedirect(route('mainstay.entries.edit', ['post', $post->id, 'locale' => 'nl']))->assertSessionHasNoErrors();
+
+        $nl = Mainstay::findByUri('/nieuws/hallo', locale: 'nl');
+        $this->assertSame([$post->id, 'Hallo', true], [$nl->id, $nl->title, $nl->featured]);
+        $this->assertSame('Hello', Mainstay::findById(Post::class, $post->id, locale: 'en')->title);
+    }
+
+    #[Test]
+    public function save_draft_keeps_the_site_as_it_was_and_publish_puts_it_live(): void
+    {
+        $id = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true)->id;
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]))->assertOk()->assertDontSee('data-slug-from', escape: false);
+
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed']), ...$this->drawn($form)])->assertSessionHasNoErrors();
+        $this->assertSame('Hello', Mainstay::findById(Post::class, $id, locale: 'en')->title);
+        $this->assertSame(['title'], Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true)->locales['en'], 'Only what changed is drafted.');
+
+        /* A publish the layer refuses keeps the draft, and says why. */
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('Unpublished changes');
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed', 'slug' => '']), ...$this->drawn($form), 'intent' => 'publish'])
+            ->assertSessionHasErrors('slug');
+        $this->assertSame('Changed', Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true)->entry->title);
+
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]));
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed']), ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $this->assertSame(['Changed', 'hello'], [Mainstay::findById(Post::class, $id, locale: 'en')->title, Mainstay::findById(Post::class, $id, locale: 'en')->slug]);
+        $this->assertNull(Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true));
+
+        /* And Discard draft throws one away. */
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]));
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Again']), ...$this->drawn($form)]);
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]));
+        $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        $this->post(route('mainstay.drafts.discard', ['post', $draft->id]), $this->drawn($form))->assertSessionHasNoErrors();
+        $this->assertNull(Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true));
+        $this->assertSame('Changed', Mainstay::findById(Post::class, $id, locale: 'en')->title);
+    }
+
+    #[Test]
+    public function two_forms_on_one_draft_each_keep_their_change(): void
+    {
+        $id = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true)->id;
+        $first = $this->drawn($this->get(route('mainstay.entries.edit', ['post', $id])));
+        $second = $this->drawn($this->get(route('mainstay.entries.edit', ['post', $id])));
+
+        /* The first changes the title; the second, drawn before that, changes
+           the status and posts the old title and the same moment written in
+           another zone. */
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed']), ...$first])->assertSessionHasNoErrors();
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['status' => 'draft', 'publishedAt' => '2026-10-07T07:30:00-05:00']), ...$second])->assertSessionHasNoErrors();
+
+        $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        $this->assertSame(['Changed', 'draft'], [$draft->entry->title, $draft->entry->status]);
+        $this->assertSame([], $draft->fields, 'The moment was unchanged, so nothing shared is drafted.');
+
+        /* The moment changed by one form and left alone by another drawn
+           before: the later save does not put the old one back. */
+        $third = $this->drawn($this->get(route('mainstay.entries.edit', ['post', $id])));
+        $fourth = $this->drawn($this->get(route('mainstay.entries.edit', ['post', $id])));
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed', 'status' => 'draft', 'publishedAt' => '2026-12-01T10:00:00+00:00']), ...$third]);
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => 'Changed', 'status' => 'draft', 'featured' => '1']), ...$fourth]);
+        $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        $this->assertEquals([CarbonImmutable::parse('2026-12-01 10:00:00', 'UTC'), true], [$draft->entry->publishedAt, $draft->entry->featured]);
+
+        /* A publish from a form drawn before the last save is refused, the
+           save itself kept. */
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['featured' => '1']), ...$first, 'intent' => 'publish'])
+            ->assertSessionHasErrors('draft');
+        $this->assertSame('Hello', Mainstay::findById(Post::class, $id, locale: 'en')->title);
+        $this->assertTrue(Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true)->entry->featured);
+
+        /* And so is a discard. */
+        $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        $this->post(route('mainstay.drafts.discard', ['post', $draft->id]), $first)->assertSessionHasErrors('draft');
+        $this->assertNotNull(Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true));
+    }
+
+    #[Test]
+    public function what_code_wrote_posts_back_unchanged_from_an_untouched_form(): void
+    {
+        $id = Mainstay::create(Post::class, [...$this->values(['title' => ' Hello ', 'publishedAt' => '2026-10-07 12:30:45']), 'editorNote' => "One\nTwo"], locale: 'en', overrideAccess: true)->id;
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('value="2026-10-07T12:30:45"', escape: false);
+
+        /* What a browser sends back: the title trimmed by the host's
+           middleware, the textarea's lines ending in CRLF, the moment in
+           another zone, to the second. */
+        $this->post(route('mainstay.entries.update', ['post', $id]), [
+            ...$this->values(['title' => 'Hello', 'publishedAt' => '2026-10-07T14:30:45+02:00']), 'editorNote' => "One\r\nTwo", ...$this->drawn($form),
+        ])->assertSessionHas('status', 'Nothing to save: this is what is live.');
+        $this->assertNull(Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true));
+
+        /* A field a form does not post is left as it is. */
+        $this->post(route('mainstay.entries.update', ['post', $id]), [...array_diff_key($this->values(['title' => 'Changed']), ['readingMinutes' => 0]), ...$this->drawn($form), 'intent' => 'publish']);
+        $this->assertSame(['Changed', 4], [Mainstay::findById(Post::class, $id, locale: 'en')->title, Mainstay::findById(Post::class, $id, locale: 'en')->readingMinutes]);
+    }
+
+    #[Test]
+    public function the_form_draws_each_scalar_as_its_control(): void
+    {
+        $form = $this->get(route('mainstay.entries.create', 'post'))->assertOk();
+
+        $form->assertSee('<input type="hidden" name="featured" value="0">', escape: false)
+            ->assertSee('maxlength="255"', escape: false)
+            ->assertSee('type="datetime-local"', escape: false)
+            ->assertSee('step="1"', escape: false)
+            ->assertSee('name="template"', escape: false)
+            ->assertSee('data-slug-from="title"', escape: false)
+            ->assertSeeInOrder(['name="status"', '<option value="">—</option>'], escape: false);
+    }
+
+    #[Test]
+    public function the_list_shows_what_is_live_drafted_and_new_and_pages_through_it(): void
+    {
+        $live = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true);
+        $changed = Mainstay::create(Post::class, $this->values(['title' => 'Second', 'slug' => 'second']), locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->save(Post::class, ['title' => 'Second, again'], entry: $changed->id, locale: 'en', overrideAccess: true);
+        $new = Mainstay::drafts()->save(Post::class, ['title' => 'Coming up'], locale: 'en', overrideAccess: true);
+
+        $list = $this->get(route('mainstay.entries', 'post'))->assertOk();
+        $list->assertSee('Coming up')->assertSee('Second, again')->assertSee('Hello');
+        $list->assertSeeInOrder(['Second, again', 'Changed'])->assertSeeInOrder(['Coming up', 'Draft']);
+        $list->assertSee(route('mainstay.drafts.edit', ['post', $new->id]), escape: false);
+        $this->get(route('mainstay.entries', ['post', 'status' => 'Changed']))->assertSee('Second, again')->assertDontSee('Hello')->assertDontSee('Coming up');
+        $this->get(route('mainstay.entries', ['post', 'query' => 'hel']))->assertSee('Hello')->assertDontSee('Second');
+
+        /* In Dutch, which none of them has: each is listed, marked. */
+        $this->assertMatchesRegularExpression('#>Hello</a>\s*<span class="ml-2 text-xs text-muted">Not in NL yet</span>#', $this->get(route('mainstay.entries', ['post', 'locale' => 'nl']))->getContent());
+        $this->get(route('mainstay.entries', ['post', 'status' => ['x']]))->assertOk();
+
+        foreach (range(1, 20) as $n) {
+            Mainstay::create(Post::class, $this->values(['title' => "Post {$n}", 'slug' => "post-{$n}"]), locale: 'en', overrideAccess: true);
+        }
+
+        $this->get(route('mainstay.entries', ['post', 'field' => 'title', 'direction' => 'asc']))->assertSee('1–20 of 23')->assertDontSee('Second, again');
+        $this->get(route('mainstay.entries', ['post', 'field' => 'title', 'direction' => 'asc', 'page' => 2]))->assertSee('21–23 of 23')->assertSee('Second, again');
+        $this->assertNotNull($live);
+    }
+
+    #[Test]
+    public function the_trash_restores_reporting_its_path_and_deletes_for_good(): void
+    {
+        $id = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true)->id;
+
+        $this->post(route('mainstay.entries.delete', ['post', $id]))->assertRedirect(route('mainstay.entries', 'post'));
+        $this->get(route('mainstay.entries', 'post'))->assertDontSee('Hello');
+        $this->get(route('mainstay.entries.trash', 'post'))->assertSee('Hello')->assertSee('Delete for good');
+
+        /* Its path taken meanwhile, so it comes back beside it. */
+        Mainstay::create(Post::class, $this->values(['title' => 'Usurper']), locale: 'en', overrideAccess: true);
+        $this->from(route('mainstay.entries.trash', 'post'))->post(route('mainstay.entries.restore', ['post', $id]))->assertSessionHas('status', 'Restored at /blog/hello-2.');
+
+        Mainstay::delete(Post::class, $id, overrideAccess: true);
+        $this->from(route('mainstay.entries.trash', 'post'))->post(route('mainstay.entries.destroy', ['post', $id]))->assertSessionHas('status', 'Deleted for good.');
+        $this->assertSame(0, DB::table('post')->where('id', $id)->count());
+
+        /* The selection, moved in one go. */
+        $ids = [Mainstay::create(Post::class, $this->values(['slug' => 'a']), locale: 'en', overrideAccess: true)->id, Mainstay::create(Post::class, $this->values(['slug' => 'b']), locale: 'en', overrideAccess: true)->id];
+        $this->from(route('mainstay.entries', 'post'))->post(route('mainstay.entries.trash-many', 'post'), ['rows' => array_map('strval', $ids)])->assertSessionHas('status', 'Moved 2 entries to the trash.');
+        $this->assertSame(2, DB::table('post')->whereIn('id', $ids)->whereNotNull('deleted_at')->count());
+    }
+
+    #[Test]
+    public function a_writer_is_offered_their_type_and_refused_the_rest(): void
+    {
+        $this->post(route('mainstay.entries.store', 'note'), ['title' => 'Theirs', 'slug' => 'theirs'])->assertSessionHasNoErrors();
+        $flyer = Mainstay::create(Flyer::class, ['title' => 'Flyer', 'slug' => 'flyer'], locale: 'en', overrideAccess: true)->id;
+        Mainstay::setFrontPage(Flyer::class, $flyer, overrideAccess: true);
+        $this->signIn($this->user(['edit_notes', 'edit_published_notes', 'delete_notes']));
+        $this->post(route('mainstay.entries.store', 'note'), ['title' => 'Mine', 'slug' => 'mine'])->assertSessionHasNoErrors();
+
+        /* Another's unpublished draft is someone else's, and not listed. */
+        $this->get(route('mainstay.entries', 'note'))->assertSee('Mine')->assertDontSee('Theirs');
+
+        $this->get(route('mainstay.admin'))->assertOk()
+            ->assertSee('href="/admin/note"', escape: false)
+            ->assertDontSee('href="/admin/flyer"', escape: false)
+            ->assertDontSee('href="/admin/banner"', escape: false);
+        $this->get(route('mainstay.admin'))->assertSee('"label":"Notes"', escape: false);
+        $this->get(route('mainstay.entries', 'flyer'))->assertForbidden();
+        $this->get(route('mainstay.entries.create', 'flyer'))->assertForbidden();
+        $this->get(route('mainstay.entries', 'banner'))->assertForbidden();
+
+        $note = $this->get(route('mainstay.entries.create', 'note'))->assertOk();
+        $note->assertSee('Save draft')->assertDontSee('>Publish<', escape: false);
+
+        /* Not offered a trash they may not use. */
+        $theirs = Mainstay::create(Note::class, ['title' => 'Kept', 'slug' => 'kept'], locale: 'en', overrideAccess: true)->id;
+        $this->signIn($this->user(['edit_notes', 'edit_published_notes', 'edit_others_notes']));
+        $this->get(route('mainstay.entries', 'note'))->assertSee('Kept')->assertDontSee(route('mainstay.entries.delete', ['note', $theirs]), escape: false);
+
+        /* Making a note the front page moves the flyer, which is not a note
+           publisher's to publish. */
+        $this->signIn($this->user(['edit_notes', 'edit_published_notes', 'edit_others_notes', 'publish_notes']));
+        $note = Mainstay::create(Note::class, ['title' => 'Note', 'slug' => 'note'], locale: 'en', overrideAccess: true)->id;
+        $this->post(route('mainstay.entries.front', ['note', $note]))->assertForbidden();
+        $this->assertSame([Flyer::class, $flyer], Mainstay::frontPage());
+
+        Mainstay::setFrontPage(null, overrideAccess: true);
+        $this->from(route('mainstay.entries.edit', ['note', $note]))->post(route('mainstay.entries.front', ['note', $note]))->assertSessionHasNoErrors();
+        $this->assertSame([Note::class, $note], Mainstay::frontPage(), 'With no flyer to move, the note may be made the front page.');
+    }
+
+    #[Test]
+    public function a_term_is_written_live_and_a_global_through_its_draft(): void
+    {
+        $this->post(route('mainstay.entries.store', 'topic'), ['title' => 'Design', 'slug' => 'design'])->assertSessionHasNoErrors();
+        $this->assertSame('Design', Mainstay::findByUri('/topics/design', locale: 'en')->title);
+        $this->get(route('mainstay.entries.create', 'topic'))->assertSee('>Save<', escape: false)->assertDontSee('Save draft');
+
+        $form = $this->get(route('mainstay.entries', 'banner'))->assertOk()->assertSee('Save draft');
+        $this->post(route('mainstay.entries.store', 'banner'), ['text' => 'Hello', ...$this->drawn($form)]);
+        $this->assertNull(Mainstay::global(Banner::class, locale: 'en'));
+
+        $form = $this->get(route('mainstay.entries', 'banner'));
+        $this->post(route('mainstay.entries.store', 'banner'), ['text' => 'Hello', ...$this->drawn($form), 'intent' => 'publish'])->assertRedirect(route('mainstay.entries', 'banner'));
+        $this->assertSame('Hello', Mainstay::global(Banner::class, locale: 'en')->text);
+    }
+
+    #[Test]
+    public function an_entry_becomes_the_front_page_from_its_menu(): void
+    {
+        $id = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true)->id;
+
+        $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('Use as front page');
+        $this->from(route('mainstay.entries.edit', ['post', $id]))->post(route('mainstay.entries.front', ['post', $id]))->assertSessionHasNoErrors();
+
+        $this->assertSame([Post::class, $id], Mainstay::frontPage());
+        $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('Served at the site')->assertDontSee('Use as front page');
+        $this->get(route('mainstay.entries', 'post'))->assertSee('Front page');
+
+        $this->from(route('mainstay.entries.edit', ['post', $id]))->post(route('mainstay.entries.delete', ['post', $id]))->assertSessionHasErrors('front');
+    }
+
+    #[Test]
+    public function a_path_under_the_admin_no_screen_answers_is_its_own_not_found(): void
+    {
+        foreach (['/admin/post/1/nothing', '/admin/nothing', '/admin/post/999', '/admin/post/drafts/999', '/admin/banner/new'] as $path) {
+            $this->get($path)->assertNotFound()->assertSee('There is nothing here')->assertSee('aria-label="Sections"', escape: false);
+        }
+
+        $this->post('/admin/post/1/nothing')->assertNotFound()->assertSee('There is nothing here');
+    }
+
+    #[Test]
+    public function a_field_type_without_its_component_is_named_and_a_handle_the_admin_uses_is_refused(): void
+    {
+        $this->declare(Accented::class);
+        $this->artisan('mainstay:sync')->assertSuccessful();
+        $this->withoutExceptionHandling();
+
+        $this->assertThrows(fn () => $this->get(route('mainstay.entries.create', 'article')), InvalidArgumentException::class, 'there is no view acme::components.fields.color-picker');
+        $this->assertThrows(fn () => $this->declare(Login::class), InvalidArgumentException::class, 'would be called "login", which the admin uses for a screen of its own');
+    }
+
+    #[Test]
+    public function an_unchanged_value_fingerprints_as_drawn_and_a_refused_one_never_does(): void
+    {
+        $field = Mainstay::fields(Post::class)['publishedAt'];
+
+        $this->assertSame(Form::fingerprint($field, CarbonImmutable::parse('2026-10-07 12:30:00', 'UTC')), Form::fingerprint($field, '2026-10-07T14:30:00+02:00', posted: true));
+        $this->assertNull(Form::fingerprint($field, 'not a date', posted: true));
+        $this->assertNull(Form::fingerprint(Mainstay::fields(Post::class)['readingMinutes'], 'four', posted: true), 'Not cast to 0 and taken for an unchanged 0.');
+        $this->assertSame("One\nTwo", Mainstay::fields(Post::class)['editorNote']->fromForm("One\r\nTwo"), 'A textarea\'s CRLF is stored as the lines it ends.');
+    }
+}

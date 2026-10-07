@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use Mainstay\Http\Authenticate;
 use Mainstay\Http\AuthenticateSession;
+use Mainstay\Http\EntryController;
 use Mainstay\Http\LoginController;
 use Mainstay\Http\PasswordController;
 
@@ -15,7 +16,31 @@ Route::post('forgot-password', [PasswordController::class, 'email'])->name('main
 Route::get('reset-password/{token}', [PasswordController::class, 'edit'])->name('mainstay.password.reset');
 Route::post('reset-password', [PasswordController::class, 'update'])->name('mainstay.password.update');
 
-Route::view('/{path?}', 'mainstay::admin')
-    ->where('path', '.*')
-    ->middleware([Authenticate::class, AuthenticateSession::class])
-    ->name('mainstay.admin');
+/*
+ | Every screen under a type's handle, which registration keeps from being
+ | `login`, `logout` or `media`. A path none of them answers is the admin's
+ | own not-found, drawn in the shell: named as the others are, so no entry
+ | can be given a path anywhere under the prefix.
+ */
+Route::middleware([Authenticate::class, AuthenticateSession::class])->group(function () {
+    Route::view('/', 'mainstay::dashboard')->name('mainstay.admin');
+
+    Route::get('{type}', [EntryController::class, 'index'])->name('mainstay.entries');
+    Route::post('{type}', [EntryController::class, 'store'])->name('mainstay.entries.store');
+    Route::get('{type}/new', [EntryController::class, 'create'])->name('mainstay.entries.create');
+    Route::get('{type}/trash', [EntryController::class, 'trashed'])->name('mainstay.entries.trash');
+    Route::post('{type}/trash', [EntryController::class, 'trashMany'])->name('mainstay.entries.trash-many');
+
+    Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
+    Route::post('{type}/drafts/{draft}', [EntryController::class, 'saveDraft'])->whereNumber('draft')->name('mainstay.drafts.update');
+    Route::post('{type}/drafts/{draft}/discard', [EntryController::class, 'discard'])->whereNumber('draft')->name('mainstay.drafts.discard');
+
+    Route::get('{type}/{id}', [EntryController::class, 'edit'])->whereNumber('id')->name('mainstay.entries.edit');
+    Route::post('{type}/{id}', [EntryController::class, 'update'])->whereNumber('id')->name('mainstay.entries.update');
+    Route::post('{type}/{id}/trash', [EntryController::class, 'trash'])->whereNumber('id')->name('mainstay.entries.delete');
+    Route::post('{type}/{id}/restore', [EntryController::class, 'restore'])->whereNumber('id')->name('mainstay.entries.restore');
+    Route::post('{type}/{id}/destroy', [EntryController::class, 'destroy'])->whereNumber('id')->name('mainstay.entries.destroy');
+    Route::post('{type}/{id}/front', [EntryController::class, 'front'])->whereNumber('id')->name('mainstay.entries.front');
+
+    Route::any('{path}', fn () => response()->view('mainstay::missing', status: 404))->where('path', '.*')->name('mainstay.missing');
+});

@@ -439,12 +439,25 @@ abstract class Field
 
     /*
      | The Blade component that draws this field in the admin, derived from the
-     | class name so a host's field type gets one by writing the file. The
-     | components themselves arrive with the form in phase 10.
+     | class name so a host's field type gets one by writing the file:
+     | `resources/views/components/fields/color-picker.blade.php` under the
+     | namespace it sets. It is handed the field, its value, its input's name
+     | and its errors.
      */
     public function component(): string
     {
         return $this->viewNamespace.'::fields.'.Str::kebab(class_basename(static::class));
+    }
+
+    /*
+     | What a write takes, from what the component posted: as posted, for a
+     | component posting the value a write takes. A type whose component
+     | posts something else -- JSON, a list, an id beside its type -- turns
+     | it back here.
+     */
+    public function fromForm(mixed $posted): mixed
+    {
+        return $posted;
     }
 
     public function label(): string

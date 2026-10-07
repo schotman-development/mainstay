@@ -1,7 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import { Editor } from '@mainstay/editor'
 import { mount } from '@mainstay/ui/behaviour'
-import { api } from './api'
 import './index.css'
 
 /*
@@ -19,14 +18,3 @@ mount()
 const editor = document.getElementById('mainstay-editor')
 
 if (editor) createRoot(editor).render(<Editor />)
-
-/* The admin is just another client of the public content API, so the panel
-   reads its own version back out of it rather than off the server that
-   rendered the page. */
-const status = document.getElementById('mainstay-status')
-
-if (status) {
-  api<{ version: string }>()
-    .then((response) => (status.textContent = `v${response.version}`))
-    .catch((cause: unknown) => (status.textContent = cause instanceof Error ? cause.message : String(cause)))
-}

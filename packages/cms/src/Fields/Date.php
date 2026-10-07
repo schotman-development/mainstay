@@ -110,9 +110,8 @@ class Date extends Field
      | named for the ambient zone, and now() is the instant it says it is.
      | Refusing them together would refuse the common one to catch the mistake.
      |
-     | ponytail: an editor typing a naive time into the admin therefore types
-     | UTC. The form sends an offset when the editor's zone matters, which is
-     | phase 10's to send.
+     | So a naive time is UTC. The admin's form posts what an editor types
+     | with the browser's offset, which this reads as the instant it is.
      */
     protected function from(mixed $value): mixed
     {
@@ -155,7 +154,7 @@ class Date extends Field
      | `date-time` is RFC 3339 and wants the `T` and the offset that to() does
      | not write. They describe different things and neither is wrong: to() is
      | the value the column takes, and this is the shape a consumer reads over
-     | the API. The payload that has to satisfy this is phase 11's, and it is
+     | the API. The payload that has to satisfy this is phase 13's, and it is
      | the reason from() and to() agree on UTC now rather than then.
      */
     protected function json(): array

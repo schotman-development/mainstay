@@ -38,4 +38,11 @@ class Textarea extends Field
     {
         return ['type' => 'string'];
     }
+
+    /* A browser posts a textarea's lines ending in CRLF, which is not an
+       edit: the text is kept as it would be written anywhere else. */
+    public function fromForm(mixed $posted): mixed
+    {
+        return is_string($posted) ? str_replace("\r\n", "\n", $posted) : $posted;
+    }
 }

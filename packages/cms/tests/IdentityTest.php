@@ -480,10 +480,10 @@ class IdentityTest extends DatabaseTestCase
         $this->assertSame('web', Auth::getDefaultDriver(), "The host's guard is the default again after the request.");
         $this->assertSame(config('session.cookie'), $this->app['session.store']->getName(), "The host's session name is back after the request.");
 
-        /* Any path under it, which the client's router takes. */
-        $this->browser($jar)->get('/admin/collections/posts')->assertOk()
+        /* Any path under it is the admin's: a screen, or its not-found drawn
+           in the shell. */
+        $this->browser($jar)->get('/admin/collections/posts')->assertNotFound()
             ->assertSee($user->name)
-            ->assertSee('id="mainstay-editor"', escape: false)
             ->assertSee('aria-label="Sections"', escape: false);
 
         $signedIn = CookieValuePrefix::remove(decrypt($jar['mainstay_session'], false));
