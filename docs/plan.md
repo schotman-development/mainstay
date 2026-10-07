@@ -27,7 +27,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Fifteen things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Twenty things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -90,6 +90,26 @@ rather than edited into the log, which is append-only by construction.
   it cannot load, and phase 7's check had a trashed target skipped. Phase 6 read an image that is away
   as a Media marked missing and kept it through saves, and a relation does the same; the template is
   what skips it.
+- **A draft is the changes, kept as JSON in one table.** The drafts entry has a draft in "a parallel
+  table" that the admin's read left-joins. A draft may be incomplete, which a NOT NULL column cannot
+  hold; it carries an entry's terms, which live in a pivot; and it is read whole and never filtered.
+  So it is the fields that differ from what is live, in a `json` column of `mainstay_drafts`, and a
+  never-published entry is a draft with no entry at all.
+- **A revision is the whole entry.** The localization entry has a revision snapshot "the entry as read
+  in one locale, so restoring is per locale too". Restoring one language would bring back the shared
+  fields every other language reads as well, and a publish touches every locale its draft names, so
+  one publish files one revision of every locale.
+- **Revisions carry no field-set hash, and a field added since keeps its live value.** The drafts entry
+  stores a hash and fills missing fields with defaults on restore. Restore compares the snapshot with
+  the declaration directly, which finds a field retyped under its old name where a hash only says
+  something changed; and since a restored draft is the difference from live, a field the snapshot
+  never had stays as live has it rather than being reset to a default.
+- **Restoring from the trash changes the slug with the path.** The trash entry has restore take the
+  next free URI, and `Entry::$uri` was written to hold a path the pattern would not give. The next
+  save would build the old path from the slug and be refused, so the field that ends the pattern is
+  suffixed instead, and slug and path agree.
+- **Terms are written live.** The drafts entry gives every type drafts and revisions. A taxonomy has
+  neither: a term is written straight to the site, and nothing records its history.
 
 ## Phase 1 — Declarations
 
@@ -529,27 +549,161 @@ key, without its unique index and without its plain one, each on its own.
 
 ## Phase 8 — Drafts, publishing, revisions, trash
 
-At most one draft row per entry and per global, in a parallel table. The entry row always holds
-published content, so the site's read stays a single-row select with no version resolution on it.
+What an editor is working on, beside what the site shows, and the way back from a bad publish and
+from a delete. The entry row stays what is live, so the site's read is the single-row select it was
+and nothing a visitor reaches changes. Every call here is made from PHP, as the writes before it are,
+and becomes a button in phase 10.
 
-Publishing is one transaction: the draft overwrites the entry row, the outgoing content is appended
-to revisions, the draft is deleted. That transaction is also the single place where "content
-changed" is known, which is where the deferred publishing question will attach.
+**Drafts.** `mainstay_drafts`, a package migration: `site_id`, the type's handle, the `entry_id` it
+changes, a `json` column of changes, and the timestamps. Who wrote it waits for phase 9, a migration
+of this table and the revisions' as `owner_id` on the media library is. A draft is the changes, not a
+copy: the fields that differ from what is live, as their columns hold them -- shared ones once,
+localized ones under their locale, `template` beside them as a write takes it -- and a locale the
+entry does not have yet, which the draft adds whether or not anything in it is filled in. A draft
+changing only shared fields names no locale, and publish writes it in the first the entry has.
 
-Phase 3's create and update keep writing the entry row, so the site's seeders and import commands go
-on changing the site. A direct write is a publish with no draft before it and runs through the same
-transaction, so it appends a revision too. Saving a draft is its own call, and it is the one the
-admin's save button makes.
+Two values are compared as their field serializes them, the live one read through its cast first, so
+a date, a number or a boolean is one shape whichever driver returned it, and a map compares in any
+key order, since MySQL sorts a JSON object's keys. A block given without an id is a new block and
+differs; one given with the id a read handed out compares as stored.
 
-Revisions are one shared table — type, id, JSON snapshot, author, timestamp, and a hash of the
-declared field set. The author is null for anything published before phase 9 gives a write someone
-to be. Restore drops unknown fields, fills missing ones with defaults, tells the caller what
-changed, and writes a draft rather than republishing.
+`Mainstay::drafts()`, beside `media()`. `save(Article::class, [...], entry: 5, locale: 'nl')` merges
+the keys given into the entry's draft, starting one if there is none, each compared with what is
+live in that locale and kept only where it differs: a form posting every field leaves a draft of what
+was changed, and a draft left with no change is deleted. The locale is taken as `update()` takes it,
+so without one a draft of a translation the entry lacks is refused, and with one it adds it. Without
+`entry:` it starts a draft of a new entry, which has no row, no id and no path until it is first
+published, and is saved again by `draft:`, the draft's own id. A global's is
+`save(Layout::class, [...])`, one per site, whether or not the global has been written. `find($id,
+locale:)` and `of(Article::class, 5, locale:)` read one: what is live in that locale with the draft
+over it, hydrated as the declared class with what it points at loaded to a depth as any read's, in a
+`Draft` that carries its id, the entry's id or none, and the fields it changes by locale. `discard($id)`
+deletes one.
 
-Delete already trashes, from phase 3. Restore rewrites the lookup row from the route pattern and
-takes the next free URI if it is gone, saying which one it took.
+A draft may be incomplete. The keys it holds are checked as a write checks them -- every rule of the
+fields it names, a block's items by their own, an image or entry it names asked to be there -- except
+that each field's own presence rule gives way, at every level: `required` becomes `nullable`, and a
+required Boolean's `accepted` becomes `nullable|boolean`. The rules that keep a value's shape stay, a
+block's `type` and a relation's `id` among them, since the field reads them back. So `rulesAt()`
+takes a draft flag, passed down through blocks and relations, and a field type with a presence rule
+of its own overrides `drafted()`: the contract's reshape here. An empty value is kept in the
+draft as null rather than through `serialize()`, which a RichText, a Date or a Select with no empty
+value refuses, and the encoding check skips it. An article saves with no summary yet. A field it
+leaves empty that its property cannot hold, a required date, is absent from the entry it reads as;
+phase 10's preview says so rather than drawing it. Whether a path is free is publish's question.
 
-Publish and restore are calls on the layer here, and buttons in phase 10.
+One draft per entry is a unique index on `(site_id, type, entry_id)`. A global's draft is entry 0,
+since a global is the site's one and not addressed by id; a new entry's is null, each its own. SQL
+Server counts nulls equal in a unique index, so there it is a filtered one, by statement, where the
+other three already let nulls repeat. A save reads the draft plainly, then by its id with a lock,
+which on MySQL locks that row and no gap; one not there is inserted in a savepoint, and two first
+saves racing are settled by the index as two first saves of a global are, the loser reading the
+winner's with a lock and merging into it. So two editors' saves merge rather than one undoing the
+other.
+
+Nothing but publish and discard touches a draft. A direct write leaves it as it is, so a field an
+import changed and the editor did not keeps the import's value when the draft goes live, and one both
+changed takes the editor's. Trashing an entry keeps its draft, and deleting it for good takes it.
+
+**Publishing.** `publish($id)` puts a draft live in one transaction: the draft read with a lock, each
+locale it names validated as an update of that locale is -- `required` back, and the path -- and
+written through phase 3's write, the outgoing entry filed as a revision, the draft deleted. A new
+entry's is a create in its first locale and an update in each other, with nothing outgoing to file.
+It is refused with nothing written as a save is: a required field still empty, a path taken, a target
+trashed since the draft named it, the entry trashed. A draft holding a change to an internal field is
+refused, in access terms that name no field, to a publisher who may not see internal fields. That
+transaction is the one place "content changed" is known. Nothing listens to it yet; the deferred
+publishing question attaches there.
+
+Phase 3's `create`, `update` and `saveGlobal` go on writing what is live, so the site's seeders and
+imports go on changing the site, and each is a publish with no draft before it. Filing is one private
+step that publish and these share, once per call, after the call's last locale is written: it files
+the entry as it was before the call when a value that was live is replaced. A create has nothing
+outgoing; a translation added replaces nothing live, so the seeder's English create and Dutch update
+file nothing; and a write that changes nothing files nothing, so a seeder run twice leaves no copies.
+
+**Revisions.** `mainstay_revisions`, a package migration: `site_id`, type, `entry_id`, 0 for a
+global, a `json` snapshot, and `created_at`, when the content stopped being live, indexed on
+`(site_id, type, entry_id)` so listing and pruning read one entry's rows. A snapshot is the whole
+entry as it was live -- shared fields, every locale's localized ones, `template` and its terms -- in
+the shape a draft holds, so the two are one format. One publish files one revision, whatever locales
+it touched. Past `mainstay.revisions`, 50 unless the host says otherwise, an entry's oldest are
+pruned in the transaction that files the newest: ordered by id, since `created_at` is only to the
+second, and deleted by primary key, so the delete locks those rows and no gap beside them -- and
+needs no subquery on its own table, which MySQL refuses. Both tables join the names a content type
+cannot take.
+
+`Mainstay::revisions()->of(Article::class, 5)` lists an entry's, newest first, without their
+content. `restore($id)` gives drafts' `save()` every field and locale the snapshot holds, so the draft
+becomes the difference from live and leaves through publish with no semantics of its own; fields the
+draft already changed that the snapshot does not hold stay changed. It reports what it could not bring
+back -- a field the type no longer declares, a value its field now refuses, retyped or a block type
+no longer listed -- each left as live has it. A field declared since keeps live's value, the snapshot
+having nothing to say about it. An internal field comes back only for a caller who sees it, and is
+named in the report, as in a Draft's list of what it changes, only to one.
+
+**Terms are written live.** A taxonomy has no drafts and no revisions: `drafts()` refuses one, naming
+`update()`, and writing a term files nothing. A Terms field on an article is the article's, drafted
+and filed with it.
+
+**Trash.** `Mainstay::restore(Article::class, 5)` brings an entry out of the trash and builds its
+paths again as a save does. A path taken since is the one place a suffix is right: where the pattern
+in that locale ends in a Text or Textarea placeholder, the slug, it becomes `launch-2`, then
+`launch-3`, the first giving a free path in every locale built from it -- a shared slug in every
+locale -- cut short where the suffix would pass the field's `max` or a path's 255 characters, and
+restore says which paths it took. Anything else is refused naming the path taken: a route with no
+placeholder, one ending in a literal segment or a select, whose options a suffix would leave, and a
+path another route or locale answers, which no suffix frees. Slug and path agree afterwards, so the
+next save works unchanged, and `Entry::$uri` no longer holds what the pattern would not give.
+`Mainstay::media()->restore($id)` brings an image back; its files never went.
+
+`Mainstay::destroy(Article::class, 5)` deletes for good an entry in the trash, and refuses one that is
+not: its row, every locale's, its draft, its revisions, and its rows in every taxonomy's pivot; for a
+term, the pivot rows pointing at it first, which its foreign key needs gone. What links to it read it
+as missing while it was trashed and go on doing so. `Mainstay::media()->destroy($id)` removes a
+trashed image's row. Its files stay, the original kept permanently as `decisions.md` has it, so the
+same bytes can be uploaded again and find their files written.
+
+**Access.** Gate is asked as on every call, and until phase 9 each of these needs
+`overrideAccess: true`. Saving, reading and discarding a draft ask what the write it becomes would:
+`create` about the type for a new entry's, `update` about the entry for an existing one's -- neither
+is public -- and the revisions ask `update` too. Publishing asks `publish`, so phase 9 can let a
+writer draft without publishing, about the entry or, for a new one, the type: `publish(?object $user,
+?Entry $entry = null)`, since Gate hands a policy asked about a class the user alone. The trash asks
+`restore` and `forceDelete`. `EntryPolicy`, `GlobalPolicy` and `MediaPolicy` grow the methods, each
+answering nobody.
+
+**The site.** The seeder writes one article as an editor would -- a draft in English, its Dutch
+added, published -- on drafts and revisions, then saves a further draft of it, a new title and a
+tag, and leaves it pending; and leaves the next article as a draft only. The site's tests: the
+upcoming article's paths 404 in both languages and it is in no listing; the published one serves its
+live title, is on no page of the pending tag, and its related cards and listings show it as live; and
+every entry visited is still every entry there is.
+
+The check is `DraftTest`, on all four drivers, added to both of CI's test lines beside the suites
+each driver's job runs. A new entry's draft saved incomplete -- a required document, date, select and
+boolean empty -- unread by `find`, `findByUri` and `paginate`, published into an entry with an id and
+a path in two locales and gone; two new drafts of one type side by side; its publish refused with a
+required field empty, a path taken and a target trashed, nothing written; a block without its type
+refused in a draft. An entry's draft keeping only what differs, a form posting every field included --
+a document, blocks and a relation to several types among them, read back and given unchanged -- and
+deleted when nothing does; a draft changing only a shared field published; read in each locale as
+live with it over, and without its internal fields to a reader who may not see them, who cannot
+publish one that changes them;
+the site's read unchanged; a direct write to another field between save and publish surviving it, and
+to the same field overwritten; two saves from a second connection merging, and two first saves leaving
+one draft, inside a caller's transaction and out; publish filing one revision holding both locales.
+An update filing the outgoing entry, and a create, a translation added, an unchanged update and a
+term's update filing none; pruning past `mainstay.revisions`; restore making a draft of the difference, reporting a field
+dropped since and a retyped value, keeping live's for a field added since, and published back. A
+global drafted before its first write, published into its row, and filed on `saveGlobal`. Drafts
+refused for a taxonomy. Restore writing paths back; a taken path suffixing a localized slug in its
+locale and a shared one in every locale, and saying so; a slug at its `max` cut short to fit; a route
+with no placeholder, one ending in a select and a path another route answers refused; the
+restored entry saving unchanged; a draft kept through trash and restore; an image restored.
+`destroy` refused outside the trash, and taking the rows, the locales, the draft, the revisions and the
+pivot rows both ways, links reading missing after; an image's row gone and its bytes uploaded again.
+Every call refused without the override.
 
 ## Phase 9 — Identity
 
