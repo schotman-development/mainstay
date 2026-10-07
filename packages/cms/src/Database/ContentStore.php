@@ -34,6 +34,8 @@ use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Relation;
 use Mainstay\Fields\Terms;
+use Mainstay\Fields\Text;
+use Mainstay\Fields\Textarea;
 use Mainstay\Mainstay;
 use Mainstay\Policies\EntryPolicy;
 use Mainstay\Policies\GlobalPolicy;
@@ -753,6 +755,88 @@ class ContentStore
     }
 
     /*
+     | Out of the trash, with its paths built again as a save builds them. A
+     | path taken since is the one place a suffix is right: the slug ending
+     | the pattern takes the first of `-2`, `-3` that frees it -- see
+     | suffix() -- since refusing would hold the content hostage to a slug
+     | somebody else claimed, and the caller is standing in front of the
+     | change. Anything a suffix cannot free is refused, as a save is.
+     |
+     | Hands back the paths it took, by locale, to a caller that may read
+     | the type.
+     |
+     | @return array<string, string>
+     */
+    public function restore(string $type, int $id, bool $overrideAccess = false): array
+    {
+        $type = $this->entry($type);
+        $handle = $type::handle();
+        $row = DB::table($handle)->where('site_id', $this->site())->where('id', $id)->whereNotNull('deleted_at')->first()
+            ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not in the trash to restore.");
+
+        $this->attach($type, [$row]);
+        [, $reads] = $this->writes($type, 'restore', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+        return DB::transaction(function () use ($type, $handle, $id, $reads) {
+            $now = $this->stamp(CarbonImmutable::now());
+
+            if (DB::table($handle)->where('id', $id)->whereNotNull('deleted_at')->update(['deleted_at' => null, 'updated_at' => $now]) === 0) {
+                throw new RecordNotFoundException("{$type} {$id} left the trash while it was being restored.");
+            }
+
+            $this->suffix($type, $id);
+            $this->paths($type, $id, $this->site(), false, $reads, $this->snapshotted(1));
+
+            /* None to a caller that may not read the type: a path spells out
+               the fields it is built from. */
+            return $reads ? DB::table('uris')->where('type', $handle)->where('entry_id', $id)->pluck('uri', 'locale')->all() : [];
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | Out of the trash for good, and only out of the trash: the row, every
+     | locale's, its draft, its revisions and its rows in every taxonomy's
+     | pivot -- for a term, the rows pointing at it too, which its foreign
+     | key needs gone first. What links to it read it as missing while it was
+     | trashed, and go on doing so.
+     */
+    public function destroy(string $type, int $id, bool $overrideAccess = false): void
+    {
+        $type = $this->entry($type);
+        $handle = $type::handle();
+        $row = DB::table($handle)->where('site_id', $this->site())->where('id', $id)->whereNotNull('deleted_at')->first()
+            ?? throw $this->missing($type, $overrideAccess, "{$type} {$id} is not in the trash to delete for good.");
+
+        $this->attach($type, [$row]);
+        $this->writes($type, 'forceDelete', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+        DB::transaction(function () use ($type, $handle, $id) {
+            /* Held from here, so a restore arriving now waits and then finds
+               nothing in the trash. */
+            DB::table($handle)->where('id', $id)->whereNotNull('deleted_at')->lockForUpdate()->value('id')
+                ?? throw new RecordNotFoundException("{$type} {$id} left the trash while it was being deleted for good.");
+
+            if (is_subclass_of($type, Taxonomy::class)) {
+                DB::table("{$handle}_entries")->where('term_id', $id)->delete();
+            }
+
+            foreach ($this->mainstay->fields($type) as $field) {
+                if ($field instanceof Terms) {
+                    DB::table($field->of::handle().'_entries')->where('entry_type', $handle)->where('entry_id', $id)->delete();
+                }
+            }
+
+            foreach ([self::DRAFTS, self::REVISIONS] as $table) {
+                DB::table($table)->where('site_id', $this->site())->where('type', $handle)->where('entry_id', $id)->delete();
+            }
+
+            DB::table('uris')->where('type', $handle)->where('entry_id', $id)->delete();
+            DB::table("{$handle}_locales")->where('parent_id', $id)->delete();
+            DB::table($handle)->where('id', $id)->delete();
+        }, self::ATTEMPTS);
+    }
+
+    /*
      | A draft as the declared class in a locale: what is live there with the
      | draft's changes over it, what it points at loaded to `$depth` as any
      | read's. Null where the locale is neither live nor drafted, or the entry
@@ -1046,6 +1130,76 @@ class ContentStore
         }
 
         return $value;
+    }
+
+    /*
+     | Where restoring from the trash finds a locale's path taken, the field
+     | ending that locale's pattern -- a text slug -- takes the first of
+     | `-2`, `-3` giving a free path in every locale built from it: a shared
+     | slug in every locale. Cut short where the suffix would pass the
+     | field's max or a path's 255 characters. A pattern ending otherwise, in
+     | a literal segment or a select whose options a suffix would leave, or a
+     | path another route or locale answers, which no suffix frees, is left
+     | for paths() to refuse, naming it.
+     */
+    private function suffix(string $type, int $id): void
+    {
+        if (($patterns = $this->patterns($type)) === null) {
+            return;
+        }
+
+        $handle = $type::handle();
+        $site = $this->site();
+        $fields = $this->mainstay->fields($type);
+        $taken = fn (string $locale, string $uri) => DB::table('uris')->where('site_id', $site)->where('locale', $locale)->where('uri', $uri)->exists();
+
+        foreach (array_keys($patterns) as $locale) {
+            $row = DB::table($handle)->where('id', $id)->first();
+            $translations = DB::table("{$handle}_locales")->where('parent_id', $id)->get()->keyBy('locale');
+
+            if (! $translations->has($locale) || ! $taken($locale, $this->built($type, $patterns[$locale], $row, $translations[$locale]))) {
+                continue;
+            }
+
+            $field = preg_match('/'.Route::PLACEHOLDER.'\z/', $patterns[$locale], $last) ? $fields[$last[1]] : null;
+
+            if (! $field instanceof Text && ! $field instanceof Textarea) {
+                continue;
+            }
+
+            $value = ($field->localized ? $translations[$locale] : $row)->{Str::snake($field->name)};
+            /* Every locale whose path this field builds. */
+            $built = $field->localized ? [$locale] : array_values(array_filter($translations->keys()->all(), fn (string $other) => isset($patterns[$other]) && str_contains($patterns[$other], "{{$field->name}}")));
+
+            for ($n = 2; ; $n++) {
+                $room = min($field instanceof Text ? $field->max : PHP_INT_MAX, ...array_map(fn (string $other) => 255 - mb_strlen($this->built($type, $patterns[$other], $row, $translations[$other], [$field->name => ''])), $built)) - strlen("-{$n}");
+                $base = rtrim(mb_substr($value, 0, max($room, 0)), '-');
+
+                if ($room < 1 || $base === '') {
+                    break;
+                }
+
+                $candidate = "{$base}-{$n}";
+                $free = true;
+
+                foreach ($built as $other) {
+                    $uri = $this->built($type, $patterns[$other], $row, $translations[$other], [$field->name => $candidate]);
+
+                    if ($taken($other, $uri) || $this->mainstay->shadow($other, $uri) !== null) {
+                        $free = false;
+
+                        break;
+                    }
+                }
+
+                if ($free) {
+                    ($field->localized ? DB::table("{$handle}_locales")->where('parent_id', $id)->where('locale', $locale) : DB::table($handle)->where('id', $id))
+                        ->update([Str::snake($field->name) => $candidate]);
+
+                    break;
+                }
+            }
+        }
     }
 
     /*
@@ -2137,7 +2291,6 @@ class ContentStore
 
         $handle = $type::handle();
         $row = DB::table($handle)->where('id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->first();
-        $fields = $this->mainstay->fields($type);
         $wanted = [];
 
         foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
@@ -2145,11 +2298,7 @@ class ContentStore
                 continue;
             }
 
-            $uri = preg_replace_callback(
-                '/'.Route::PLACEHOLDER.'/',
-                fn (array $name) => ($fields[$name[1]]->localized ? $translation : $row)->{Str::snake($name[1])},
-                $patterns[$translation->locale],
-            );
+            $uri = $this->built($type, $patterns[$translation->locale], $row, $translation);
 
             /* The column's width, which the drivers other than SQLite enforce
                with an error nobody reading a form could act on. */
@@ -2171,6 +2320,19 @@ class ContentStore
         }
 
         return $wanted;
+    }
+
+    /* A locale's path from its pattern, each placeholder the field's value
+       on the row or its locale's, or the one `$with` gives it instead. */
+    private function built(string $type, string $pattern, object $row, object $translation, array $with = []): string
+    {
+        $fields = $this->mainstay->fields($type);
+
+        return preg_replace_callback(
+            '/'.Route::PLACEHOLDER.'/',
+            fn (array $name) => $with[$name[1]] ?? ($fields[$name[1]]->localized ? $translation : $row)->{Str::snake($name[1])},
+            $pattern,
+        );
     }
 
     /* The fields a refused path is reported on: the ones that build it, or

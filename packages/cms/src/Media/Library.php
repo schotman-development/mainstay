@@ -185,6 +185,30 @@ class Library
         DB::table(self::TABLE)->where('id', $id)->whereNull('deleted_at')->update(['deleted_at' => $now = $this->now(), 'updated_at' => $now]);
     }
 
+    /* Out of the trash. Its files never went, so every place still holding
+       it has it back, at the URLs it had. */
+    public function restore(int $id, bool $overrideAccess = false): Media
+    {
+        $this->authorize('restore', $this->media($this->trashed($id), App::getLocale()), $overrideAccess);
+
+        DB::table(self::TABLE)->where('id', $id)->whereNotNull('deleted_at')->update(['deleted_at' => null, 'updated_at' => $this->now()]);
+
+        return $this->find($id, overrideAccess: true) ?? throw new RecordNotFoundException("Image {$id} was restored and is gone.");
+    }
+
+    /*
+     | Out of the trash for good: the row, so the same bytes can be uploaded
+     | again. The files stay -- the original is kept permanently -- so that
+     | upload finds them written. What still holds the id reads it as
+     | missing, as it did while it was trashed.
+     */
+    public function destroy(int $id, bool $overrideAccess = false): void
+    {
+        $this->authorize('forceDelete', $this->media($this->trashed($id), App::getLocale()), $overrideAccess);
+
+        DB::table(self::TABLE)->where('id', $id)->whereNotNull('deleted_at')->delete();
+    }
+
     /* The copies the declarations name that are not written yet, for an
        image out of the trash. How a size added to a field reaches images
        uploaded before it; mainstay:media:reprocess queues one per image. */
@@ -473,6 +497,12 @@ class Library
     {
         return DB::table(self::TABLE)->where('id', $id)->whereNull('deleted_at')->first()
             ?? throw new RecordNotFoundException("Image {$id} is not in the library.");
+    }
+
+    private function trashed(int $id): object
+    {
+        return DB::table(self::TABLE)->where('id', $id)->whereNotNull('deleted_at')->first()
+            ?? throw new RecordNotFoundException("Image {$id} is not in the library's trash.");
     }
 
     private function media(object $row, string $locale): Media

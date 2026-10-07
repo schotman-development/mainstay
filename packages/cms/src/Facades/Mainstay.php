@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Mainstay\Content\Entry create(string $type, array $data, ?string $locale = null, bool $overrideAccess = false)
  * @method static \Mainstay\Content\Entry update(string $type, int $id, array $data, ?string $locale = null, bool $overrideAccess = false)
  * @method static void delete(string $type, int $id, bool $overrideAccess = false)
+ * @method static array restore(string $type, int $id, bool $overrideAccess = false)
+ * @method static void destroy(string $type, int $id, bool $overrideAccess = false)
  * @method static \Mainstay\Database\Drafts drafts()
  * @method static \Mainstay\Database\Revisions revisions()
  * @method static \Mainstay\Content\GlobalSet|null global(string $type, ?string $locale = null, bool $overrideAccess = false, int $depth = 1)

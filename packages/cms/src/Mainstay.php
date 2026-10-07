@@ -289,6 +289,18 @@ class Mainstay
         return $this->store()->saveGlobal($type, ...$arguments);
     }
 
+    /* Out of the trash, with its paths back, by locale. */
+    public function restore(string $type, mixed ...$arguments): array
+    {
+        return $this->store()->restore($type, ...$arguments);
+    }
+
+    /* Out of the trash for good. */
+    public function destroy(string $type, mixed ...$arguments): void
+    {
+        $this->store()->destroy($type, ...$arguments);
+    }
+
     /* Drafts and revisions, beside the reads and writes of what is live:
        `Mainstay::drafts()->save(...)`. */
     public function drafts(): Drafts

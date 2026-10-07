@@ -47,6 +47,16 @@ class EntryPolicy
         return $this->nobody();
     }
 
+    public function restore(?object $user, Entry $entry): Response
+    {
+        return $this->nobody();
+    }
+
+    public function forceDelete(?object $user, Entry $entry): Response
+    {
+        return $this->nobody();
+    }
+
     /* Named for the fix, because "This action is unauthorized" is what a
        seeder author reads first and it says nothing about what to change. */
     private function nobody(): Response
