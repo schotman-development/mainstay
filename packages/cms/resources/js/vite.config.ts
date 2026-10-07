@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 /*
@@ -15,12 +14,12 @@ import tailwindcss from '@tailwindcss/vite'
  */
 export default defineConfig({
   base: './',
-  plugins: [react(), tailwindcss()],
+  plugins: [tailwindcss()],
   build: {
     outDir: '../../dist',
     emptyOutDir: true,
     rollupOptions: {
-      input: 'src/main.tsx',
+      input: 'src/main.ts',
       output: {
         entryFileNames: 'mainstay.js',
         chunkFileNames: 'mainstay-[name].js',
