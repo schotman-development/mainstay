@@ -3,14 +3,10 @@
 @php
     use Mainstay\Ui\EntryForm;
 
-    /*
-     | What the server holds, and what the form is holding. React kept both in
-     | state so the bar could answer "is my work safe?" at all. Here the server
-     | only ever renders the saved side -- the form goes dirty in the browser,
-     | and dirty-form.ts carries the hint from there.
-     */
+    /* What the server knows; whether the form holds unsaved edits is the
+       browser's, which dirty-form.ts marks. */
     $saved = $entry;
-    $state = EntryForm::saveState($saved, $entry);
+    $state = EntryForm::saveState(drafted: $entry['status'] === 'Draft', publishes: true);
     $listing = '/admin/collections/'.strtolower($collection);
     $empty = ($entry['blocks'] ?? 0) === 0;
 @endphp
@@ -39,7 +35,7 @@
         {{-- aria-live so the answer to "is my work safe?" is announced rather
              than only shown. The region is always mounted; an element that
              appears at the same moment its text does is not announced. --}}
-        <span data-save-hint aria-live="polite" class="text-xs text-muted">{{ $state['hint'] }}</span>
+        <span data-save-hint="{{ $state['hint'] }}" aria-live="polite" class="text-xs text-muted">{{ $state['hint'] }}</span>
 
         <span data-status-chip><x-mainstay::status-chip :status="$entry['status']" /></span>
 
@@ -51,11 +47,16 @@
             @endif
             <x-mainstay::dropdown-item>Duplicate</x-mainstay::dropdown-item>
             <x-mainstay::dropdown-item>Revisions</x-mainstay::dropdown-item>
-            <x-mainstay::dropdown-item data-discard disabled>Discard changes</x-mainstay::dropdown-item>
+            @if ($state['discard'])
+                <x-mainstay::dropdown-item>Discard draft</x-mainstay::dropdown-item>
+            @endif
             <x-mainstay::dropdown-item danger>Move to trash</x-mainstay::dropdown-item>
         </x-mainstay::dropdown>
 
-        <x-mainstay::button :variant="$state['variant']" :disabled="$state['disabled']" type="submit" form="entry-form">{{ $state['label'] }}</x-mainstay::button>
+        <x-mainstay::button variant="secondary" type="submit" form="entry-form" class="in-data-dirty:border-transparent in-data-dirty:bg-accent in-data-dirty:text-accent-ink">Save draft</x-mainstay::button>
+        @if ($state['publish'])
+            <x-mainstay::button type="submit" form="entry-form" name="intent" value="publish" class="in-data-dirty:border in-data-dirty:border-border in-data-dirty:bg-surface in-data-dirty:text-ink">Publish</x-mainstay::button>
+        @endif
     </x-slot:actions>
 
     {{-- The shell hands this a box with a definite height; filling it rather

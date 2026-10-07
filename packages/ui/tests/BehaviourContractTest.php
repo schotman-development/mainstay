@@ -98,7 +98,6 @@ class BehaviourContractTest extends TestCase
         foreach ([
             'data-dirty-form',
             'data-save-hint',
-            'data-discard',
             'data-status',
             'data-status-value',
             'data-status-label',

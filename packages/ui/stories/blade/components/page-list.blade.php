@@ -243,15 +243,7 @@
                 </table>
             </div>
 
-            <div class="flex shrink-0 items-center justify-between gap-2 border-t border-border px-5 py-3 text-xs text-muted">
-                <span aria-live="polite">{{ $total === 0 ? 'No results' : ($start + 1).'–'.($start + count($rows)).' of '.$total }}</span>
-
-                <div class="flex items-center gap-2">
-                    <x-stories::step :href="$link(['page' => $page - 1])" :disabled="$page === 1" label="Previous page">&lsaquo;</x-stories::step>
-                    <span>{{ $page }} of {{ $pageCount }}</span>
-                    <x-stories::step :href="$link(['page' => $page + 1])" :disabled="$page === $pageCount" label="Next page">&rsaquo;</x-stories::step>
-                </div>
-            </div>
+            <x-mainstay::pager :start="$start" :shown="count($rows)" :total="$total" :page="$page" :page-count="$pageCount" :href="fn (int $to) => $link(['page' => $to])" />
         </div>
     @endif
 </x-stories::shell>

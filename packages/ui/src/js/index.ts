@@ -1,10 +1,13 @@
 import { checkboxes } from './checkbox'
 import { commandCenters } from './command-center'
+import { dialogs } from './dialog'
 import { dirtyForms } from './dirty-form'
 import { dropdowns } from './dropdown'
 import { entryLists } from './entry-list'
 import { entryStatus } from './entry-status'
+import { localTimes } from './local-time'
 import { sidebar } from './sidebar'
+import { slugs } from './slug'
 import { tagInputs } from './tag-input'
 
 export { rankCommands } from './rankCommands'
@@ -27,5 +30,8 @@ export function mount(root: ParentNode = document): void {
   commandCenters(root)
   entryLists(root)
   entryStatus(root)
+  dialogs()
+  slugs(root)
+  localTimes(root)
   dirtyForms(root)
 }

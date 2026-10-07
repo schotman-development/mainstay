@@ -130,3 +130,22 @@ test('each list keeps its own', () => {
 
   expect(count()).toBe('0')
 })
+
+test('a bulk action posts every row of the selection, those on other pages included, and clears it', () => {
+  sessionStorage.setItem('mainstay:selection', JSON.stringify({ Pages: ['/c'] }))
+  document.body.innerHTML = `
+    <div data-entry-list="Pages">
+      <script type="application/json" data-entry-matched>["/a","/b","/c"]</script>
+      <div data-selection-bar><form data-selection-form></form></div>
+      <input type="checkbox" data-select-row value="/a">
+      <input type="checkbox" data-select-row value="/b">
+    </div>`
+  entryLists()
+  tick('/a')
+
+  const form = document.querySelector<HTMLFormElement>('[data-selection-form]')!
+  form.dispatchEvent(new Event('submit', { cancelable: true }))
+
+  expect(new FormData(form).getAll('rows[]').sort()).toEqual(['/a', '/c'])
+  expect(JSON.parse(sessionStorage.getItem('mainstay:selection')!)).toEqual({ Pages: [] })
+})

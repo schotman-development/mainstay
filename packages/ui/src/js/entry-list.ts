@@ -110,6 +110,24 @@ export function entryLists(root: ParentNode = document): void {
       draw(list)
     })
 
+    /* A bulk action posts the whole selection the bar counts, rows on other
+       pages included, and leaves nothing selected behind it. */
+    list.querySelector<HTMLFormElement>('form[data-selection-form]')?.addEventListener('submit', (event) => {
+      const form = event.currentTarget as HTMLFormElement
+      const held = stored(list)
+
+      for (const path of matched(list).filter((path) => held.has(path))) {
+        const input = document.createElement('input')
+
+        input.type = 'hidden'
+        input.name = 'rows[]'
+        input.value = path
+        form.append(input)
+      }
+
+      remember(list, new Set())
+    })
+
     /* Clears the whole selection, not just the page: the bar is counting rows
        you cannot see, so a Clear that left them behind would be a lie. */
     list.querySelector('[data-selection-clear]')?.addEventListener('click', () => {

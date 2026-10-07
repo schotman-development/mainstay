@@ -46,61 +46,24 @@ class EntryForm
     }
 
     /*
-     | TODO(you): still the one real decision on this screen.
+     | The buttons a form offers, from what the server knows: whether a draft is
+     | waiting, and whether the user may publish. Two buttons, as WordPress has
+     | them -- Save draft keeps the work where readers cannot see it, Publish
+     | saves and puts it live -- and someone who may not publish gets the first
+     | alone. A waiting draft is said out loud and can be thrown away.
      |
-     | Everything else here is layout. This function is the screen's behaviour:
-     | given what the server holds and what the form is holding, it decides what
-     | the primary button says, whether it is the accent button or the quiet
-     | one, whether it is pressable at all, and what the line beside it tells
-     | you.
-     |
-     | It has to cover at least these, and they do not all want the same answer:
-     |
-     |   - a draft, untouched            nothing to do, but the screen should
-     |                                   still offer the way forward (publish?)
-     |   - a draft, edited               save it -- but does saving publish it?
-     |   - published, untouched          resting state; the button has no work
-     |   - published, edited             editing something readers can already
-     |                                   see is the case worth being loudest
-     |                                   about
-     |   - blank (no title)              cannot be saved yet, and should say why
-     |
-     | The trade-offs worth weighing:
-     |
-     |   One button or two? WordPress splits "Save draft" from "Publish" and
-     |   makes you learn which is which; Notion has neither and saves as you
-     |   type. One button whose label changes is the middle road, at the cost of
-     |   a target that means something different depending on when you look.
-     |
-     |   Should an untouched screen's button be disabled or just quiet? A
-     |   disabled control is honest about having nothing to do, but it also
-     |   cannot be focused, so a keyboard user tabbing the header finds a hole.
-     |
-     |   How loud is "unsaved"? An edit to a published entry is a live document
-     |   drifting from what readers see. Reaching for the danger variant there
-     |   is defensible -- so is deciding red belongs to destruction alone.
-     |
-     |   And one this screen adds: content and metadata now save separately,
-     |   since the body is edited on the site. Does this button speak for the
-     |   whole entry or only for the form? Saying "Saved" while the inline
-     |   editor still holds unsaved blocks would be a lie the user cannot catch.
-     |
-     |   New in Blade: the form goes dirty in the browser, not on the server.
-     |   This runs once per render, so whatever it decides has to be something
-     |   the bundle can carry the rest of the way -- today that is the hint
-     |   alone, in dirty-form.ts.
-     |
-     | changed() above answers "is it dirty". This answers what to do about it.
-     | The stub below gives every case the same answer so the story still
-     | renders; replace it.
+     | Whether the form holds edits the server has not seen is the browser's to
+     | know, so dirty-form.ts marks the page `data-dirty` and the emphasis moves
+     | in CSS: Save draft leads while there are unsaved edits, Publish once
+     | there are none. Neither is ever disabled, which would leave a hole in
+     | the bar for a keyboard to fall through.
      */
-    public static function saveState(array $saved, array $current): array
+    public static function saveState(bool $drafted, bool $publishes): array
     {
         return [
-            'label' => 'Save',
-            'variant' => 'primary',
-            'disabled' => false,
-            'hint' => self::changed($saved, $current) ? 'Unsaved changes' : '',
+            'publish' => $publishes,
+            'discard' => $drafted,
+            'hint' => $drafted ? 'Unpublished changes' : '',
         ];
     }
 }

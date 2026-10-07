@@ -56,6 +56,13 @@ class EntryDetailsTest extends TestCase
     }
 
     #[Test]
+    public function the_buttons_follow_what_the_server_knows(): void
+    {
+        $this->assertSame(['publish' => true, 'discard' => false, 'hint' => ''], EntryForm::saveState(drafted: false, publishes: true));
+        $this->assertSame(['publish' => false, 'discard' => true, 'hint' => 'Unpublished changes'], EntryForm::saveState(drafted: true, publishes: false));
+    }
+
+    #[Test]
     public function the_server_touching_modified_does_not(): void
     {
         $draft = Entries::draft();
