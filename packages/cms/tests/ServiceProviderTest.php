@@ -14,19 +14,12 @@ class ServiceProviderTest extends TestCase
         return [MainstayServiceProvider::class];
     }
 
+    /* What a signed-in user sees there is IdentityTest's. */
     #[Test]
-    public function it_mounts_the_admin_panel_at_the_configured_path(): void
+    public function it_mounts_the_admin_panel_at_the_configured_path_behind_its_login(): void
     {
-        $this->get('/admin')
-            ->assertOk()
-            ->assertSee('id="mainstay-editor"', escape: false)
-            ->assertSee('aria-label="Sections"', escape: false);
-    }
-
-    #[Test]
-    public function it_hands_unknown_admin_paths_to_the_client_side_router(): void
-    {
-        $this->get('/admin/collections/posts')->assertOk();
+        $this->get('/admin')->assertRedirect('/admin/login');
+        $this->get('/admin/collections/posts')->assertRedirect('/admin/login');
     }
 
     #[Test]

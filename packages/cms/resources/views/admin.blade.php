@@ -18,7 +18,17 @@
                 <span id="mainstay-status" class="text-xs text-muted">connecting&hellip;</span>
             </div>
 
-            <x-mainstay::button variant="secondary" disabled>Publish</x-mainstay::button>
+            <div class="flex items-center gap-3">
+                <x-mainstay::button variant="secondary" disabled>Publish</x-mainstay::button>
+
+                @php($user = \Mainstay\Auth\Gate::user())
+                <x-mainstay::user-menu :name="$user->name" :email="$user->email">
+                    <form method="POST" action="{{ route('mainstay.logout') }}">
+                        @csrf
+                        <x-mainstay::dropdown-item type="submit">Sign out</x-mainstay::dropdown-item>
+                    </form>
+                </x-mainstay::user-menu>
+            </div>
         </header>
 
         <div class="flex min-h-0 flex-1">

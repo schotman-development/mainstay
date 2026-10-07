@@ -3,14 +3,22 @@
 namespace Mainstay;
 
 use Illuminate\Console\Events\CommandStarting;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Mainstay\Auth\User;
 use Mainstay\Console\ReprocessCommand;
 use Mainstay\Console\SchemaCheckCommand;
 use Mainstay\Console\SyncCommand;
+use Mainstay\Console\UserCommand;
 use Mainstay\Database\ContentSchema;
+use Mainstay\Http\PreventRequestForgery;
 use Mainstay\Http\RenderController;
+use Mainstay\Http\StartSession;
 use Mainstay\Ui\UiServiceProvider;
 use Throwable;
 
@@ -30,6 +38,22 @@ class MainstayServiceProvider extends ServiceProvider
         $this->app->register(UiServiceProvider::class);
 
         $this->app->singleton(Mainstay::class);
+
+        /*
+         | Mainstay's own guard, user provider and password broker, beside the
+         | host's and named apart from them, unless the host has defined one by
+         | the name. The broker's config written out: only Laravel's skeleton
+         | has defaults for it, and a missing throttle is none at all.
+         */
+        foreach ([
+            'auth.guards.mainstay' => ['driver' => 'session', 'provider' => 'mainstay'],
+            'auth.providers.mainstay' => ['driver' => 'eloquent', 'model' => User::class],
+            'auth.passwords.mainstay' => ['provider' => 'mainstay', 'table' => 'mainstay_password_reset_tokens', 'expire' => 60, 'throttle' => 60],
+        ] as $key => $value) {
+            if (! $this->app['config']->has($key)) {
+                $this->app['config']->set($key, $value);
+            }
+        }
     }
 
     public function boot(): void
@@ -37,10 +61,25 @@ class MainstayServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'mainstay');
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
+        /*
+         | The admin's own stack rather than the host's `web` group, whose
+         | session is a visitor's on a site with members: cookies, a session
+         | under Mainstay's cookie, errors, CSRF. What the host adds in
+         | `mainstay.middleware` runs after it.
+         */
+        Route::middlewareGroup('mainstay', [
+            EncryptCookies::class,
+            AddQueuedCookiesToResponse::class,
+            StartSession::class,
+            ShareErrorsFromSession::class,
+            PreventRequestForgery::class,
+            SubstituteBindings::class,
+        ]);
+
         Route::group([
             'domain' => config('mainstay.domain'),
             'prefix' => config('mainstay.path'),
-            'middleware' => config('mainstay.middleware'),
+            'middleware' => ['mainstay', ...config('mainstay.middleware', [])],
         ], function () {
             $this->loadRoutesFrom(__DIR__.'/../routes/admin.php');
         });
@@ -73,7 +112,7 @@ class MainstayServiceProvider extends ServiceProvider
         }
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SyncCommand::class, SchemaCheckCommand::class, ReprocessCommand::class]);
+            $this->commands([SyncCommand::class, SchemaCheckCommand::class, ReprocessCommand::class, UserCommand::class]);
 
             Event::listen(fn (CommandStarting $event) => $this->warnAboutSync($event));
 
