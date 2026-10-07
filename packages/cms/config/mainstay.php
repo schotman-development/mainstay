@@ -10,13 +10,18 @@ return [
     | Where the admin single-page app is mounted. Set a domain to serve it from
     | a dedicated hostname; leave it null to mount on the application's domain.
     |
+    | The admin runs a stack of its own, not the `web` group: its session is
+    | under a cookie of its own, mainstay_session, so an editor's is never a
+    | visitor's. Middleware listed here runs after that stack. Do not list
+    | `web`, which would decrypt the cookies a second time and blank them.
+    |
     */
 
     'domain' => env('MAINSTAY_DOMAIN'),
 
     'path' => env('MAINSTAY_PATH', 'admin'),
 
-    'middleware' => ['web'],
+    'middleware' => [],
 
     /*
     |--------------------------------------------------------------------------

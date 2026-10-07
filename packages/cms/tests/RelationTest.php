@@ -30,8 +30,8 @@ use Mainstay\Tests\Fixtures\Linked\Person;
 use Mainstay\Tests\Fixtures\Linked\Review;
 use Mainstay\Tests\Fixtures\Linked\Story;
 use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
-use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
 use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
+use Mainstay\Tests\Fixtures\Policies\PublisherPolicy;
 use Mainstay\Tests\Fixtures\SiteSettings;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -297,7 +297,7 @@ class RelationTest extends DatabaseTestCase
         ]);
         $stored = DB::table('story')->find($away->id);
 
-        Gate::policy(Story::class, EditorPolicy::class);
+        Gate::policy(Story::class, PublisherPolicy::class);
         Gate::policy(Person::class, ClosedPolicy::class);
         $read = Mainstay::findById(Story::class, $away->id, locale: 'en');
         $this->assertTrue($read->author->missing, 'Of a type the reader may not read.');
@@ -341,7 +341,7 @@ class RelationTest extends DatabaseTestCase
         $this->assertTrue(Mainstay::update(Story::class, $story->id, ['pick' => $english], locale: 'nl', overrideAccess: true)->pick->missing);
 
         /* To a writer who may not read people, Ann is not there either. */
-        Gate::policy(Story::class, EditorPolicy::class);
+        Gate::policy(Story::class, PublisherPolicy::class);
         Gate::policy(Person::class, ClosedPolicy::class);
         $this->assertSame(['author' => ["The author field names person {$ann->id}, which is not there to point at."]], $this->refusal(fn () => Mainstay::update(Story::class, $story->id, ['author' => $ann->id], locale: 'en')));
     }

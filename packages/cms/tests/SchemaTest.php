@@ -17,7 +17,10 @@ use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Bodied\Article as BodiedArticle;
 use Mainstay\Tests\Fixtures\Broken\Collided;
 use Mainstay\Tests\Fixtures\Broken\MainstayDrafts;
+use Mainstay\Tests\Fixtures\Broken\MainstayPasswordResetTokens;
 use Mainstay\Tests\Fixtures\Broken\MainstayRevisions;
+use Mainstay\Tests\Fixtures\Broken\MainstayRoles;
+use Mainstay\Tests\Fixtures\Broken\MainstayUsers;
 use Mainstay\Tests\Fixtures\Broken\Reserved;
 use Mainstay\Tests\Fixtures\Broken\Templated;
 use Mainstay\Tests\Fixtures\Broken\Uris;
@@ -916,6 +919,9 @@ class SchemaTest extends DatabaseTestCase
             Uris::class => 'would be stored in uris, a table Mainstay keeps for itself',
             MainstayDrafts::class => 'would be stored in mainstay_drafts, a table Mainstay keeps for itself',
             MainstayRevisions::class => 'would be stored in mainstay_revisions, a table Mainstay keeps for itself',
+            MainstayRoles::class => 'would be stored in mainstay_roles, a table Mainstay keeps for itself',
+            MainstayUsers::class => 'would be stored in mainstay_users, a table Mainstay keeps for itself',
+            MainstayPasswordResetTokens::class => 'would be stored in mainstay_password_reset_tokens, a table Mainstay keeps for itself',
         ] as $type => $message) {
             $this->declare($type);
 

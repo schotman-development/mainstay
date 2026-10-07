@@ -29,6 +29,9 @@ return new class extends Migration
             $table->unsignedTinyInteger('focal_y');
             /* Keyed by locale; an empty string marks the image decorative. */
             $table->json('alt');
+            /* Who uploaded it; none for an image code uploaded on its own
+               authority. No key, as on a content table. */
+            $table->unsignedBigInteger('owner_id')->nullable();
             $table->datetimes();
             $table->softDeletes();
         });

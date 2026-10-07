@@ -26,6 +26,8 @@ return new class extends Migration
             $table->string('type');
             $table->unsignedBigInteger('entry_id')->nullable();
             $table->json('changes');
+            /* Who started it, and so who owns a new entry it publishes. */
+            $table->unsignedBigInteger('owner_id')->nullable();
             $table->datetimes();
 
             $table->foreign('site_id')->references('id')->on('sites');

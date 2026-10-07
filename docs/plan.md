@@ -3,7 +3,7 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 to 8 are done: content types are declared, reflected into a field list, synced into
+Phases 1 to 9 are done: content types are declared, reflected into a field list, synced into
 tables that `mainstay:schema:check` holds CI to, read and written from PHP through one query
 layer, and served at their paths in Blade by a host site, `mainstay-site`. Rich text and blocks
 are field types like the scalars, each kept in a `json` column of its own, and the site's bodies
@@ -12,9 +12,12 @@ declared size in AVIF and WebP when they are uploaded. Entries point at each oth
 relations a read follows to a depth, tags are the entries of a taxonomy found again through its
 pivot, and a global holds the site's menu and footer. A change waits as a draft of what differs
 from live until it is published, every version a write replaces is kept as a revision a draft can be
-made from again, and the trash is restored from or emptied. `packages/ui` is ahead of the package —
-Blade components, a theme, and a behaviour layer in `src/js` — and `packages/editor` is a built
-ProseMirror island declaring the document schema the package renders.
+made from again, and the trash is restored from or emptied. The admin has accounts of its own
+behind a login, and the query layer asks Gate about the one signed in, whose role's capabilities --
+each type's own, or a form covering every type -- decide what it may write and publish.
+`packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
+`src/js` — and `packages/editor` is a built ProseMirror island declaring the document schema the
+package renders.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
@@ -29,7 +32,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Twenty things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Twenty-two things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -112,6 +115,13 @@ rather than edited into the log, which is append-only by construction.
   suffixed instead, and slug and path agree.
 - **Terms are written live.** The drafts entry gives every type drafts and revisions. A taxonomy has
   neither: a term is written straight to the site, and nothing records its history.
+- **Capabilities are named from the handle, and no type declares a capability type.** The
+  authorization entry has types declare one, from which their set is derived. Each type's set is
+  named from its handle, and beside it every capability has an all-types form covering every type of
+  its shape, so a role names a few types or all of them, those deployed later included.
+- **There is no `Gate::before`.** The authorization entry resolves primitive capabilities there. The
+  policies ask the user what it holds, and Mainstay's Gate carries no callbacks at all, since the
+  host's are typed for the host's own users.
 
 ## Phase 1 — Declarations
 
@@ -709,23 +719,190 @@ Every call refused without the override.
 
 ## Phase 9 — Identity
 
-Mainstay's own users table, guard, session cookie and login view. A setup route that creates the
-first account and is reachable only while the user table is empty — checked when it renders *and*
-when it submits.
+Who is signed in to the admin, and what each of them may do. The query layer has asked `Gate` about
+Mainstay's user on every call since phase 3; here that user stops being null on the admin's own
+requests, and nowhere else. Accounts and roles are written from PHP and the command line, as content
+was before the admin, and phase 10 draws their screens.
 
-Authorization is the other half. Capabilities are strings derived from each type's declared
-capability type and never stored. `mainstay_roles` holds a name and a JSON array of them.
-`Gate::before` resolves primitives from the role plus per-user grants and denials; one policy per
-shape does the ownership mapping. The query layer has asked `Gate` about Mainstay's user on every
-call since phase 3; the one change there is that the user now comes from this guard rather than
-being null.
+**Accounts.** `mainstay_users`, a package migration: a name, an email, a hashed password, the role it
+holds, its grants and its denials as JSON lists of capabilities, a remember token, and the timestamps.
+An email is stored and looked up lowercased, since its unique index folds case on MySQL and SQL Server
+and not on the others. `Mainstay\Auth\User` is an Eloquent model, which a Laravel user provider wants;
+content goes on being the query builder's. It is not `Authorizable`, whose `can()` would ask the host's
+Gate. The service provider adds a `mainstay` user provider, guard and password broker to `auth`,
+unless the host has defined one by that name. Every account holds one role, which the foreign key
+keeps from being deleted while it is held, and accounts are installation-wide, as roles are.
 
-`owner_id` is filled from here, and every row written before this phase has none.
-`edit_others_pages` has to answer for a null owner, and "someone else's" is the answer that fails
-closed.
+`php artisan mainstay:user you@example.com --name="..." --role=administrator` creates an account,
+asking for the password twice without echoing it and checking it against `Password::defaults()`,
+which the host sets. It refuses an email that has an account, a role that does not exist, and no
+role. It is the only way an account is made before phase 10: nothing on the web creates one, so a
+new server has no page that whoever reaches it first can claim. There is no registration.
 
-The check is a capability set derived from a fixture type, and a policy test for
-`edit_others_pages` against an entry someone else owns and against one nobody owns.
+**The session.** The admin's routes stop running the host's `web` group, whose session is a visitor's
+on a site with members. They run a stack of Mainstay's own -- cookies encrypted and queued, a session
+started as `mainstay_session`, errors shared, CSRF checked -- and `mainstay.middleware` becomes what a
+host adds after it, empty by default. The driver, the lifetime, the domain and the rest follow the
+host's `session` config. Laravel names its one session store once, from `session.cookie`, and the
+guard writes to that store, so Mainstay's `StartSession` renames the store for the request and back
+after it rather than starting a second one. The CSRF middleware sets no `XSRF-TOKEN` cookie, which
+has one name and path for both sessions; the admin's forms carry the token. Signing in to the host's
+site signs nobody in to Mainstay, or out of it.
+
+The stack makes Mainstay's guard the request's default, with `Auth::shouldUse()`, so nothing asks the
+host's guard during an admin request: not the database session driver recording who a session
+belongs to, which would otherwise sign the host's user in from their remember cookie. Mainstay's own
+middleware, not `auth`, turns a guest away -- to `/admin/login`, where `auth` would send them to the
+host's `login` route or the application-wide `redirectGuestsTo()` -- and puts the signed-in user on
+the request, and the layer's user is read from there and nowhere else. Public pages, the API and the
+console read as a visitor with an editor signed in. Asking the guard instead would sign the editor in
+on a public page from the remember cookie, sent on every path and decrypted by the host's own
+middleware. A signed-in editor is served the page a visitor is, internal fields left out, which is
+what a static cache needs and what phase 10's preview exists to change.
+
+Laravel's guard dispatches `Login`, `Authenticated` and `Logout` as it does for any guard, carrying
+`guard: 'mainstay'`, which a host listener written for its own users reads.
+
+**Signing in.** `/admin/login` is a Blade view drawn with `packages/ui`'s components, loading the
+stylesheet and not the admin bundle. An email, a password and "Remember me", which keeps the user
+signed in past the idle timeout with Laravel's remember cookie, until they sign out. A wrong password
+and an unknown email are one message, so the form cannot tell which accounts exist; five failures for
+an email, lowercased, from one address lock it for a minute, and the message says how long. Signing
+in regenerates the session and goes where the guest was turned away from; signing out is a form in
+the user menu and invalidates Mainstay's session alone. While no account exists, the page says to run
+`mainstay:user`. Laravel's `AuthenticateSession` keeps the password's hash in the session and signs a
+session out once it no longer matches, so a changed password ends every other session, the remember
+cookie's included.
+
+**Forgotten passwords.** "Forgot your password?" asks for an email and answers alike whether or not
+it has an account, and whether or not one was mailed a minute ago. One that does is mailed a link
+through the host's mailer to `/admin/reset-password/{token}?email=...`, which takes a new password
+twice, rotates the remember token, and sends the user to sign in. The broker's config is Mainstay's,
+written out, since only Laravel's skeleton has defaults for it: `mainstay_password_reset_tokens`,
+links expiring after an hour, one mailed a minute at most. The notification is Mainstay's own, sent
+from `User::sendPasswordResetNotification()`: Laravel's builds its link from
+`route('password.reset')`, or from `ResetPassword::createUrlUsing()`, a static the host's users share.
+
+**Capabilities.** Never stored: `Mainstay::capabilities()` computes them from the registered types
+each time it is asked. Each type has a set of its own, named from its handle, and every capability
+has an all-types form covering every type of that shape, including types deployed later. A role names
+a few types or all of them.
+
+| | One type | Every type |
+| --- | --- | --- |
+| An entry type | `edit_articles`, `edit_published_articles`, `edit_others_articles`, `publish_articles`, `delete_articles`, `delete_others_articles` | the same on `entries` |
+| A global | `edit_layout`, `publish_layout` | `edit_globals`, `publish_globals` |
+| A taxonomy | `manage_tags` | `manage_terms` |
+| The media library | | `upload_media`, `edit_others_media` |
+| Accounts and roles | | `manage_users`, first asked by phase 10's screens |
+
+An entry type's and a taxonomy's are plural, by the English inflector whatever language the host
+gives `Pluralizer`, which would otherwise rename every capability; a global's is its handle, there
+being one per site. Registration refuses a type whose set would claim a name another type's, or an
+all-types one, already has -- an entry type `Entry` deriving `edit_entries`, `Media` deriving
+`edit_others_media`, a taxonomy `User` deriving `manage_users` -- naming both, as two types of one
+handle are refused.
+
+A user holds a capability that is not among their denials and is among their grants or their role's,
+or that their role's `*` covers. A check for one type's capability passes on either form, so
+`edit_others_articles` is held through `edit_others_entries`, and a denial of either form wins over
+both: an editor denied `edit_articles` cannot edit articles although the role holds `edit_entries`.
+A role naming a capability no type derives any longer holds nothing by it.
+
+**Roles.** `mainstay_roles`: a unique name and a JSON list of capabilities, the part an administrator
+edits. A role shipped with the package can only name the all-types forms, so the migration writes two:
+`administrator`, holding `*`, and `editor`, holding every all-types capability but `manage_users`. A
+narrower role is a site's own, named from its types.
+
+**Policies** map an ability asked about an entry to the capabilities it needs, as WordPress's
+`map_meta_cap` does, each in either form; there is no `Gate::before`. A policy is shared by every type
+of its shape and checks the capabilities of the type it is asked about, so a question about a type
+rather than an entry -- `create`, `viewInternal`, a global's -- is asked with the type twice, `[$type,
+$type]`: Gate takes the first to find the policy and drops it. Someone else's is anything whose owner
+is not the caller, no owner included, which is the answer that fails closed.
+
+- `EntryPolicy`: `create` needs `edit`. `update` needs `edit`, `edit_published` for an entry that is
+  live, and `edit_others` for someone else's. `publish` needs `publish`, and `edit_others` for someone
+  else's. `delete` and `forceDelete` need `delete`, and `delete_others` for someone else's; `restore`
+  needs those and `publish`, since it puts the entry back at its paths. `viewInternal` needs `edit`.
+- An entry not published yet has an owner only in its draft. A new entry's first save asks `create`;
+  every later call on that draft -- reading, saving, discarding, publishing -- asks `update` or
+  `publish` about the entry as the draft reads, with no id and the draft's owner. So another's
+  unpublished draft needs `edit_others`, internal fields and all, and none needs `edit_published`.
+- A direct `create`, `update` or `saveGlobal` is a publish with no draft before it, as phase 8 has it,
+  so it asks `publish` too. Otherwise a role that may draft and not publish could put content live by
+  calling one.
+- `GlobalPolicy`: `update` needs `edit`, `publish` needs `publish`, `viewInternal` needs `edit`.
+- `TermPolicy`, new, for a taxonomy: every ability, `publish` and `viewInternal` among them, needs
+  `manage`. Terms have owners and nothing asks about them.
+- `MediaPolicy`: every write needs `upload_media`, and `edit_others_media` for someone else's image.
+
+`viewAny` stays open until phase 11, and the revisions go on asking `update`. Without a user each
+policy answers as it does now: reading open, internal fields absent, writes refused naming
+`overrideAccess`. A user without a capability is refused naming it: "Publishing this needs
+publish_articles."
+
+**Mainstay's Gate.** `Gate::forUser()` copies the host's `before` and `after` callbacks, and Laravel
+calls them with any user that is not null, so a host's `Gate::before(fn (User $user) => ...)`, typed
+for its own users, would be handed Mainstay's and throw. Mainstay's gate is a subclass of Laravel's,
+built from the host's policies and its default denial, which only a subclass can read, without the
+callbacks, and without guessing a policy by name as now. The layer and the media library take it from
+one place, where each builds its own today.
+
+**Owners.** `owner_id` is filled from here. A create is owned by the user making it, an upload by the
+uploader, and a new entry's draft by who started it, as is the entry it publishes into, whoever
+publishes it. A global has no owner. Nothing changes an owner yet; that is a field of phase 10's form.
+Every row written before this phase has none, and so has every row code writes on its own authority
+with no user signed in. `mainstay_drafts` and `mainstay_media` gain `owner_id` in their own create
+migrations, which nothing released has run. Revisions gain no author: who a history screen names,
+whoever published a version or whoever replaced it, is phase 10's to decide beside that screen.
+`owner_id` takes no foreign key. A content table's would make the users table a precondition of
+every sync and a line of every host's migrations, and the id a deleted account leaves behind belongs
+to nobody, which reads as someone else's.
+
+`mainstay_users`, `mainstay_roles` and `mainstay_password_reset_tokens` join the names a content type
+cannot take.
+
+**The admin.** Every admin path needs a signed-in user. The shell's user menu shows their name and
+email and signs them out; "Account settings" waits for phase 10. That is all the admin draws.
+
+**The site.** Its `config/mainstay.php` drops `web` from the admin's middleware, which would now run
+a second time after Mainstay's stack and blank every cookie the first decrypted. The seeder makes an
+administrator from `MAINSTAY_ADMIN_EMAIL` and `MAINSTAY_ADMIN_PASSWORD` when `.env` sets them, so
+`composer content` leaves a way in, and a Writer role holding Article's six capabilities and nothing
+else. A phase 9 article, and a "Users and roles" docs page. The site's tests: signing in over HTTP and
+reaching the admin; a Writer drafting and publishing an article and refused a page and the layout; a
+signed-in editor's public page a visitor's.
+
+The check is `IdentityTest`, on all four drivers, added to both of CI's test lines beside the suites
+each driver's job runs. A request reaching the layer as a user goes through a test route on the
+admin's stack, and a test making several requests forgets the guards between them, which keep the
+user they found otherwise.
+
+- Capabilities: a fixture type's in both forms, a global's and a taxonomy's; registration refusing
+  `Entry`, `Media` and a taxonomy `User`.
+- Holding: by role, by `*` and by grant, and a denial beating the role, `*` and the other form.
+- The mapping against an entry the user owns, one someone else owns and one nobody owns, which fails
+  closed. A role of `edit` alone drafting a new entry and saving it again, and refused someone else's
+  new draft, reading it included, a change to a live entry, a direct create, a publish and a restore.
+  A role of one type's capabilities refused another type, a global of its own allowed and another
+  refused, and an article's internal fields shown and a page's not. A term written with `manage` and
+  refused without; another's image refused without `edit_others_media`. The editor role doing all of it
+  and not holding `manage_users`.
+- Owners: a create by a signed-in user, a published draft owned by who started it and not who
+  published it, an upload, a seeder's write with none.
+- The layer writing as the request's user with no override; a public page read with an editor signed
+  in and the remember cookie sent, its internal field absent; a host's `Gate::before` typed for its own
+  user never called.
+- Signing in: a wrong password and an unknown email answered alike, the sixth attempt locked whatever
+  the email's case, the session regenerated as `mainstay_session` with the host's untouched, remember
+  me restoring a session with the session cookie dropped, signing out, and a guest sent to Mainstay's
+  login on an app with no `login` route.
+- Resetting: the link mailed with Mainstay's URL and the email, an unknown email and a throttled one
+  answered alike, the password changed through the token and another live session signed out, a used
+  or expired token refused.
+- `mainstay:user` creating, and refusing a taken email, an unknown role and none; the login page naming
+  it while no account exists. The two shipped roles after a fresh migrate.
 
 ## Phase 10 — The admin
 

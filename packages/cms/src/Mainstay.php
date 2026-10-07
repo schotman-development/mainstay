@@ -7,6 +7,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
+use Mainstay\Auth\Capabilities;
 use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Entry;
@@ -91,8 +92,36 @@ class Mainstay
                 throw new InvalidArgumentException("Two content types are called \"{$handle}\": {$existing} and {$type}.");
             }
 
+            /* Nor two claiming one capability: an entry type Entry would
+               derive `edit_entries`, which already means every entry type. */
+            if (! isset($this->types[$handle])) {
+                $claimed = array_fill_keys(Capabilities::shared(), 'Mainstay keeps for itself');
+
+                foreach ($this->types as $other) {
+                    $claimed = [...$claimed, ...array_fill_keys(Capabilities::of($other), "{$other} already derives")];
+                }
+
+                foreach (Capabilities::of($type) as $name) {
+                    if (isset($claimed[$name])) {
+                        throw new InvalidArgumentException("{$type} would derive the capability \"{$name}\", which {$claimed[$name]}. Rename the class.");
+                    }
+                }
+            }
+
             $this->types[$handle] = $type;
         }
+    }
+
+    /*
+     | Every capability there is, computed from the registered types and never
+     | stored: each type's own, and the forms covering every type, the media
+     | library and the accounts.
+     |
+     | @return list<string>
+     */
+    public function capabilities(): array
+    {
+        return [...array_merge(...array_map(Capabilities::of(...), array_values($this->types))), ...Capabilities::shared()];
     }
 
     /** @return array<string, class-string<ContentType>> */

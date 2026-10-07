@@ -14,7 +14,8 @@ between the two.
 > template, in the language its host or path prefix names. Rich text, blocks, images, relations to
 > other entries and tags are fields like the rest, and a global holds a site's settings. A change
 > can wait as a draft until it is published, what it replaces is kept as a revision, and the trash
-> can be restored from or emptied. There is no authentication and no admin form yet.
+> can be restored from or emptied. The admin has accounts of its own, a login page, and roles whose
+> capabilities decide who may write and who may publish; there is no admin form yet.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout
@@ -36,13 +37,20 @@ composer require mainstay/cms
 php artisan vendor:publish --tag=mainstay-assets
 ```
 
-The admin is then at `/admin` and the content API at `/api/mainstay`, and every other path an
+The admin is then at `/admin`, behind a login of its own, and the content API at `/api/mainstay`,
+and every other path an
 entry holds is answered by Mainstay's catch-all, after any route the app declares itself. The two
 paths, their middleware, an optional dedicated domain, where each content language is served, and
 the catch-all's middleware, or whether it runs at all, are configurable:
 
 ```bash
 php artisan vendor:publish --tag=mainstay-config
+```
+
+Nothing on the web makes the first account. Make it on the server:
+
+```bash
+php artisan mainstay:user you@example.com --role=administrator
 ```
 
 Re-run the asset publish with `--force` after upgrading the package. An upgrade can also add a
