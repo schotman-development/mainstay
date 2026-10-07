@@ -12,9 +12,10 @@ between the two.
 > them, content is read and written from PHP through `Mainstay::find()`, `create()`, `update()`
 > and `delete()`, and an entry is served at the path its type's `#[Route]` builds, in a Blade
 > template, in the language its host or path prefix names. Rich text, blocks, images, relations to
-> other entries and tags are fields like the rest, and a global holds a site's settings. There is
-> no authentication, no admin form, and no drafts yet. `docs/plan.md` has the order the rest
-> arrives in.
+> other entries and tags are fields like the rest, and a global holds a site's settings. A change
+> can wait as a draft until it is published, what it replaces is kept as a revision, and the trash
+> can be restored from or emptied. There is no authentication and no admin form yet.
+> `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout
 

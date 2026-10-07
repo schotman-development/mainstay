@@ -3,14 +3,16 @@
 How `packages/cms` gets built, in the order the decisions in `decisions.md` allow. Each phase ends
 at something that works and can be looked at, not at a layer that is finished.
 
-Phases 1 to 7 are done: content types are declared, reflected into a field list, synced into
+Phases 1 to 8 are done: content types are declared, reflected into a field list, synced into
 tables that `mainstay:schema:check` holds CI to, read and written from PHP through one query
 layer, and served at their paths in Blade by a host site, `mainstay-site`. Rich text and blocks
 are field types like the scalars, each kept in a `json` column of its own, and the site's bodies
 and front page are written in them. Images live in an installation-wide library, written at every
 declared size in AVIF and WebP when they are uploaded. Entries point at each other through
 relations a read follows to a depth, tags are the entries of a taxonomy found again through its
-pivot, and a global holds the site's menu and footer. `packages/ui` is ahead of the package —
+pivot, and a global holds the site's menu and footer. A change waits as a draft of what differs
+from live until it is published, every version a write replaces is kept as a revision a draft can be
+made from again, and the trash is restored from or emptied. `packages/ui` is ahead of the package —
 Blade components, a theme, and a behaviour layer in `src/js` — and `packages/editor` is a built
 ProseMirror island declaring the document schema the package renders.
 
