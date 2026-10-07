@@ -25,6 +25,16 @@ class GlobalPolicy
 
     public function update(?object $user): Response
     {
+        return $this->nobody();
+    }
+
+    public function publish(?object $user): Response
+    {
+        return $this->nobody();
+    }
+
+    private function nobody(): Response
+    {
         return Response::deny('Writing a global needs a Mainstay user, and there is none. Code that writes on its own authority passes overrideAccess: true.');
     }
 }

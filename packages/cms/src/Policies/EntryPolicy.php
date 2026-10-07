@@ -39,6 +39,14 @@ class EntryPolicy
         return $this->nobody();
     }
 
+    /* Putting a draft live: about the entry, or the type alone for one not
+       published yet, which Gate hands a policy as the user and nothing else.
+       Its own ability, so a writer can be let draft and not publish. */
+    public function publish(?object $user, ?Entry $entry = null): Response
+    {
+        return $this->nobody();
+    }
+
     /* Named for the fix, because "This action is unauthorized" is what a
        seeder author reads first and it says nothing about what to change. */
     private function nobody(): Response

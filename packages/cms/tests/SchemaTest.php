@@ -759,6 +759,8 @@ class SchemaTest extends DatabaseTestCase
     {
         $this->declare(Article::class);
         Schema::drop('uris');
+        Schema::drop('mainstay_drafts');
+        Schema::drop('mainstay_revisions');
         Schema::drop('sites');
 
         $this->assertSame(1, Artisan::call('mainstay:sync'));

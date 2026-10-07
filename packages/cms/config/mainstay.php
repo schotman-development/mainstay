@@ -91,6 +91,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Revisions
+    |--------------------------------------------------------------------------
+    |
+    | How many of an entry's earlier versions are kept, newest first: each
+    | publish, and each write that replaces something live, files the outgoing
+    | version and prunes past this many. Null keeps them all.
+    |
+    */
+
+    'revisions' => 50,
+
+    /*
+    |--------------------------------------------------------------------------
     | Schema sync
     |--------------------------------------------------------------------------
     |

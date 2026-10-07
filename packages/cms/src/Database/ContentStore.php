@@ -23,10 +23,13 @@ use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use JsonException;
 use Mainstay\Content\ContentType;
+use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Media;
+use Mainstay\Content\Revision;
 use Mainstay\Content\Route;
+use Mainstay\Content\Taxonomy;
 use Mainstay\Fields\Date;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Relation;
@@ -74,6 +77,10 @@ class ContentStore
     /* How far a read follows relations when the call does not say: to the
        entries they point at, whose own relations it leaves unloaded. */
     private const DEPTH = 1;
+
+    private const DRAFTS = 'mainstay_drafts';
+
+    private const REVISIONS = 'mainstay_revisions';
 
     /** @var array<class-string, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
     private array $reflected = [];
@@ -241,7 +248,8 @@ class ContentStore
             [$internal, $reads] = $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
             try {
-                $this->write($type, $id, $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess), $data, $locale, $translations->has($locale), $reads);
+                $values = $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess);
+                $this->filed($type, $id, fn () => $this->write($type, $id, $values, $data, $locale, $translations->has($locale), $reads));
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -340,7 +348,9 @@ class ContentStore
 
             try {
                 $stored = $row === null ? [] : $this->stored($type, $row, $translations->get($locale), $internal);
-                $id = $this->write($type, $row === null ? null : (int) $row->id, $this->validate($type, $data, $stored, $internal, $overrideAccess), $data, $locale, $translations->has($locale), $reads);
+                $values = $this->validate($type, $data, $stored, $internal, $overrideAccess);
+                $held = $row === null ? null : (int) $row->id;
+                $id = $this->filed($type, $held, fn () => $this->write($type, $held, $values, $data, $locale, $translations->has($locale), $reads));
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -351,6 +361,691 @@ class ContentStore
         }
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
+    }
+
+    /*
+     | Merges the keys given into a draft: an entry's, `$entry`; one already
+     | started, by its own id, `$draft`; a global's, this site's one; or, with
+     | neither, a new entry's, which has no row, id or path until it is
+     | published. Each key is compared with what is live in the locale and
+     | kept only where it differs, so a form posting every field leaves a
+     | draft of what was changed, and a draft left changing nothing is
+     | deleted -- null is then handed back.
+     |
+     | A draft may be incomplete: what it holds is checked as a write checks
+     | it, but a field's own presence rule gives way. The locale is taken as
+     | update() takes it, so without one a translation neither live nor
+     | drafted is refused, and with one it is added; a new entry's is taken
+     | as create() takes it.
+     |
+     | One draft per entry is held by the drafts' unique index: two first
+     | saves racing are settled by it, in a transaction of the write's own,
+     | and the one refused runs again and merges into the other's. The draft
+     | merged into is read with a lock, so two saves merge rather than one
+     | undoing the other.
+     */
+    public function saveDraft(string $type, array $data, ?int $entry = null, ?int $draft = null, ?string $locale = null, bool $overrideAccess = false): ?Draft
+    {
+        $type = $this->drafted($type);
+        $global = is_subclass_of($type, GlobalSet::class);
+
+        if ($draft !== null && $entry !== null) {
+            throw new InvalidArgumentException('A draft is saved for an entry or by its own id, not both.');
+        }
+
+        if ($global && $entry !== null) {
+            throw new InvalidArgumentException("{$type} is a global, whose draft is the site's one: save it without an entry.");
+        }
+
+        $held = null;
+
+        if ($draft !== null) {
+            $held = DB::table(self::DRAFTS)->where('site_id', $this->site())->where('type', $type::handle())->where('id', $draft)->first()
+                ?? throw $this->missing($type, $overrideAccess, "Draft {$draft} of {$type} is not there to save.");
+        }
+
+        $entry = $global ? 0 : ($held === null ? $entry : ($held->entry_id === null ? null : (int) $held->entry_id));
+        $held ??= $entry === null ? null : $this->draftFor($type, $entry);
+        $asked = $locale !== null;
+        $locale = $this->locale($locale);
+        [$row, $translations] = $this->live($type, $entry, $overrideAccess);
+        [$internal] = $this->drafter($type, $entry, $row, $overrideAccess);
+        $drafted = $held === null ? [] : $this->changes($held)['locales'];
+
+        if (! $asked && $entry !== null && ! $translations->has($locale) && ! isset($drafted[$locale])) {
+            throw $this->missing($type, $overrideAccess, "{$type} has no {$locale} translation to draft. Pass locale: '{$locale}' to add one.");
+        }
+
+        $values = $this->validate($type, $data, $row === null ? [] : $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess, draft: true);
+        $fields = $this->mainstay->fields($type);
+        $changes = [];
+
+        foreach (array_keys($data) as $name) {
+            $view = ! $global && $name === 'template';
+            $field = $view ? null : $fields[$name];
+            $source = $field?->localized ? $translations->get($locale) : $row;
+            $value = $view ? (blank($data[$name]) ? null : $data[$name]) : $this->kept($field, $values[$name] ?? null);
+            $differs = $source === null || ($view ? $source->template : $this->normal($field, $source->{Str::snake($name)} ?? null)) !== $value;
+
+            $changes[] = [$field?->localized ? $locale : null, $name, $value, $differs];
+        }
+
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                $id = DB::transaction(function () use ($type, $entry, $draft, $held, $locale, $translations, $changes, $attempt) {
+                    /* Again, the second time, with a lock: the first missed the
+                       draft another save committed, which a plain read inside
+                       a caller's MySQL transaction would miss again. */
+                    $found = $draft ?? ($attempt === 1 ? $held?->id : $this->draftFor($type, $entry, $this->snapshotted(1))?->id);
+                    $current = $found === null ? null : DB::table(self::DRAFTS)->where('id', $found)->lockForUpdate()->first();
+
+                    if ($draft !== null && $current === null) {
+                        throw new RecordNotFoundException("Draft {$draft} was published or discarded while it was being saved.");
+                    }
+
+                    $merged = $current === null ? ['fields' => [], 'locales' => []] : $this->changes($current);
+
+                    foreach ($changes as [$at, $name, $value, $differs]) {
+                        if ($at === null && $differs) {
+                            $merged['fields'][$name] = $value;
+                        } elseif ($at === null) {
+                            unset($merged['fields'][$name]);
+                        } elseif ($differs) {
+                            $merged['locales'][$at][$name] = $value;
+                        } else {
+                            unset($merged['locales'][$at][$name]);
+                        }
+                    }
+
+                    /* A translation the entry has is drafted only by what
+                       changes in it; one it lacks is added by the draft,
+                       changes or none. */
+                    if (! $translations->has($locale)) {
+                        $merged['locales'][$locale] ??= [];
+                    } elseif (($merged['locales'][$locale] ?? null) === []) {
+                        unset($merged['locales'][$locale]);
+                    }
+
+                    if ($merged['fields'] === [] && $merged['locales'] === []) {
+                        if ($current !== null) {
+                            DB::table(self::DRAFTS)->where('id', $current->id)->delete();
+                        }
+
+                        return null;
+                    }
+
+                    $now = $this->stamp(CarbonImmutable::now());
+                    $encoded = json_encode($merged, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+                    if ($current !== null) {
+                        DB::table(self::DRAFTS)->where('id', $current->id)->update(['changes' => $encoded, 'updated_at' => $now]);
+
+                        return (int) $current->id;
+                    }
+
+                    return (int) DB::table(self::DRAFTS)->insertGetId(['site_id' => $this->site(), 'type' => $type::handle(), 'entry_id' => $entry, 'changes' => $encoded, 'created_at' => $now, 'updated_at' => $now]);
+                }, self::ATTEMPTS);
+
+                break;
+            } catch (UniqueConstraintViolationException $exception) {
+                if ($attempt > 1 || $entry === null) {
+                    throw $exception;
+                }
+            }
+        }
+
+        if ($id === null) {
+            return null;
+        }
+
+        return $this->readDraft($type, DB::table(self::DRAFTS)->where('id', $id)->first(), $locale, $overrideAccess, self::DEPTH, $internal);
+    }
+
+    /* A draft by its own id, read in a locale: null where there is none, or
+       none in that locale -- neither live nor added by the draft -- or where
+       the entry it changes is in the trash. */
+    public function findDraft(int $id, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): ?Draft
+    {
+        $row = DB::table(self::DRAFTS)->where('site_id', $this->site())->where('id', $id)->first();
+
+        return $row === null ? null : $this->readDraft($this->drafted($this->handled($row->type)), $row, $locale, $overrideAccess, $depth);
+    }
+
+    /* The draft of an entry, or of a global without one. */
+    public function draftOf(string $type, ?int $entry = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): ?Draft
+    {
+        $type = $this->drafted($type);
+
+        if (is_subclass_of($type, GlobalSet::class) === ($entry !== null)) {
+            throw new InvalidArgumentException($entry === null ? "{$type} is an entry: name the one whose draft to read." : "{$type} is a global, whose draft is the site's one: read it without an entry.");
+        }
+
+        /* Gate first, draft or none, so whether one is pending is no answer
+           to a caller who may not read it. An entry in the trash has none to
+           read, as findDraft() says. */
+        try {
+            [$live] = $this->live($type, $entry ?? 0, $overrideAccess);
+        } catch (RecordNotFoundException) {
+            return null;
+        }
+
+        [$internal] = $this->drafter($type, $entry ?? 0, $live, $overrideAccess);
+        $row = $this->draftFor($type, $entry ?? 0);
+
+        return $row === null ? null : $this->readDraft($type, $row, $locale, $overrideAccess, $depth, $internal);
+    }
+
+    public function discardDraft(int $id, bool $overrideAccess = false): void
+    {
+        $row = DB::table(self::DRAFTS)->where('site_id', $this->site())->where('id', $id)->first()
+            ?? throw new RecordNotFoundException("Draft {$id} is not there to discard.");
+        $type = $this->drafted($this->handled($row->type));
+        $entry = $row->entry_id === null ? null : (int) $row->entry_id;
+
+        [$live] = $this->live($type, $entry, $overrideAccess);
+        $this->drafter($type, $entry, $live, $overrideAccess);
+
+        DB::table(self::DRAFTS)->where('id', $id)->delete();
+    }
+
+    /*
+     | Puts a draft live, in one transaction: the draft read with a lock, each
+     | locale it names validated as an update of that locale is -- `required`
+     | back, and the paths -- and written, the outgoing entry filed as a
+     | revision, the draft deleted. A new entry's is a create in its first
+     | locale and an update in each other, with nothing outgoing. A draft
+     | changing only shared fields is written in the first locale the entry
+     | has. Refused with nothing written as a save is.
+     |
+     | The one place "content changed" is known for what an editor wrote.
+     | Nothing listens yet: how pages reach the public is still deferred, and
+     | this is where it attaches.
+     |
+     | A draft changing an internal field is the work of someone who may see
+     | it, and is refused in access terms, naming no field, to a publisher
+     | who may not.
+     */
+    public function publish(int $id, bool $overrideAccess = false): ContentType
+    {
+        $draft = DB::table(self::DRAFTS)->where('site_id', $this->site())->where('id', $id)->first()
+            ?? throw new RecordNotFoundException("Draft {$id} is not there to publish.");
+        $type = $this->drafted($this->handled($draft->type));
+        $global = is_subclass_of($type, GlobalSet::class);
+        $entry = $draft->entry_id === null ? null : (int) $draft->entry_id;
+        [$row] = $this->live($type, $entry, $overrideAccess);
+
+        [$internal, $reads] = $this->writes($type, 'publish', $entry === null || $global ? $type : fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+
+        $nested = $this->snapshotted(0);
+
+        [$id, $locale, $given] = DB::transaction(function () use ($type, $id, $global, $internal, $reads, $overrideAccess, $nested) {
+            $draft = DB::table(self::DRAFTS)->where('id', $id)->lockForUpdate()->first()
+                ?? throw new RecordNotFoundException("Draft {$id} was published or discarded since.");
+            $changes = $this->changes($draft);
+
+            if (! $internal && $this->hidden($type, $changes) !== $changes) {
+                throw new AuthorizationException('This draft changes what this caller may not see, so it cannot publish it.');
+            }
+
+            /* A global's row read again: a first save may have written it
+               since. */
+            $held = $global ? $this->live($type, 0, $overrideAccess)[0]?->id : $draft->entry_id;
+            $held = $held === null ? null : (int) $held;
+            $published = $this->filed($type, $held, fn () => $this->published($type, $held, $changes, $internal, $reads, $overrideAccess, $nested));
+
+            DB::table(self::DRAFTS)->where('id', $id)->delete();
+
+            return $published;
+        }, self::ATTEMPTS);
+
+        return $this->readBack($type, $id, $locale, $internal, $reads ? null : $given, $overrideAccess);
+    }
+
+    /*
+     | A draft's locales written, through the write every save makes. The
+     | shared fields go with the first. Hands back the entry's id, the locale
+     | written first, and every key given.
+     |
+     | @return array{0: int, 1: string, 2: list<string>}
+     */
+    private function published(string $type, ?int $id, array $changes, bool $internal, bool $reads, bool $overrideAccess, bool $nested): array
+    {
+        /* In the configured order, so a new entry is created in the first of
+           its languages the config names; one the config no longer names is
+           refused when it comes up. */
+        $configured = array_keys($this->mainstay->locales());
+        $locales = [...array_intersect($configured, array_keys($changes['locales'])), ...array_diff(array_keys($changes['locales']), $configured)];
+
+        if ($locales === []) {
+            $has = DB::table("{$type::handle()}_locales")->where('parent_id', $id)->pluck('locale')->all();
+            $locales = array_slice(array_values(array_intersect(array_keys($this->mainstay->locales()), $has)), 0, 1)
+                ?: throw new RecordNotFoundException("{$type} {$id} has no translation in a content locale to publish its draft in.");
+        }
+
+        $given = [];
+
+        foreach ($locales as $index => $locale) {
+            $locale = $this->locale($locale);
+            $data = [...($index === 0 ? $changes['fields'] : []), ...($changes['locales'][$locale] ?? [])];
+            $given = [...$given, ...array_keys($data)];
+
+            if ($id === null) {
+                $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads);
+
+                continue;
+            }
+
+            [$row, $translations] = $this->load($type, $id, $overrideAccess, $nested);
+            $values = $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess);
+            $this->write($type, $id, $values, $data, $locale, $translations->has($locale), $reads);
+        }
+
+        return [$id, $this->locale($locales[0]), array_values(array_unique($given))];
+    }
+
+    /*
+     | An entry's earlier versions, newest first, without their content: one
+     | for every write that replaced something live, past the last
+     | `mainstay.revisions` pruned. A global's without an entry.
+     |
+     | @return Collection<int, Revision>
+     */
+    public function revisionsOf(string $type, ?int $entry = null, bool $overrideAccess = false): Collection
+    {
+        $type = $this->drafted($type);
+        $global = is_subclass_of($type, GlobalSet::class);
+
+        if ($global === ($entry !== null)) {
+            throw new InvalidArgumentException($global ? "{$type} is a global, whose revisions are the site's: list them without an entry." : "{$type} is an entry: name the one whose revisions to list.");
+        }
+
+        [$row] = $this->live($type, $entry ?? 0, $overrideAccess);
+        $this->drafter($type, $entry ?? 0, $row, $overrideAccess);
+
+        return DB::table(self::REVISIONS)->where('site_id', $this->site())->where('type', $type::handle())->where('entry_id', $entry ?? 0)
+            ->orderByDesc('id')
+            ->get(['id', 'created_at'])
+            ->map(fn (object $revision) => new Revision((int) $revision->id, $entry, $this->moment->cast($revision->created_at)));
+    }
+
+    /*
+     | A revision made the entry's draft: every field and locale it holds
+     | given to saveDraft(), so the draft is what differs from live and
+     | leaves through publish with nothing of its own. What the draft already
+     | changes that the revision does not hold stays changed.
+     |
+     | What it cannot bring back is left as live has it and reported on the
+     | Draft handed back: a field the type no longer declares, a locale no
+     | longer configured, and a value its field now refuses -- retyped, a
+     | block type no longer listed, an entry trashed since. A field declared
+     | since keeps live's value, the revision having nothing to say about it.
+     | An internal field comes back only for a caller who sees it, and is
+     | named only to one. Null where nothing differs.
+     */
+    public function restoreRevision(int $id, bool $overrideAccess = false): ?Draft
+    {
+        $revision = DB::table(self::REVISIONS)->where('site_id', $this->site())->where('id', $id)->first()
+            ?? throw new RecordNotFoundException("Revision {$id} is not there to restore.");
+        $type = $this->drafted($this->handled($revision->type));
+        $global = is_subclass_of($type, GlobalSet::class);
+        $entry = $global ? null : (int) $revision->entry_id;
+
+        [$row] = $this->live($type, $entry ?? 0, $overrideAccess);
+        [$internal] = $this->drafter($type, $entry ?? 0, $row, $overrideAccess);
+
+        $snapshot = $this->hidden($type, json_decode($revision->snapshot, true, flags: JSON_THROW_ON_ERROR), $internal);
+        $fields = $this->mainstay->fields($type);
+        $known = $global ? $fields : [...$fields, 'template' => null];
+        $unrestored = [];
+        $configured = array_keys($this->mainstay->locales());
+        $locales = array_values(array_intersect($configured, array_keys($snapshot['locales'])));
+
+        foreach (array_diff_key($snapshot['fields'], $known) as $name => $value) {
+            $unrestored['fields'][$name] = 'The type no longer declares it.';
+        }
+
+        foreach ($snapshot['locales'] as $locale => $values) {
+            foreach (in_array($locale, $locales, true) ? array_diff_key($values, $known) : $values as $name => $value) {
+                $unrestored['locales'][$locale][$name] = in_array($locale, $locales, true) ? 'The type no longer declares it.' : "{$locale} is no longer a content locale.";
+            }
+        }
+
+        return DB::transaction(function () use ($type, $entry, $snapshot, $known, $locales, &$unrestored, $overrideAccess) {
+            $draft = null;
+
+            foreach ($locales as $index => $locale) {
+                $data = array_intersect_key([...($index === 0 ? $snapshot['fields'] : []), ...$snapshot['locales'][$locale]], $known);
+
+                /* A value its field now refuses is left out, named, and the
+                   rest saved without it. A refusal of nothing given -- a live
+                   value that breaks a rule -- is the caller's, as on a save. */
+                while (true) {
+                    try {
+                        $draft = $this->saveDraft($type, $data, entry: $entry, locale: $locale, overrideAccess: $overrideAccess);
+
+                        break;
+                    } catch (ValidationException $exception) {
+                        if (array_intersect_key($data, array_flip(array_map(fn (string $key) => explode('.', $key)[0], array_keys($exception->errors())))) === []) {
+                            throw $exception;
+                        }
+
+                        foreach ($exception->errors() as $key => $messages) {
+                            $name = explode('.', $key)[0];
+
+                            if (! array_key_exists($name, $data)) {
+                                continue;
+                            }
+
+                            unset($data[$name]);
+
+                            if (($known[$name] ?? null)?->localized) {
+                                $unrestored['locales'][$locale][$name] = $messages[0];
+                            } else {
+                                $unrestored['fields'][$name] = $messages[0];
+                            }
+                        }
+                    }
+                }
+            }
+
+            return $draft === null ? null : new Draft($draft->id, $draft->entryId, $draft->entry, $draft->fields, $draft->locales, $draft->updatedAt, $unrestored);
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | A draft as the declared class in a locale: what is live there with the
+     | draft's changes over it, what it points at loaded to `$depth` as any
+     | read's. Null where the locale is neither live nor drafted, or the entry
+     | is in the trash. Gate is asked as a save would, unless the caller
+     | already asked and passes what it learned, `$internal`.
+     */
+    private function readDraft(string $type, object $draft, ?string $locale, bool $overrideAccess, int $depth, ?bool $internal = null): ?Draft
+    {
+        $locale = $this->locale($locale);
+        $this->depth($depth);
+        $global = is_subclass_of($type, GlobalSet::class);
+        $entry = $draft->entry_id === null ? null : (int) $draft->entry_id;
+
+        try {
+            [$row, $translations] = $this->live($type, $entry, $overrideAccess);
+        } catch (RecordNotFoundException) {
+            return null;
+        }
+
+        $internal ??= $this->drafter($type, $entry, $row, $overrideAccess)[0];
+        $changes = $this->changes($draft);
+
+        if (! $translations->has($locale) && ! isset($changes['locales'][$locale])) {
+            return null;
+        }
+
+        $translation = $translations->get($locale);
+        $built = (object) ['id' => $row?->id, 'owner_id' => $row?->owner_id, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+
+        if (! $global) {
+            $built->template = array_key_exists('template', $changes['fields']) ? $changes['fields']['template'] : $row?->template;
+            $built->uri = $row === null ? null : DB::table('uris')->where('type', $type::handle())->where('entry_id', $row->id)->where('locale', $locale)->value('uri');
+        }
+
+        foreach ($this->mainstay->fields($type) as $name => $field) {
+            [$drafted, $source] = $field->localized ? [$changes['locales'][$locale] ?? [], $translation] : [$changes['fields'], $row];
+
+            if (array_key_exists($name, $drafted)) {
+                $built->{Str::snake($name)} = $drafted[$name];
+            } elseif ($source !== null) {
+                $built->{Str::snake($name)} = $source->{Str::snake($name)} ?? null;
+            }
+        }
+
+        $shown = $this->hidden($type, $changes, $internal);
+
+        return new Draft(
+            (int) $draft->id,
+            $global ? null : $entry,
+            $this->hydrate($type, $built, $locale, $internal, loaded: $this->resolve([$type => [$built]], $locale, $overrideAccess, $depth), lenient: true),
+            array_keys($shown['fields']),
+            array_map('array_keys', $shown['locales']),
+            $this->moment->cast($draft->updated_at),
+        );
+    }
+
+    /* The type a stored handle names. */
+    private function handled(string $handle): string
+    {
+        return $this->mainstay->registered()[$handle]
+            ?? throw new InvalidArgumentException("{$handle} is not a registered content type, so its drafts and revisions cannot be read.");
+    }
+
+    /*
+     | A type that has drafts and revisions: an entry or a global. A term is
+     | written live, with no draft and no history.
+     */
+    private function drafted(string $type): string
+    {
+        $registered = $this->registered($type);
+
+        if (is_subclass_of($registered, Taxonomy::class)) {
+            throw new InvalidArgumentException("{$registered} is a taxonomy, whose terms are written live, with no drafts and no revisions. Write them with update().");
+        }
+
+        return $registered;
+    }
+
+    /*
+     | What is live for a draft: the entry's row with its terms and every
+     | locale's, out of the trash; a global's, this site's one or none yet;
+     | nothing for an entry not published. `$entry` is the draft's: 0 for a
+     | global.
+     |
+     | @return array{0: ?object, 1: Collection<string, object>}
+     */
+    private function live(string $type, ?int $entry, bool $overrideAccess): array
+    {
+        if (is_subclass_of($type, GlobalSet::class)) {
+            $row = DB::table($type::handle())->where('site_id', $this->site())->first();
+
+            return [$row, $row === null ? collect() : DB::table("{$type::handle()}_locales")->where('parent_id', $row->id)->get()->keyBy('locale')];
+        }
+
+        return $entry === null ? [null, collect()] : $this->load($type, $entry, $overrideAccess);
+    }
+
+    /*
+     | Gate, for a draft, as the write it becomes would ask: `create` about
+     | the type for an entry not published yet, `update` about the entry for
+     | one that is, and about the type for a global. Neither is public.
+     |
+     | @return array{0: bool, 1: bool}
+     */
+    private function drafter(string $type, ?int $entry, ?object $row, bool $overrideAccess): array
+    {
+        return match (true) {
+            is_subclass_of($type, GlobalSet::class) => $this->writes($type, 'update', $type, $overrideAccess),
+            $entry === null => $this->writes($type, 'create', $type, $overrideAccess),
+            default => $this->writes($type, 'update', fn () => $this->hydrate($type, $row, null, true), $overrideAccess),
+        };
+    }
+
+    /* The draft of an entry, by its id or 0 for a global, read with a lock
+       where a plain read could miss one another connection committed. */
+    private function draftFor(string $type, int $entry, bool $lock = false): ?object
+    {
+        return DB::table(self::DRAFTS)->where('site_id', $this->site())->where('type', $type::handle())->where('entry_id', $entry)
+            ->when($lock, fn (Builder $query) => $query->lockForUpdate())
+            ->first();
+    }
+
+    /** @return array{fields: array<string, mixed>, locales: array<string, array<string, mixed>>} */
+    private function changes(object $draft): array
+    {
+        return ['fields' => [], 'locales' => [], ...json_decode($draft->changes, true, flags: JSON_THROW_ON_ERROR)];
+    }
+
+    /* A draft's or a revision's shape without the internal fields, for a
+       caller who may not see them. */
+    private function hidden(string $type, array $shape, bool $internal = false): array
+    {
+        if ($internal) {
+            return $shape;
+        }
+
+        $internals = array_filter($this->mainstay->fields($type), fn (Field $field) => $field->internal);
+
+        return [
+            'fields' => array_diff_key($shape['fields'], $internals),
+            'locales' => array_map(fn (array $values) => array_diff_key($values, $internals), $shape['locales']),
+        ];
+    }
+
+    /*
+     | Runs `$write`, and where it replaces something live -- a value a
+     | locale already held, not a translation added -- files the entry as it
+     | was before, once for the call however many locales it writes. None for
+     | an entry being created, which replaces nothing, and none for a term,
+     | which has no history.
+     |
+     | The row is locked before the entry is read, so a write beside this one
+     | waits rather than filing what this one is about to replace.
+     */
+    private function filed(string $type, ?int $id, Closure $write): mixed
+    {
+        if ($id === null || is_subclass_of($type, Taxonomy::class)) {
+            return $write();
+        }
+
+        return DB::transaction(function () use ($type, $id, $write) {
+            $before = $this->snapshot($type, $id, lock: true);
+            $written = $write();
+
+            if ($this->replaced($before, $this->snapshot($type, $id))) {
+                $this->file($type, $id, $before);
+            }
+
+            return $written;
+        }, self::ATTEMPTS);
+    }
+
+    /*
+     | The whole entry as it is now -- its shared fields, every locale's
+     | localized ones, its view and its terms -- each as its field serializes
+     | it, the shape a draft holds. Read in the transaction filed() opened:
+     | with a lock where a plain read would answer from a caller's older
+     | snapshot -- see snapshotted().
+     */
+    private function snapshot(string $type, int $id, bool $lock = false): array
+    {
+        $handle = $type::handle();
+        $nested = $this->snapshotted(1);
+        $row = DB::table($handle)->where('id', $id)->whereNull('deleted_at')->when($lock, fn (Builder $query) => $query->lockForUpdate())->first()
+            ?? throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
+
+        $this->attach($type, [$row], $nested);
+
+        $shape = ['fields' => is_subclass_of($type, Entry::class) ? ['template' => $row->template] : [], 'locales' => []];
+        $fields = $this->mainstay->fields($type);
+
+        foreach ($fields as $name => $field) {
+            if (! $field->localized) {
+                $shape['fields'][$name] = $this->normal($field, $row->{Str::snake($name)} ?? null);
+            }
+        }
+
+        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
+            $shape['locales'][$translation->locale] = [];
+
+            foreach ($fields as $name => $field) {
+                if ($field->localized) {
+                    $shape['locales'][$translation->locale][$name] = $this->normal($field, $translation->{Str::snake($name)} ?? null);
+                }
+            }
+        }
+
+        return $shape;
+    }
+
+    /* Whether something `$before` held is not what `$after` holds: a value
+       replaced, rather than a translation added. */
+    private function replaced(array $before, array $after): bool
+    {
+        foreach ($before['fields'] as $name => $value) {
+            if (! array_key_exists($name, $after['fields']) || $after['fields'][$name] !== $value) {
+                return true;
+            }
+        }
+
+        foreach ($before['locales'] as $locale => $values) {
+            foreach ($values as $name => $value) {
+                if (! array_key_exists($name, $after['locales'][$locale] ?? []) || $after['locales'][$locale][$name] !== $value) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /*
+     | A revision of what was live, and the entry's oldest pruned past
+     | `mainstay.revisions`: by id, which orders them where `created_at` is
+     | only to the second, and by primary key, so the delete locks those rows
+     | and no gap beside them.
+     */
+    private function file(string $type, int $id, array $snapshot): void
+    {
+        $key = ['site_id' => $this->site(), 'type' => $type::handle(), 'entry_id' => is_subclass_of($type, GlobalSet::class) ? 0 : $id];
+
+        DB::table(self::REVISIONS)->insert([...$key, 'snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 'created_at' => $this->stamp(CarbonImmutable::now())]);
+
+        if (($keep = config('mainstay.revisions')) === null) {
+            return;
+        }
+
+        $gone = array_slice(DB::table(self::REVISIONS)->where($key)->orderByDesc('id')->pluck('id')->all(), (int) $keep);
+
+        if ($gone !== []) {
+            DB::table(self::REVISIONS)->whereIntegerInRaw('id', $gone)->delete();
+        }
+    }
+
+    /*
+     | A stored value as its field serializes it, read through its cast first
+     | so a date, a number or a boolean is one shape whichever driver handed
+     | it back, and a map's keys in one order -- MySQL sorts a JSON object's.
+     | What its field cannot read is compared as it is stored.
+     */
+    private function normal(Field $field, mixed $value): mixed
+    {
+        try {
+            return $this->canonical($field->serialize($field->cast($field->decode($value))));
+        } catch (InvalidArgumentException|JsonException) {
+            return $this->canonical($value);
+        }
+    }
+
+    /* A value a draft is given, as its field serializes it, or null for one
+       left empty that the field has no empty value for. */
+    private function kept(Field $field, mixed $value): mixed
+    {
+        try {
+            return $this->canonical($field->serialize($value));
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+    }
+
+    private function canonical(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map($this->canonical(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return $value;
     }
 
     /*
@@ -472,7 +1167,7 @@ class ContentStore
      | save and check after this takes it as it takes a column. One query per
      | Terms field for all the rows.
      */
-    private function attach(string $type, iterable $rows): void
+    private function attach(string $type, iterable $rows, bool $lock = false): void
     {
         $rows = collect($rows);
 
@@ -488,6 +1183,7 @@ class ContentStore
                 ->whereIntegerInRaw('entry_id', $rows->map(fn (object $row) => (int) $row->id)->all())
                 ->orderBy('position')
                 ->orderBy('id')
+                ->when($lock, fn (Builder $query) => $query->lockForUpdate())
                 ->get(['entry_id', 'term_id'])
                 ->groupBy(fn (object $pivot) => (int) $pivot->entry_id);
 
@@ -1082,7 +1778,7 @@ class ContentStore
      | unknown key is, and what is stored in it is not checked, so no error
      | names it either.
      */
-    private function validate(string $type, array $data, array $stored, bool $internal, bool $overrideAccess): array
+    private function validate(string $type, array $data, array $stored, bool $internal, bool $overrideAccess, bool $draft = false): array
     {
         $fields = array_filter($this->mainstay->fields($type), fn (Field $field) => $internal || ! $field->internal);
         /* An entry's own view is a key of its own beside the fields. A global
@@ -1121,7 +1817,7 @@ class ContentStore
         foreach (array_diff_key($this->mainstay->fields($type), $data, $stored) as $name => $field) {
             if ($field->hasDefault) {
                 $values[$name] = $field->default;
-            } elseif (! $internal && $field->internal && $field->isRequired()) {
+            } elseif (! $draft && ! $internal && $field->internal && $field->isRequired()) {
                 throw new AuthorizationException('Writing a '.class_basename($type).' needs a field this caller may not see. Give it a default in the declaration, make it optional, or write with access to it.');
             }
         }
@@ -1139,7 +1835,7 @@ class ContentStore
         $rules = $messages = [];
 
         foreach ($fields as $name => $field) {
-            $rules = [...$rules, ...$field->rulesAt($name, $values[$name] ?? null)];
+            $rules = [...$rules, ...$field->rulesAt($name, $values[$name] ?? null, $draft)];
         }
 
         foreach ($routed as $name) {
@@ -1167,13 +1863,15 @@ class ContentStore
          | encodes: the value serialized, where it is given or a new row takes
          | it. What a row holds already came out of JSON.
          */
-        $validator->after(function () use ($validator, $fields, $values, $data, $stored) {
+        $validator->after(function () use ($validator, $fields, $values, $data, $stored, $draft) {
             if ($validator->errors()->isNotEmpty()) {
                 return;
             }
 
             foreach ($fields as $name => $field) {
-                if (! $field->keptAsJson() || (! array_key_exists($name, $data) && array_key_exists($name, $stored))) {
+                /* A draft keeps a value left empty as null, which a field
+                   with no empty value would refuse to serialize. */
+                if (! $field->keptAsJson() || (! array_key_exists($name, $data) && array_key_exists($name, $stored)) || ($draft && ($values[$name] ?? null) === null)) {
                     continue;
                 }
 
@@ -1539,7 +2237,7 @@ class ContentStore
      | path and its localized fields are not set, and nothing loads what it
      | points at, which reads as missing.
      */
-    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null, array $loaded = []): ContentType
+    private function hydrate(string $type, object $row, ?string $locale, bool $internal, ?array $only = null, array $loaded = [], bool $lenient = false): ContentType
     {
         [$class, $properties] = $this->reflection($type);
         $entry = $class->newInstanceWithoutConstructor();
@@ -1557,7 +2255,10 @@ class ContentStore
             $this->absent($entry, $property);
         }
 
-        $entry->id = (int) $row->id;
+        /* None, for an entry not published yet, which a draft reads. */
+        if ($row->id !== null) {
+            $entry->id = (int) $row->id;
+        }
 
         /* A caller that may not read the type is handed the id and nothing it
            did not write: not the owner, not the stamps, and not the path,
@@ -1596,11 +2297,12 @@ class ContentStore
                answered, so a stored value its field cannot read -- a blank
                select, put there from outside the layer -- is left out of it,
                rather than refusing the caller in that field's name. A read
-               still fails on it, naming the declaration. */
+               still fails on it, naming the declaration. So is a draft's
+               field left empty that its property cannot hold, `$lenient`. */
             try {
                 $properties[$name]->setValue($entry, $field->cast($this->decode($type, $field, $row->{$column}), $loaded));
             } catch (InvalidArgumentException $exception) {
-                if ($locale !== null) {
+                if ($locale !== null && ! $lenient) {
                     throw $exception;
                 }
             }
