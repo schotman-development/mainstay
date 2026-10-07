@@ -13,5 +13,5 @@ use Mainstay\Fields\Text;
 class Lost extends Entry
 {
     #[Text]
-    public ?string $title;
+    public string $title;
 }

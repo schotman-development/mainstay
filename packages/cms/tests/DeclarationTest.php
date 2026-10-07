@@ -238,7 +238,7 @@ class DeclarationTest extends TestCase
            twice rather than a second field. */
         $fields = $this->mainstay->fields(Fixtures\Note::class);
 
-        $this->assertSame(['body', 'heading'], array_keys($fields));
+        $this->assertSame(['title', 'body', 'heading'], array_keys($fields));
         $this->assertInstanceOf(Textarea::class, $fields['body']);
         $this->assertInstanceOf(Text::class, $fields['heading']);
     }

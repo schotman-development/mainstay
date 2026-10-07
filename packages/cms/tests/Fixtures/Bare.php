@@ -2,6 +2,8 @@
 
 namespace Mainstay\Tests\Fixtures;
 
-use Mainstay\Content\Entry;
+use Mainstay\Content\GlobalSet;
 
-class Bare extends Entry {}
+/* A type with no fields, which only a global can be: every entry has a
+   title. */
+class Bare extends GlobalSet {}

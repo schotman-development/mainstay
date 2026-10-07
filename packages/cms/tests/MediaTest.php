@@ -128,7 +128,7 @@ class MediaTest extends DatabaseTestCase
 
     private function create(array $data): Pictured
     {
-        return Mainstay::create(Pictured::class, $data, locale: 'en', overrideAccess: true);
+        return Mainstay::create(Pictured::class, ['title' => 'Pictured', ...$data], locale: 'en', overrideAccess: true);
     }
 
     /* A strip of one figure holding `$image`. */

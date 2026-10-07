@@ -3,6 +3,7 @@
 namespace Mainstay\Content;
 
 use Closure;
+use Mainstay\Fields\Text;
 use Mainstay\Mainstay;
 use ReflectionClass;
 use ReflectionProperty;
@@ -14,6 +15,19 @@ use ReflectionProperty;
  */
 abstract class Entry extends ContentType
 {
+    /*
+     | What the entry is called, as every WordPress post has a title: the
+     | admin names an entry by it and by nothing else, in a list, a picker and
+     | the browser's tab. Every entry type and every taxonomy's terms hold it
+     | without declaring it, first in the field list since a base's fields
+     | come first. A type redeclares it to change it -- a longer max, one
+     | title for every language -- keeping the slot and taking its own
+     | attribute. It stays a string, which PHP holds a redeclared property to,
+     | so a title is never optional.
+     */
+    #[Text(required: true, localized: true)]
+    public string $title;
+
     /*
      | The path the entry answers to in the locale it was read in, from the
      | lookup row every save writes from the pattern. Restoring from the trash
