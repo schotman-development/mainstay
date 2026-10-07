@@ -131,9 +131,9 @@ class Blocks extends Field
      | item was written without holds its default by now -- see complete() --
      | so the default is checked as a value given is.
      */
-    public function rulesAt(string $attribute, mixed $value = null): array
+    public function rulesAt(string $attribute, mixed $value = null, bool $draft = false): array
     {
-        $rules = parent::rulesAt($attribute, $value);
+        $rules = parent::rulesAt($attribute, $value, $draft);
 
         foreach (is_array($value) && array_is_list($value) ? $value : [] as $index => $item) {
             $at = "{$attribute}.{$index}";
@@ -155,7 +155,7 @@ class Blocks extends Field
             $rules["{$at}.data"] = ['sometimes', 'array:'.implode(',', array_keys($fields))];
 
             foreach ($fields as $name => $field) {
-                $rules = [...$rules, ...$field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null)];
+                $rules = [...$rules, ...$field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null, $draft)];
             }
         }
 

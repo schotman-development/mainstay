@@ -33,6 +33,16 @@ class MediaPolicy
         return $this->nobody();
     }
 
+    public function restore(?object $user, Media $media): Response
+    {
+        return $this->nobody();
+    }
+
+    public function forceDelete(?object $user, Media $media): Response
+    {
+        return $this->nobody();
+    }
+
     private function nobody(): Response
     {
         return Response::deny('Writing to the media library needs a Mainstay user, and there is none. Code that writes on its own authority passes overrideAccess: true.');

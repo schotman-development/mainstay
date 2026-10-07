@@ -298,9 +298,21 @@ abstract class Field
      | keys of their own, which only its value can say: which block each item
      | is decides which rules its data answers to.
      */
-    public function rulesAt(string $attribute, mixed $value = null): array
+    public function rulesAt(string $attribute, mixed $value = null, bool $draft = false): array
     {
-        return [$attribute => $this->rules()];
+        return [$attribute => $draft ? $this->drafted($this->rules()) : $this->rules()];
+    }
+
+    /*
+     | The rules a draft holds this field to: its own presence rule gives way,
+     | since a draft may be saved before everything is filled in, and the rest
+     | stay, so what it does hold is the right kind of thing. Only the field's
+     | own -- the rules keeping a value's shape, a block's type or a list's
+     | ids, are not presence rules and stay required.
+     */
+    protected function drafted(array $rules): array
+    {
+        return ($rules[0] ?? null) === 'required' ? ['nullable', ...array_slice($rules, 1)] : $rules;
     }
 
     public function schema(): array

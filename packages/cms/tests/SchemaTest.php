@@ -16,6 +16,8 @@ use Mainstay\Tests\Fixtures\Accented\Article as AccentedArticle;
 use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Bodied\Article as BodiedArticle;
 use Mainstay\Tests\Fixtures\Broken\Collided;
+use Mainstay\Tests\Fixtures\Broken\MainstayDrafts;
+use Mainstay\Tests\Fixtures\Broken\MainstayRevisions;
 use Mainstay\Tests\Fixtures\Broken\Reserved;
 use Mainstay\Tests\Fixtures\Broken\Templated;
 use Mainstay\Tests\Fixtures\Broken\Uris;
@@ -759,6 +761,8 @@ class SchemaTest extends DatabaseTestCase
     {
         $this->declare(Article::class);
         Schema::drop('uris');
+        Schema::drop('mainstay_drafts');
+        Schema::drop('mainstay_revisions');
         Schema::drop('sites');
 
         $this->assertSame(1, Artisan::call('mainstay:sync'));
@@ -910,6 +914,8 @@ class SchemaTest extends DatabaseTestCase
             Templated::class => 'has a field stored as template, a column Mainstay keeps for itself',
             Collided::class => 'has two properties stored in the same column',
             Uris::class => 'would be stored in uris, a table Mainstay keeps for itself',
+            MainstayDrafts::class => 'would be stored in mainstay_drafts, a table Mainstay keeps for itself',
+            MainstayRevisions::class => 'would be stored in mainstay_revisions, a table Mainstay keeps for itself',
         ] as $type => $message) {
             $this->declare($type);
 

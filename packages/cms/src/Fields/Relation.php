@@ -144,13 +144,13 @@ class Relation extends Field
      | and an entry of a type the field does not name by what it is, rather
      | than as an id or a map it was never written as.
      */
-    public function rulesAt(string $attribute, mixed $value = null): array
+    public function rulesAt(string $attribute, mixed $value = null, bool $draft = false): array
     {
         if (! $this->many) {
-            return [...parent::rulesAt($attribute, $value), ...$this->item($attribute, $value, false)];
+            return [...parent::rulesAt($attribute, $value, $draft), ...$this->item($attribute, $value, false)];
         }
 
-        $rules = parent::rulesAt($attribute, $value);
+        $rules = parent::rulesAt($attribute, $value, $draft);
         $seen = [];
 
         foreach (is_array($value) && array_is_list($value) ? $value : [] as $index => $item) {

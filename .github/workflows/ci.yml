@@ -78,7 +78,7 @@ jobs:
 
       - uses: ramsey/composer-install@v3
 
-      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php packages/cms/tests/RenderTest.php packages/cms/tests/MediaTest.php packages/cms/tests/RelationTest.php
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php packages/cms/tests/RenderTest.php packages/cms/tests/MediaTest.php packages/cms/tests/RelationTest.php packages/cms/tests/DraftTest.php
         env:
           MAINSTAY_TEST_DB: ${{ matrix.db }}
           DB_DATABASE: mainstay
@@ -151,7 +151,7 @@ jobs:
         env:
           SA_PASSWORD: 'Mainstay-Passw0rd!'
 
-      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php packages/cms/tests/RenderTest.php packages/cms/tests/MediaTest.php packages/cms/tests/RelationTest.php
+      - run: vendor/bin/phpunit packages/cms/tests/SchemaTest.php packages/cms/tests/ContentTest.php packages/cms/tests/RenderTest.php packages/cms/tests/MediaTest.php packages/cms/tests/RelationTest.php packages/cms/tests/DraftTest.php
         env:
           MAINSTAY_TEST_DB: sqlsrv
           DB_DATABASE: mainstay

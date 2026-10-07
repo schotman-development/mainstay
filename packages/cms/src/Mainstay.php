@@ -14,6 +14,8 @@ use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Route;
 use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
+use Mainstay\Database\Drafts;
+use Mainstay\Database\Revisions;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
@@ -285,6 +287,30 @@ class Mainstay
     public function saveGlobal(string $type, mixed ...$arguments): GlobalSet
     {
         return $this->store()->saveGlobal($type, ...$arguments);
+    }
+
+    /* Out of the trash, with its paths back, by locale. */
+    public function restore(string $type, mixed ...$arguments): array
+    {
+        return $this->store()->restore($type, ...$arguments);
+    }
+
+    /* Out of the trash for good. */
+    public function destroy(string $type, mixed ...$arguments): void
+    {
+        $this->store()->destroy($type, ...$arguments);
+    }
+
+    /* Drafts and revisions, beside the reads and writes of what is live:
+       `Mainstay::drafts()->save(...)`. */
+    public function drafts(): Drafts
+    {
+        return new Drafts($this->store());
+    }
+
+    public function revisions(): Revisions
+    {
+        return new Revisions($this->store());
     }
 
     private function store(): ContentStore
