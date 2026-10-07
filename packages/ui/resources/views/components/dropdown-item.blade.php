@@ -10,8 +10,11 @@
  | status filter that is a link is a filter you can open in a new tab, and one
  | the browser can restore on back. The dismiss-on-activate rule in the bundle
  | already covers both, because it asks for a link or a button.
+ |
+ | A button is `type="button"` unless the caller says otherwise: a submit
+ | inside a form, which is how signing out is an item.
 --}}
-<{{ $as }} @if ($as === 'button') type="button" @endif {{ $attributes->class([
+<{{ $as }} @if ($as === 'button' && ! $attributes->has('type')) type="button" @endif {{ $attributes->class([
     'block w-full px-3 py-1.5 text-left text-sm hover:bg-surface',
     'text-danger' => $danger,
     'text-ink' => ! $danger,
