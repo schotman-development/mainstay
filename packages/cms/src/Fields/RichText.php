@@ -68,7 +68,7 @@ class RichText extends Field
     }
 
     /* The root only. The recursive node schema is served with the rest in
-       phase 11, from the discovery endpoint, rather than inlined per field. */
+       phase 13, from the discovery endpoint, rather than inlined per field. */
     protected function json(): array
     {
         return [

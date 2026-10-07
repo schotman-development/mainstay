@@ -15,7 +15,9 @@ between the two.
 > other entries and tags are fields like the rest, and a global holds a site's settings. A change
 > can wait as a draft until it is published, what it replaces is kept as a revision, and the trash
 > can be restored from or emptied. The admin has accounts of its own, a login page, and roles whose
-> capabilities decide who may write and who may publish; there is no admin form yet.
+> capabilities decide who may write and who may publish. It lists each type's entries and edits their
+> plain fields in every language, saving a draft or publishing it, and chooses the front page; rich
+> text, images, relations and tags get their editors in the rest of phase 10.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout

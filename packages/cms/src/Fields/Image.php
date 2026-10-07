@@ -115,7 +115,7 @@ class Image extends Field
     }
 
     /* The id, as it is stored. What a reader of the API is handed in its
-       place is phase 11's to decide. */
+       place is phase 13's to decide. */
     protected function json(): array
     {
         return ['type' => 'integer'];

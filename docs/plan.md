@@ -14,7 +14,10 @@ pivot, and a global holds the site's menu and footer. A change waits as a draft 
 from live until it is published, every version a write replaces is kept as a revision a draft can be
 made from again, and the trash is restored from or emptied. The admin has accounts of its own
 behind a login, and the query layer asks Gate about the one signed in, whose role's capabilities --
-each type's own, or a form covering every type -- decide what it may write and publish.
+each type's own, or a form covering every type -- decide what it may write and publish. Phase
+10's first part is done too: every entry has a title, and the admin lists each type's entries and
+edits their plain fields in every language, saving a draft or publishing it, with the trash and the
+front page as buttons.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is a built ProseMirror island declaring the document schema the
 package renders.
@@ -32,7 +35,7 @@ to a site, and localizable per field.
 
 ## Corrections to carry into the work
 
-Twenty-two things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
+Twenty-five things in `decisions.md` are stale or contradicted by a later entry. They are recorded here
 rather than edited into the log, which is append-only by construction.
 
 - **Schema sync never has to plan child tables.** Its consequences say "repeaters and blocks become
@@ -41,14 +44,14 @@ rather than edited into the log, which is append-only by construction.
   type. So the diff stays scalar-only, permanently, and phase 2 is much smaller than that
   consequence implies. Localization is what adds a second table per type, not blocks.
 - **`config/mainstay.php` mounts the API with no guard.** The API decision names this a
-  placeholder. It stays wrong until phase 11; nothing should be built on the assumption that an API
+  placeholder. It stays wrong until phase 13; nothing should be built on the assumption that an API
   route is reachable.
 - **`GlobalSet` is a base class, not an attribute.** The globals entry says "the attribute is
   `#[GlobalSet]`". Phase 1 builds the three shapes as base classes a type extends, so there is no
   attribute of that name to write and nothing reads one.
 - **`Navigation::sections()` lists a "Content types" screen.** Types are classes and there is no UI
-  for authoring them. That item can only ever be a read-only inspector, and the navigation is
-  generated from the registry in phase 10 regardless.
+  for authoring them. That item can only ever be a read-only inspector, and phase 10 drops it,
+  building the navigation from the registry.
 - **`#[Private]` is `#[Internal]`.** `private` is a reserved word, so `class Private` does not
   parse — the reason `Global` is `GlobalSet`. The API and localization entries mean `#[Internal]`
   wherever they say `#[Private]`.
@@ -62,7 +65,7 @@ rather than edited into the log, which is append-only by construction.
   the host's `App\Policies\PostPolicy`, written for an Eloquent model of the same name and its own
   users, and every public read would be refused. Anything the host did not choose is `EntryPolicy`.
 - **An untranslated entry is absent, not a fallback.** The localization entry has fallback on by
-  default. Phase 3 has none, and phase 12 adds it as an opt-in, so a live multilingual site's
+  default. Phase 3 has none, and phase 14 adds it as an opt-in, so a live multilingual site's
   listings do not start mixing languages on the deploy that ships it.
 - **The catch-all needs no registration order.** The routing entry says it "must be registered
   after everything else, so ordering becomes a documented requirement." It is a fallback route,
@@ -78,7 +81,7 @@ rather than edited into the log, which is append-only by construction.
   blocks decision was about.
 - **`mainstay.locales` is a map, not a list.** The localization entry has it carrying "`locales`, a
   required default, and a fallback flag." It maps each locale to where it is served, the first
-  being the default, and there is no fallback flag until phase 12 makes fallback an opt-in.
+  being the default, and there is no fallback flag until phase 14 makes fallback an opt-in.
 - **Terms are entries.** The globals and taxonomies entry has three shapes of content, and the public
   pages entry keeps `template` an entry's alone, "so globals and taxonomies keep the name for their
   fields". `Taxonomy extends Entry`, so a term has the column and may name a view, and is a shape of
@@ -122,6 +125,18 @@ rather than edited into the log, which is append-only by construction.
 - **There is no `Gate::before`.** The authorization entry resolves primitive capabilities there. The
   policies ask the user what it holds, and Mainstay's Gate carries no callbacks at all, since the
   host's are typed for the host's own users.
+- **A page's content is edited on the page.** The rendering entry has "Notion-style inline block
+  editing is off the table" and preview beside the form, and the blocks entry picks a form-based
+  list of blocks on the strength of it. Phase 12's page builder edits a page's content inline on the
+  site, its core one field as WordPress's `post_content`, and preview is its edit mode. Blocks stay
+  data, a node tree and not markup. So the admin builds no block list, the client-state entry's
+  blocks moved as DOM nodes included, and draws a Blocks field as its raw JSON.
+- **The log's later phase numbers are the old ones.** `decisions.md` has onboarding as phase 13 and
+  per-site locales as phase 12. With accounts and the page builder phases of their own, they are 15
+  and 14.
+- **A front page's path is a setting.** The routing entry has every path from its type's pattern.
+  The site's front page, chosen in the admin as WordPress's static front page is, is served at `/`
+  whatever its pattern builds, and goes back to that path when another is chosen.
 
 ## Phase 1 — Declarations
 
@@ -171,15 +186,15 @@ The check is a declared type synced into sqlite, then a property renamed and the
 
 `find`, `findById` and `paginate` for reads, taking `(type, where, sort, limit, locale)`, and
 `create`, `update` and `delete` through the same layer, executing against the database with no HTTP
-hop. `where` and `sort` are data rather than closures, so phase 11's transport carries the same call
+hop. `where` and `sort` are data rather than closures, so phase 13's transport carries the same call
 a template makes. A read hydrates the declared class through the field types, and every read starts
 from one query scoped to the site, to the locale's row and out of the trash. The query builder, not
 Eloquent: the declared class is the model, and an Eloquent one would be a second object per row.
 
-`locale` is here rather than in phase 12, because the real site is multilingual from the start. It
+`locale` is here rather than in phase 14, because the real site is multilingual from the start. It
 defaults to the request's locale and has to be one of `mainstay.locales`, the first of which is the
 default. There is no fallback: an entry with no row in a locale is not there in it. `depth` waits
-for phase 7, where relations give it something to follow, and `site` for phase 12. Both are named
+for phase 7, where relations give it something to follow, and `site` for phase 14. Both are named
 arguments, so adding them breaks no caller.
 
 Writes belong to the layer rather than to the admin, for the same reason reads do. A save validates
@@ -460,7 +475,7 @@ asked about again, as with images.
 `findByUri`, `paginate` and `global`. At 1 a relation holds the entry it points at, read as its type's
 own read would read it at depth 0, with its internal fields shown or not by its own type's policy;
 at 2 that entry's relations are read too. A write hands back what a read at the default depth would.
-No cap here; phase 11 caps what a request may ask, and a cycle only costs the levels asked for.
+No cap here; phase 13 caps what a request may ask, and a cycle only costs the levels asked for.
 
 A target not loaded is an object of its class holding only its id, `missing` true, as an image is:
 depth ran out, or it is trashed, gone, untranslated in the locale, or of a type the reader may not
@@ -602,7 +617,7 @@ of its own overrides `drafted()`: the contract's reshape here. An empty value is
 draft as null rather than through `serialize()`, which a RichText, a Date or a Select with no empty
 value refuses, and the encoding check skips it. An article saves with no summary yet. A field it
 leaves empty that its property cannot hold, a required date, is absent from the entry it reads as;
-phase 10's preview says so rather than drawing it. Whether a path is free is publish's question.
+phase 12's preview says so rather than drawing it. Whether a path is free is publish's question.
 
 One draft per entry is a unique index on `(site_id, type, entry_id)`. A global's draft is entry 0,
 since a global is the site's one and not addressed by id; a new entry's is null, each its own. SQL
@@ -722,7 +737,7 @@ Every call refused without the override.
 Who is signed in to the admin, and what each of them may do. The query layer has asked `Gate` about
 Mainstay's user on every call since phase 3; here that user stops being null on the admin's own
 requests, and nowhere else. Accounts and roles are written from PHP and the command line, as content
-was before the admin, and phase 10 draws their screens.
+was before the admin, and phase 11 draws their screens.
 
 **Accounts.** `mainstay_users`, a package migration: a name, an email, a hashed password, the role it
 holds, its grants and its denials as JSON lists of capabilities, a remember token, and the timestamps.
@@ -736,7 +751,7 @@ keeps from being deleted while it is held, and accounts are installation-wide, a
 `php artisan mainstay:user you@example.com --name="..." --role=administrator` creates an account,
 asking for the password twice without echoing it and checking it against `Password::defaults()`,
 which the host sets. It refuses an email that has an account, a role that does not exist, and no
-role. It is the only way an account is made before phase 10: nothing on the web creates one, so a
+role. It is the only way an account is made before phase 11: nothing on the web creates one, so a
 new server has no page that whoever reaches it first can claim. There is no registration.
 
 **The session.** The admin's routes stop running the host's `web` group, whose session is a visitor's
@@ -758,7 +773,7 @@ the request, and the layer's user is read from there and nowhere else. Public pa
 console read as a visitor with an editor signed in. Asking the guard instead would sign the editor in
 on a public page from the remember cookie, sent on every path and decrypted by the host's own
 middleware. A signed-in editor is served the page a visitor is, internal fields left out, which is
-what a static cache needs and what phase 10's preview exists to change.
+what a static cache needs and what phase 12's page builder has to change.
 
 Laravel's guard dispatches `Login`, `Authenticated` and `Logout` as it does for any guard, carrying
 `guard: 'mainstay'`, which a host listener written for its own users reads.
@@ -794,7 +809,7 @@ a few types or all of them.
 | A global | `edit_layout`, `publish_layout` | `edit_globals`, `publish_globals` |
 | A taxonomy | `manage_tags` | `manage_terms` |
 | The media library | | `upload_media`, `edit_others_media` |
-| Accounts and roles | | `manage_users`, first asked by phase 10's screens |
+| Accounts and roles | | `manage_users`, first asked by phase 11's screens |
 
 An entry type's and a taxonomy's are plural, by the English inflector whatever language the host
 gives `Pluralizer`, which would otherwise rename every capability; a global's is its handle, there
@@ -837,7 +852,7 @@ is not the caller, no owner included, which is the answer that fails closed.
   `manage`. Terms have owners and nothing asks about them.
 - `MediaPolicy`: every write needs `upload_media`, and `edit_others_media` for someone else's image.
 
-`viewAny` stays open until phase 11, and the revisions go on asking `update`. Without a user each
+`viewAny` stays open until phase 13, and the revisions go on asking `update`. Without a user each
 policy answers as it does now: reading open, internal fields absent, writes refused naming
 `overrideAccess`. A user without a capability is refused naming it: "Publishing this needs
 publish_articles."
@@ -849,22 +864,22 @@ built from the host's policies and its default denial, which only a subclass can
 callbacks, and without guessing a policy by name as now. The layer and the media library take it from
 one place, where each builds its own today.
 
-**Owners.** `owner_id` is filled from here. A create is owned by the user making it, an upload by the
-uploader, and a new entry's draft by who started it, as is the entry it publishes into, whoever
-publishes it. A global has no owner. Nothing changes an owner yet; that is a field of phase 10's form.
-Every row written before this phase has none, and so has every row code writes on its own authority
-with no user signed in. `mainstay_drafts` and `mainstay_media` gain `owner_id` in their own create
-migrations, which nothing released has run. Revisions gain no author: who a history screen names,
-whoever published a version or whoever replaced it, is phase 10's to decide beside that screen.
-`owner_id` takes no foreign key. A content table's would make the users table a precondition of
-every sync and a line of every host's migrations, and the id a deleted account leaves behind belongs
-to nobody, which reads as someone else's.
+**Owners.** `owner_id` is filled from here. A create is owned by the user making it, an upload by
+the uploader, and a new entry's draft by who started it, as is the entry it publishes into, whoever
+publishes it. A global has no owner. Nothing changes an owner yet; that is phase 11's, where
+accounts are listed. Every row written before this phase has none, and so has every row code writes
+on its own authority with no user signed in. `mainstay_drafts` and `mainstay_media` gain `owner_id`
+in their own create migrations, which nothing released has run. Revisions gain no author: who a
+history screen names, whoever published a version or whoever replaced it, is phase 10's to decide
+beside that screen. `owner_id` takes no foreign key. A content table's would make the users table a
+precondition of every sync and a line of every host's migrations, and the id a deleted account
+leaves behind belongs to nobody, which reads as someone else's.
 
 `mainstay_users`, `mainstay_roles` and `mainstay_password_reset_tokens` join the names a content type
 cannot take.
 
 **The admin.** Every admin path needs a signed-in user. The shell's user menu shows their name and
-email and signs them out; "Account settings" waits for phase 10. That is all the admin draws.
+email and signs them out; "Account settings" waits for phase 11. That is all the admin draws.
 
 **The site.** Its `config/mainstay.php` drops `web` from the admin's middleware, which would now run
 a second time after Mainstay's stack and blank every cookie the first decrypted. The seeder makes an
@@ -906,33 +921,338 @@ user they found otherwise.
 
 ## Phase 10 — The admin
 
-Everything the phases before this built from code, drawn. Navigation generated from the registry. A
-list screen per type on top of `EntryList::shape()`, which already exists and is tested. A form built
-from the field list, one Blade component per field type, drawn with the components in
-`packages/ui`, and saving through phase 3's write, so the admin validates exactly as a seeder does.
-A slug fills from the title as it is typed.
+Everything the phases before this built from code, drawn as screens an editor works in: a sidebar
+from the registry, a list of each type, a form of each entry in every language, and buttons over
+phase 8's drafts, publishing, trash and revisions. Every screen is a transport over the query layer,
+as phase 3 has it: it validates what a seeder's write validates, is refused what Gate refuses, and
+adds no rule of its own. Screens are Blade, drawn with `packages/ui`'s components; what they do in
+the browser is the behaviour layer's `mount()`.
 
-The editor island wired into the form for rich text fields. The block list built by moving DOM
-nodes, not re-rendering a list. `insertBefore` on a live node is a move, so typed-in state, focus and
-any editor instance inside a block survive a reorder. Adding clones a `<template>`; removing is
-`.remove()`; reordering is the platform's `draggable`. Serializing walks `[data-block]` in DOM order
-into a hidden input inside the form, so `FormData` sees it and `dirty-form.ts` covers blocks with no
-change at all.
+It is four pull requests, each merged on its own and each leaving an admin that works: 10a the
+frame, the lists and the scalar fields; 10b rich text and the raw blocks field; 10c media, relations
+and terms; 10d history. Accounts, roles and account settings are phase 11. A page's content is edited
+on the site itself by phase 12's page builder, so this phase draws no block list and no preview.
 
-The media picker and browser on the behaviour layer. Publish, restore and the trash as buttons over
-the calls phase 8 made.
+### 10a — The frame, the lists and the scalar fields
 
-Preview is a signed URL behind Mainstay's guard, in an iframe beside the form, reading the draft
-when there is one.
+**Every entry has a title.** `Entry` declares `#[Text(required: true, localized: true)] public
+string $title`, as WordPress gives every post one, so every entry type and every taxonomy's terms
+hold it without declaring it, first in the field list, since reflection files a base's fields first.
+A type redeclares `$title` to change it -- a longer `max`, one title for every language -- and the
+redeclaration keeps the base's position and takes the child's attribute, which reflection already
+does. It stays a `string`, since PHP holds a redeclared property to its parent's type, so a title
+can be longer or shared but never optional: `Pictured`, `Lost` and `Linked/Review`, which declare
+`?string $title`, change. The admin names an entry by its title and nothing else: a list's rows, a
+picker's options, the breadcrumb, the browser's tab; an empty one reads "Untitled". Globals and
+blocks have none. Fixtures that declare no title get one from the base, and every test writing them
+names one.
 
-This is the largest phase, and it cuts by field type: scalars first, then rich text, blocks and
-media, each a screen that works before the next begins. It is also where the field contract's
-interface half is first exercised, so expect its last reshape here.
+**Navigation.** `Navigation::sections()` is built from the registry instead of written by hand:
+Dashboard; Content, each entry type and then each taxonomy, in registration order; Media, from 10c;
+and Globals, each global, a section left out when there are none. A type is named from its class,
+headlined and pluralized by the English inflector as its capabilities are -- Pages, Articles, Docs,
+Tags -- and a global in the singular. The sidebar offers a type only to someone who may write to it
+(`create` for an entry type or a taxonomy, `update` for a global, each asked of Gate with the type,
+as the layer asks), and its screens refuse anyone else; reading stays open to the layer, but a list
+nobody may change is not one to offer. "Content types", "Users" and "Settings" go; Users returns in
+phase 11. The top bar carries the logo, the command centre fed the sidebar's links and a "New ..."
+for each type, "Visit website", and the user menu. The disabled Publish button, the status line and
+the fetch of the API's root go: nothing is built on an API route being reachable until phase 13. The
+shell, top bar and pager exist only as Storybook fixtures under `stories/blade`; they move into
+`packages/ui`'s components, so Storybook shows what ships and the screens are built from them. The
+list's table stays the screen's own, its columns and row menus being the admin's.
 
-The check is a round trip — create through the admin, read back through the query layer — and a
-block reorder that preserves an untouched sibling's value.
+**Addresses.** Every admin path is under the type's handle, as `ContentType::handle()` says it names
+one: `/admin/article` lists, `/admin/article/new`, `/admin/article/5`, `/admin/article/drafts/12` for
+an entry not yet published, `/admin/article/trash`, and `/admin/layout` for a global. Every route is
+named `mainstay.*`, and a path under the prefix that none answers is a 404 drawn in the shell, so the
+prefix stays the admin's and `Mainstay::shadow()` goes on refusing an entry a path inside it.
+Registration refuses a type whose handle is a segment the admin uses for itself -- `media`, `login`,
+`logout`, `forgot-password`, `reset-password` -- naming it, as it refuses two types of one handle.
 
-## Phase 11 — The API as a product
+**Languages.** A list and a form take `?locale=`, the default when absent, with a toggle between the
+configured locales above both. This is the switcher phase 14 had; the rest of that phase stays there.
+The form in a locale reads that locale's row: translated fields show its text, shared ones the same in
+every locale and marked as shared. An entry with no row in the locale opens with its shared fields and
+empty translated ones and says it has no version in that language yet; saving adds one, as a draft
+saved with a locale does. The list reads the type in every locale and shows each entry once, in the
+chosen locale or, marked as missing there, in the first it has.
+
+**The list.** A list per entry type and taxonomy: title, status, author and last change, searched by
+title and author, sorted by any column, filtered by status and paged -- the screen
+`stories/blade/components/page-list.blade.php` already draws, over `EntryList::shape()`. Its rows
+are the type read in every locale at depth 0, and every draft of the type, from a new
+`drafts()->all(Article::class, locale:)`, the one listing of drafts there is, holding only those the
+caller may `update`, as reading one draft asks: an entry with a draft is "Changed", one without
+"Published", a draft with no entry "Draft". A row is keyed by its admin address, which a draft with
+no entry has where it has no path, and an entry nobody owns reads its author as a dash, since
+`shape()` searches strings. The selection's one bulk action is Move to trash; a row's menu has Edit,
+View for the live page, and Move to trash, or Edit and Discard draft for a draft with no entry, each
+shown to whoever Gate allows it. The trash, `/admin/article/trash`, lists what `find(..., trashed:
+true)` reads -- a new named argument reading the trash alone, the way phase 3 adds them -- with
+Restore, saying which suffixed path a restore took, and Delete for good, which asks first.
+
+ponytail: the list reads the whole type into memory to shape it, which holds to a few thousand
+entries. Past that it is `paginate()`, and a `like` operator the layer does not have yet.
+
+A question is a `<dialog>`: `packages/ui` gains a dialog component over the native element, opened by
+a `[data-dialog-open]` control and closed by its own button and Escape, and the behaviour layer a
+module for it. A dialog is drawn outside the entry's form, since a form inside a form is dropped by
+the parser and its inputs join the outer one, and what it sends it sends with `fetch`.
+
+**The form.** Fields in declared order, each drawn by the Blade component `$field->component()` names
+-- `mainstay::fields.text` -- an anonymous component in `packages/cms/resources/views/components/fields`
+handed the field, its value, its input name and its errors. A host's field type is drawn by writing the
+file its own `component()` names, the extension point phase 1 promised, and one with no such file is
+refused naming the path looked for. 10a draws Text, Textarea, Number, Boolean, Date and Select:
+
+- Text an input held to its `max` by the browser, Textarea a textarea, Number a number input with its `min` and
+  `max`, Select a select of its options, Boolean a checkbox posting `1` beside a hidden `0`, as
+  `Boolean.php` expects.
+- Date a date input. One with `time` is a `datetime-local` the behaviour layer fills from the stored
+  UTC instant in the browser's zone and posts with the browser's offset, which `Date::from()` already
+  honours, so an editor in Amsterdam types Amsterdam time; without JavaScript it shows and takes UTC,
+  and says so.
+- The slug -- the field a route's last placeholder names, when it is a Text field -- follows the title
+  as it is typed: lowercased, accents dropped, anything else a hyphen, which `Route::SLUG` accepts.
+  It stops once it is typed in by hand, and never starts on an entry already published, whose
+  address a title change must not move.
+- A template select when the type names more than one view.
+- `#[Internal]` fields for whoever may see them, which the layer's read already decides.
+
+A field a later milestone draws shows its label and that it is not editable here yet, and posts
+nothing, so a save leaves it as it is: a draft holds only the keys it is given. The status and the
+buttons sit in the shell's bar, and the form's rail holds the entry's address in each language
+linking to the live page, the template, and the author, shown and not changed, since changing it
+needs the accounts phase 11 lists.
+
+The contract's interface half settles here. Beside `component()` and `label()`, `fromForm(mixed
+$posted): mixed` turns what a field's component posted into what a write takes: the null the host's
+`ConvertEmptyStringsToNull` makes of an empty input back into the field's empty value where it has
+one, a number's text into a number, JSON into an array for the fields that post it, and a list's
+leading empty value dropped. That value is how a list says it is empty: rows post `name[]`, so a list
+whose last row was removed would post nothing and be left as it was, and each list field posts an
+empty `name[]` before its rows. It is the identity by default, so a host's type overrides it only
+where its component posts something else.
+
+**Saving and publishing.** Two buttons. Save draft saves the form as the entry's draft. Publish saves
+it and publishes the draft in the same request, and a publish refused -- a required field empty, a
+path taken -- leaves the draft saved and shows why. Someone who may not publish sees Save draft
+alone. A live entry with a draft says it has unpublished changes and offers Publish and Discard
+draft, which asks first. `EntryForm::saveState()` answers from what the server knows -- whether
+there is a draft, whether the user may publish -- and `dirty-form.ts` sets `data-dirty` on the form as
+it changes, which the buttons' emphasis follows in CSS: Save draft is the primary button while there
+are unsaved edits, Publish once there are none. A form changes by script too -- an editor, a reorder,
+a pick, a focal point -- so every behaviour module that writes a control dispatches `input` after it,
+which `dirty-form.ts` listens for. The client-side Discard, which restored hidden inputs and not tag
+chips, goes; leaving with unsaved edits still warns.
+
+A form posts what it drew, and a draft saved with a field equal to live drops that field from the
+draft. So a second editor's form, opened before the first saved, would post the old title and undo
+the first editor's change. Each drawn field carries a fingerprint of the value it was drawn with, its
+`serialize()`d form, and a field whose posted value, through `fromForm()` and `serialize()`, matches it
+is left out of the save -- so a date-time posted back with an offset, or a string the host's
+middleware trimmed, is unchanged. Two editors changing different fields both keep their change, as
+phase 8's merging saves intend, and one field changed by both takes the later.
+
+Publish and Discard draft act on the whole draft, so the form also carries when the draft was last
+saved. When another save has moved it since, the form's own changes are saved and merged as always,
+but the publish or the discard is refused, and the form is drawn again with the draft as it now is
+for the editor to look at first.
+
+**Terms and globals.** A term's form has one button, Save, writing live, as phase 8 writes terms: no
+draft, no history, no publish. A global's form is an entry's without a list, a trash or an address,
+opened from the sidebar, and is drafted and published as an entry is.
+
+**The front page.** The site records which entry is its front page, as WordPress's "a static page"
+does: `front_type` and `front_id` on `sites`, in its create migration, which nothing released has
+run. That entry's path is `/` in every locale it has, in place of what its pattern builds, and since
+`wanted()` builds every path, a publish, a restore or a translation added keeps it there; a link
+through `Mainstay::url()` follows. `Mainstay::frontPage()` reads it as a type and id, or null.
+`Mainstay::setFrontPage(Page::class, 5)` sets it, rebuilding both entries' paths in one transaction,
+and is refused while something else answers `/` in a locale the entry has; `setFrontPage(null)`
+clears it. The old entry takes its pattern's path again, which another entry may have taken while it
+was free: there it is suffixed as a restore suffixes, or, where no suffix frees one, the change is
+refused naming the path. Only a published entry of a routed type
+can be the front page, setting it asks `publish` about the entries it moves, and the front page is
+refused the trash until another is chosen. In the admin, "Use as front page" sits in a published
+entry's menu, and the list marks the one that is.
+
+**Dashboard.** `/admin` is the shell with nothing in it. Widgets, as WordPress has them, are phase
+15's, onboarding's checklist the first of them.
+
+**The site.** Home, Blog and DocsIndex become pages, edited as any page is, with no template to
+choose. Page gains Home's blocks field beside its body, and the blog's and the docs' listings become
+blocks: an article list, paged, and the docs by section. The three types and their views go, Layout's
+menu points at pages, and the seeder writes the home, blog and docs pages and makes the home page the
+front page. Every type drops its `title` line for the base's. "An admin to write in", the draft-only
+article phase 9 left, is written and published, and a docs page "The admin" starts, growing a section
+with each milestone. The site's tests: `/` serves the front page in both languages, and its own slug
+does not; the blog page lists the articles in both.
+
+**The check** is `AdminTest`, run by the main PHP job: the layer under it runs on every driver in
+its own suites, and what this milestone adds to the layer -- the title, `trashed`, `drafts()->all()`,
+the front page's paths -- is checked in `ContentTest`, `DraftTest` and `RenderTest`, which do.
+
+- A round trip: an article created through the admin in English, its Dutch added from the toggle,
+  published, and read back through the layer in both, with every scalar field and a date-time posted
+  with an offset and stored in UTC.
+- Save draft leaving the site as it was, Publish putting it live, a refused publish keeping the draft,
+  Discard draft. Two forms opened on one draft changing different fields, both changes kept.
+- The list's statuses, search and paging, an untranslated entry marked; trash, a restore reporting its
+  suffix, delete for good.
+- A Writer offered Articles and not Pages or Layout, refused a page's form, and shown no Publish
+  without `publish`.
+- A term saved live; a global drafted and published.
+- The front page at `/` in both locales, refused while `/` is taken, its predecessor back at its own
+  path, suffixed when that was taken meanwhile, and refused the trash.
+- A date-time left as it was in one form while another form changes it, the change kept; a publish
+  refused after another editor's save, the save kept.
+- A handle the admin uses refused at registration.
+- A field type whose component file is missing refused naming the path.
+
+Vitest covers the slug following and stopping, the local-time field, the dialog and the form marking
+itself dirty. The comments in `src` that name phase 11 for the API and phase 12 for the second site
+are renumbered with the plan.
+
+### 10b — Rich text, and the raw blocks field
+
+**The editor without React.** The island becomes `editor(element)`, mounting a ProseMirror view on a
+field's element and writing the document's JSON into the field's hidden input on every change, so the
+form posts it, `FormData` sees it and the unsaved-changes warning covers it. React rendered one `<div>`
+for ProseMirror to own and gives an editor per field, mounted idempotently by the behaviour layer as
+every other module is, nothing it needs, so `react`, `react-dom` and the React plugin leave the
+editor, the admin bundle and the root, and the committed bundle sheds them.
+
+- A toolbar above the text: paragraph or heading 2 to 4, bold, italic, code, link, bullet and
+  numbered list, quote, code block, rule -- the schema's nodes and marks and no more -- each showing
+  when it is active, with the usual keys for the marks.
+- A link asks for its address in the dialog, checked by the schema's `linkable()` before the mark is
+  set; on a link the same dialog edits or removes it.
+- Pasted HTML is parsed through the schema, so what it does not know falls away, as the blocks
+  decision foresaw.
+- Enter splits a list item, and Mod-] and Mod-[ indent and outdent it, leaving Tab to move focus,
+  from `prosemirror-schema-list`, ProseMirror's own package for it and a dependency this milestone
+  adds.
+
+The RichText component is the hidden input holding the document, the toolbar and the element the
+editor mounts on, and `fromForm()` decodes the JSON. Without JavaScript the document shows rendered
+and read-only, and posts unchanged.
+
+**The raw blocks field.** A Blocks field is the page builder's, edited on the site from phase 12. In
+the admin it is a debug field, for repairing what the page builder writes when the site's editor
+breaks: the field's stored JSON, pretty-printed, in a monospace textarea under a "Raw content"
+disclosure. `fromForm()` decodes it and the save validates it as any write, so JSON that does not
+parse is refused with the parser's message, and a wrong block with the paths phase 5's rules give,
+`blocks.1.data.title`, listed above the textarea. Whoever may edit the entry sees it.
+
+**The site.** An article on writing in the admin, and "The admin" gains its rich text and raw content
+section.
+
+**The check.** `AdminTest`: a document posted and read back as the layer stores it, one outside the
+schema refused naming the node; blocks posted as JSON and read back, JSON that does not parse
+refused, a nested block's error listed at its path. Vitest: the fixture document opened and written
+back unchanged, as the schema's test round-trips it; a change written into the input; the toolbar's
+commands and a list split on Enter; a link `linkable()` refuses. The bundle is rebuilt and committed,
+which CI's "Admin bundle is up to date" holds.
+
+### 10c — Media, relations and terms
+
+**The library.** `/admin/media`: the images in a grid, newest first, paged by a new
+`media()->paginate()`, with the trash as `paginate(trashed: true)`. Uploading is a form of the file
+and its alt text in every locale, each present as `upload()` requires, an empty one marking the
+image decorative -- the null `ConvertEmptyStringsToNull` makes of it turned back into the empty
+string the library takes; a file dropped on the grid opens it. An image's page edits its alt text in
+each locale and its focal point, set by clicking the image, a behaviour module writing the two
+percentages into hidden inputs; Move to trash, Restore and Delete for good as on entries. Each write
+asks Gate through the library as now, `upload_media` and `edit_others_media` for someone else's. The
+sidebar gains Media.
+
+**The image field.** A thumbnail with Choose, Replace and Remove, posting the image's id. Choose opens
+the dialog with the library's grid, fetched as HTML from the library's own route with `?pick`,
+uploading included, sent with `fetch` since the dialog sits outside the entry's form; picking sets the
+id and the thumbnail. A missing image shows as missing, as a read
+gives it, and is kept until it is replaced or removed.
+
+**Relations.** The chosen entries as a list -- the title, and the type where there are several -- with
+remove, drag to reorder, the platform's `draggable` and an `insertBefore`, and move up and down for
+the keyboard. Each row carries one hidden input, `related[]`, holding the id, or `type:id` where the
+field points at several types, so the posted order is the rows' order and nothing is renumbered.
+Adding opens a search: a field fetching rows of matching titles across the target types in the form's
+locale, as HTML from an admin route, and a pick appends a row, or replaces the one row of a single
+relation. `fromForm()` turns `type:id` back into the `{type, id}` a write takes.
+
+ponytail: the search reads the target types into memory and matches titles, as the list does.
+
+**Terms.** The tag input `packages/ui` has, suggesting the taxonomy's terms in the form's locale from a
+`<datalist>`. A chip whose text matches a term's title, in any case, posts `id:5`; one matching none
+posts `new:` and its text, so a tag called "2026" is not read as an id. Saving creates each new one:
+a term of that title, written in every locale alike, so a tag created in Dutch exists in English
+under the same name until someone translates it, and its slug -- the field the taxonomy's route ends
+in, when it has one -- what `Str::slug` writes, a title that gives an empty one refused naming the
+tag. A slug a term already has in a locale is that term, and the ids are made unique after, so a tag
+both picked and typed is one term rather than a refused repeat. Creating is part of the save's
+transaction, so a save refused creates nothing, and it needs `manage`, without which the field is
+refused naming the capability.
+
+**The site.** An article on images and tags in the admin, and "The admin" gains its media section.
+
+**The check.** `AdminTest`: an image uploaded with its alt text in both languages, picked as a cover
+and read back; a decorative one uploaded with an empty alt; one uploaded from the picker; a focal
+point saved; the library's trash. Relations posted in an order and read back in it, several types
+among them, and the last one removed leaving none. A term picked by id, one created by text and
+present in both locales, one both picked and typed saved once, a numeric title, a refused save
+creating none, creating refused without `manage`, and the last tag removed. Vitest: a relation
+reordered by drag and by the buttons, its inputs in the new order; a typed tag matched to its term;
+the focal point; the picker fetched into the dialog.
+
+### 10d — History
+
+Each version records who published it. A revision is filed only when a write replaces something live,
+so a create files none, and nor does a translation added: who replaced a revision cannot name an
+entry published once. So every main table gains `published_by`, as phase 3 gave them `owner_id`
+before anything filled it: the user whose publish or write put the live version there, null for code
+writing on its own authority, with no foreign key, as `owner_id` has none, and joining the reserved
+names. A write that changes what is live sets it, a translation added included, and a write that
+changes nothing leaves it. Filing copies it into the revision beside the snapshot, as `published_by`
+on `mainstay_revisions`, in its create migration. So the live version names its publisher from its
+row and each revision from its own; rows written before this phase name nobody. `ContentType` carries
+it as `$publishedBy`, beside `$ownerId`, and `Revision` as well.
+
+`/admin/article/5/history`, linked from the form's rail: newest first, each version's date and who
+published it -- an account's name, "a script" for none, "a deleted account" for an id no account has
+-- and Restore, which makes it the entry's draft through `revisions()->restore()` and opens the form
+saying what it could not bring back.
+
+**The site.** An article on history, and "The admin" gains its last section.
+
+**The check.** `AdminTest`: an entry published once naming its publisher; two publishes by two users
+named in order; a translation added by a third naming them on the live version; a seeder's write as
+a script; a restore opening the draft and reporting a field dropped since. The column's writes are
+checked in `DraftTest`, on every driver.
+
+## Phase 11 — Accounts in the admin
+
+The screens phase 9 left: accounts, created and given a role by someone holding `manage_users`; roles
+and the capabilities each holds, from `Mainstay::capabilities()`; and "Account settings", where a user
+changes their own name, email and password. An entry's author is changed here, where accounts are
+listed. How a new account gets its first password, and whether a user's own grants and denials are
+drawn or stay in code, are this phase's to decide.
+
+## Phase 12 — The page builder
+
+A page's content edited on the page itself: the site's own page, rendered for a signed-in editor in an
+edit mode reading the draft, its content edited inline. Its core is one content field, as WordPress
+keeps what Gutenberg writes in `post_content`: a ProseMirror document whose nodes include the site's
+blocks, larger than a RichText field's, which stays a field type of its own. Preview, the page
+rendered from the draft, arrives here as the first half of it. The admin's raw blocks field stays the
+way to repair content when the front end breaks.
+
+It reverses three things this phase has to settle: `decisions.md`'s "Notion-style inline block editing
+is off the table", its form-based block list, and phase 9's page served to a signed-in editor as to a
+visitor, which an edit mode has to tell apart.
+
+## Phase 13 — The API as a product
 
 The guard goes on. `#[PublicRead]` opts a type into public reads, which never touch the draft table,
 at every depth. Tokens are issued by Mainstay and stored hashed beside its own users table.
@@ -946,14 +1266,14 @@ not come from `Field::serialize()`. That method writes what the column takes -- 
 offset. Phase 1 settled that both are UTC, so the conversion is a formatting choice here and not a
 zone question, but it is a choice this phase has to make rather than inherit.
 
-## Phase 12 — The second locale and the second site
+## Phase 14 — The second locale and the second site
 
-Nothing new in the schema — phase 2 put the columns there, and phase 3 already reads and writes
-more than one locale. This is where the rest is proven by configuring a second of each: the locale
-switcher, per-locale publish state and trash, fallback as an opt-in, and the request host matched to
-a site. With one of each configured, none of it renders.
+Nothing new in the schema — phase 2 put the columns there, phase 3 already reads and writes
+more than one locale, and phase 10 put the locale switcher in the admin. This is where the rest is
+proven by configuring a second of each: per-locale publish state and trash, fallback as an opt-in, and
+the request host matched to a site. With one of each configured, none of it renders.
 
-## Phase 13 — Onboarding
+## Phase 15 — Onboarding
 
 `spatie/laravel-onboard`, required by this phase and not before it. Two lists: an installation
 checklist on a plain `Installation` class, and a per-user list. Steps are declared in the service
@@ -962,6 +1282,9 @@ provider and every one is a `completeIf` closure, so nothing is stored and nothi
 shown and refused.
 
 Settings the checklist collects are globals, so it gets no storage of its own.
+
+The checklist is the dashboard's first widget. Phase 10 leaves `/admin` empty; widgets, as WordPress
+draws them, arrive here as a list a host adds to in its service provider, each a Blade view.
 
 ## Not in this plan
 
@@ -991,9 +1314,15 @@ it will attach to.
 - **Globals, taxonomies and relations come before drafts.** A real site needs its navigation, its
   categories and its related entries before it needs an editorial workflow. Globals were after
   drafts only to reuse the draft row; the drafts phase now adds that row to both shapes at once.
-- **Locales arrive in phase 3, not phase 12.** The real site is multilingual from the start, so
+- **Locales arrive in phase 3, not phase 14.** The real site is multilingual from the start, so
   the layer takes `locale` on every call and writes a row and a path per locale from its first save.
-  Phase 12 keeps what only a second locale in the admin needs.
-- **Preview moves to the admin.** It sat in rendering, showing published rows until drafts arrived.
-  It needs Mainstay's guard, which now arrives after drafts, so it is built once, reading the draft,
-  beside the form that edits it.
+  Phase 10 brings the admin's switcher forward, and phase 14 keeps the rest a second locale needs.
+- **Preview moves to the page builder.** It sat in rendering, showing published rows until drafts
+  arrived, and then beside the admin's form. It is the page rendered from the draft for a signed-in
+  editor, which is what phase 12's edit mode stands on, so it is built once, there.
+- **The admin is four pull requests, and accounts are a phase of their own.** Phase 10 was the
+  largest phase by a distance. Cut at the milestones its own stub named, each merges on its own and
+  leaves an admin that works, and the screens over phase 9's accounts follow as phase 11.
+- **A page's content is edited on the page.** The admin edits an entry's fields; the page builder,
+  phase 12, edits its content inline on the site, its core one field as WordPress's `post_content`.
+  The admin keeps a raw view of that field for when the site's editor breaks.
