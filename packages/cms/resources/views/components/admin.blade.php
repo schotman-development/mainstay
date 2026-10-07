@@ -43,6 +43,10 @@
         {{ $slot }}
     </x-mainstay::shell>
 
+    {{-- Dialogs a field draws, out here where no form holds them, so each
+         can have a form of its own. --}}
+    @stack('dialogs')
+
     <script type="module" src="{{ asset('vendor/mainstay/mainstay.js') }}?v={{ \Mainstay\Mainstay::VERSION }}"></script>
 </body>
 </html>

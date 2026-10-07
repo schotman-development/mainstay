@@ -3,7 +3,9 @@
 namespace Mainstay\Fields;
 
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use JsonException;
 use ReflectionIntersectionType;
 use ReflectionNamedType;
 use ReflectionProperty;
@@ -451,13 +453,28 @@ abstract class Field
 
     /*
      | What a write takes, from what the component posted: as posted, for a
-     | component posting the value a write takes. A type whose component
-     | posts something else -- JSON, a list, an id beside its type -- turns
-     | it back here.
+     | component posting the value a write takes, and decoded for a field
+     | kept as JSON, whose component posts the tree as JSON -- a rich text
+     | editor's document, the raw blocks. JSON that does not parse is refused
+     | with the parser's message, as the save would refuse a wrong tree. A
+     | type whose component posts something else -- a list, an id beside its
+     | type -- turns it back here.
      */
     public function fromForm(mixed $posted): mixed
     {
-        return $posted;
+        if (! $this->keptAsJson() || ! is_string($posted)) {
+            return $posted;
+        }
+
+        if ($this->blank($posted)) {
+            return null;
+        }
+
+        try {
+            return $this->decode($posted);
+        } catch (JsonException $exception) {
+            throw ValidationException::withMessages([$this->name => 'The '.str_replace('_', ' ', Str::snake($this->name))." field does not parse as JSON: {$exception->getMessage()}."]);
+        }
     }
 
     public function label(): string
