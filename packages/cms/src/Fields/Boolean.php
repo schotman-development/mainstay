@@ -60,6 +60,12 @@ class Boolean extends Field
         return false;
     }
 
+    /* A required flag is one that has to be on, and a draft may not be. */
+    protected function drafted(array $rules): array
+    {
+        return ['nullable', 'boolean'];
+    }
+
     /*
      | Every driver has its own idea of what it hands back for a boolean column
      | -- 0, "0", "f", b"\0" -- and none of them is `false`. A plain cast reads
