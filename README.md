@@ -17,8 +17,8 @@ between the two.
 > can be restored from or emptied. The admin has accounts of its own, a login page, and roles whose
 > capabilities decide who may write and who may publish. It lists each type's entries and edits their
 > fields in every language -- rich text in an editor of its own, images from a media library, related
-> entries and tags -- saving a draft or publishing it, and chooses the front page; an entry's history
-> arrives in the rest of phase 10.
+> entries and tags -- saving a draft or publishing it, chooses the front page, and shows each entry's
+> history, naming who published each version.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout

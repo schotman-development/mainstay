@@ -15,10 +15,11 @@ from live until it is published, every version a write replaces is kept as a rev
 made from again, and the trash is restored from or emptied. The admin has accounts of its own
 behind a login, and the query layer asks Gate about the one signed in, whose role's capabilities --
 each type's own, or a form covering every type -- decide what it may write and publish. Phase
-10's first three parts are done too: every entry has a title, and the admin lists each type's
-entries and edits their fields in every language -- rich text in a ProseMirror editor, a page's
-blocks as raw JSON, images picked from a media library of its own, relations as rows and tags typed
--- saving a draft or publishing it, with the trash and the front page as buttons.
+10 is done too: every entry has a title, and the admin lists each type's entries and edits their
+fields in every language -- rich text in a ProseMirror editor, a page's blocks as raw JSON, images
+picked from a media library of its own, relations as rows and tags typed -- saving a draft or
+publishing it, with the trash, the front page and each entry's history, naming who published each
+version, as screens.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
 document schema the package renders.
@@ -1235,12 +1236,18 @@ on `mainstay_revisions`, in its create migration. So the live version names its 
 row and each revision from its own; rows written before this phase name nobody. `ContentType` carries
 it as `$publishedBy`, beside `$ownerId`, and `Revision` as well.
 
-`/admin/article/5/history`, linked from the form's rail: newest first, each version's date and who
-published it -- an account's name, "a script" for none, "a deleted account" for an id no account has
--- and Restore, which makes it the entry's draft through `revisions()->restore()` and opens the form
-saying what it could not bring back.
+`/admin/article/5/history`, linked from the form's rail, and `/admin/layout/history` for a global: the
+live version and then each revision, newest first, each with when it was live -- the live one since
+it replaced the version before, or since the entry was first written, a revision until it was
+replaced -- and who published it -- an account's name, "a script" for none, "a deleted account" for
+an id no account has -- and Restore, which makes it the entry's draft through
+`revisions()->restore()` and opens the form saying what it could not bring back. Restore is posted
+under the entry it is of, `/admin/article/5/revisions/9`, and any other revision is not found there.
+A term keeps no history, so has none. A restore from the trash that moves a slug to a free path is a
+write like any other: it names who restored it and files the version it moved.
 
-**The site.** An article on history, and "The admin" gains its last section.
+**The site.** "History in the admin", the draft 10c left, is written and published, the next
+article, on phase 11, waits as a draft, and "The admin" gains its last section.
 
 **The check.** `AdminTest`: an entry published once naming its publisher; two publishes by two users
 named in order; a translation added by a third naming them on the live version; a seeder's write as
