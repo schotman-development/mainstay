@@ -15,9 +15,10 @@ from live until it is published, every version a write replaces is kept as a rev
 made from again, and the trash is restored from or emptied. The admin has accounts of its own
 behind a login, and the query layer asks Gate about the one signed in, whose role's capabilities --
 each type's own, or a form covering every type -- decide what it may write and publish. Phase
-10's first two parts are done too: every entry has a title, and the admin lists each type's entries
-and edits their fields in every language -- rich text in a ProseMirror editor, a page's blocks as
-raw JSON -- saving a draft or publishing it, with the trash and the front page as buttons.
+10's first three parts are done too: every entry has a title, and the admin lists each type's
+entries and edits their fields in every language -- rich text in a ProseMirror editor, a page's
+blocks as raw JSON, images picked from a media library of its own, relations as rows and tags typed
+-- saving a draft or publishing it, with the trash and the front page as buttons.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
 document schema the package renders.
@@ -1167,28 +1168,34 @@ which CI's "Admin bundle is up to date" holds.
 ### 10c — Media, relations and terms
 
 **The library.** `/admin/media`: the images in a grid, newest first, paged by a new
-`media()->paginate()`, with the trash as `paginate(trashed: true)`. Uploading is a form of the file
-and its alt text in every locale, each present as `upload()` requires, an empty one marking the
-image decorative -- the null `ConvertEmptyStringsToNull` makes of it turned back into the empty
-string the library takes; a file dropped on the grid opens it. An image's page edits its alt text in
-each locale and its focal point, set by clicking the image, a behaviour module writing the two
-percentages into hidden inputs; Move to trash, Restore and Delete for good as on entries. Each write
-asks Gate through the library as now, `upload_media` and `edit_others_media` for someone else's. The
-sidebar gains Media.
+`media()->paginate()`, with the trash as `paginate(trashed: true)`. The original is never served,
+so the library writes one more copy of every image whatever the site declares, `Library::preview()`,
+640 pixels wide and scaled only: what the grid, the picker and an image field show. Uploading is a
+dialog of the file and its alt text in every locale, each present as `upload()` requires, an empty
+one marking the image decorative -- the null `ConvertEmptyStringsToNull` makes of it turned back into
+the empty string the library takes; a file dropped on the grid opens it. An image's page edits its
+alt text in each locale and its focal point, set by clicking the image, a behaviour module writing
+the two percentages into two number inputs, which can be typed in too; Save, Move to trash, Restore
+and Delete for good as on entries, each shown to whoever the library would let use it. Each write asks Gate through the library as now, `upload_media` and
+`edit_others_media` for someone else's. The sidebar gains Media for whoever may read the library --
+`viewAny`, the question its every read asks, so the sidebar, the screens and phase 13's API agree --
+and Upload shows for whoever may upload.
 
 **The image field.** A thumbnail with Choose, Replace and Remove, posting the image's id. Choose opens
 the dialog with the library's grid, fetched as HTML from the library's own route with `?pick`,
 uploading included, sent with `fetch` since the dialog sits outside the entry's form; picking sets the
-id and the thumbnail. A missing image shows as missing, as a read
-gives it, and is kept until it is replaced or removed.
+id and the thumbnail, and an upload from the picker picks what it uploaded. A missing image shows as
+missing, as a read gives it, and is kept until it is replaced or removed.
 
 **Relations.** The chosen entries as a list -- the title, and the type where there are several -- with
 remove, drag to reorder, the platform's `draggable` and an `insertBefore`, and move up and down for
 the keyboard. Each row carries one hidden input, `related[]`, holding the id, or `type:id` where the
 field points at several types, so the posted order is the rows' order and nothing is renumbered.
 Adding opens a search: a field fetching rows of matching titles across the target types in the form's
-locale, as HTML from an admin route, and a pick appends a row, or replaces the one row of a single
-relation. `fromForm()` turns `type:id` back into the `{type, id}` a write takes.
+locale, as HTML from `/admin/article/relations/related`, and a pick appends a row, or replaces the one
+row of a single relation; Enter in the search picks the first entry found for what is typed, and
+only the newest search's answer is shown. `fromForm()` turns `type:id` back into
+the `{type, id}` a write takes. The form reads its entry at depth 1, so the rows have their titles.
 
 ponytail: the search reads the target types into memory and matches titles, as the list does.
 
@@ -1203,7 +1210,8 @@ both picked and typed is one term rather than a refused repeat. Creating is part
 transaction, so a save refused creates nothing, and it needs `manage`, without which the field is
 refused naming the capability.
 
-**The site.** An article on images and tags in the admin, and "The admin" gains its media section.
+**The site.** "Images and tags in the admin", the draft 10b left, is written and published, the next
+article waits as a draft, and "The admin" gains its media section.
 
 **The check.** `AdminTest`: an image uploaded with its alt text in both languages, picked as a cover
 and read back; a decorative one uploaded with an empty alt; one uploaded from the picker; a focal

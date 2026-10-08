@@ -5,6 +5,7 @@ use Mainstay\Http\Authenticate;
 use Mainstay\Http\AuthenticateSession;
 use Mainstay\Http\EntryController;
 use Mainstay\Http\LoginController;
+use Mainstay\Http\MediaController;
 use Mainstay\Http\PasswordController;
 
 Route::get('login', [LoginController::class, 'show'])->name('mainstay.login');
@@ -25,6 +26,15 @@ Route::post('reset-password', [PasswordController::class, 'update'])->name('main
 Route::middleware([Authenticate::class, AuthenticateSession::class])->group(function () {
     Route::view('/', 'mainstay::dashboard')->name('mainstay.admin');
 
+    Route::get('media', [MediaController::class, 'index'])->name('mainstay.media');
+    Route::post('media', [MediaController::class, 'store'])->name('mainstay.media.store');
+    Route::get('media/trash', [MediaController::class, 'trashed'])->name('mainstay.media.trash');
+    Route::get('media/{id}', [MediaController::class, 'edit'])->whereNumber('id')->name('mainstay.media.edit');
+    Route::post('media/{id}', [MediaController::class, 'update'])->whereNumber('id')->name('mainstay.media.update');
+    Route::post('media/{id}/trash', [MediaController::class, 'trash'])->whereNumber('id')->name('mainstay.media.delete');
+    Route::post('media/{id}/restore', [MediaController::class, 'restore'])->whereNumber('id')->name('mainstay.media.restore');
+    Route::post('media/{id}/destroy', [MediaController::class, 'destroy'])->whereNumber('id')->name('mainstay.media.destroy');
+
     Route::get('{type}', [EntryController::class, 'index'])->name('mainstay.entries');
     Route::post('{type}', [EntryController::class, 'store'])->name('mainstay.entries.store');
     Route::get('{type}/new', [EntryController::class, 'create'])->name('mainstay.entries.create');
@@ -34,6 +44,7 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
     Route::post('{type}/drafts/{draft}', [EntryController::class, 'saveDraft'])->whereNumber('draft')->name('mainstay.drafts.update');
     Route::post('{type}/drafts/{draft}/discard', [EntryController::class, 'discard'])->whereNumber('draft')->name('mainstay.drafts.discard');
+    Route::get('{type}/relations/{field}', [EntryController::class, 'relations'])->name('mainstay.relations');
 
     Route::get('{type}/{id}', [EntryController::class, 'edit'])->whereNumber('id')->name('mainstay.entries.edit');
     Route::post('{type}/{id}', [EntryController::class, 'update'])->whereNumber('id')->name('mainstay.entries.update');

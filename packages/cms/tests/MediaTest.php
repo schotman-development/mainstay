@@ -163,11 +163,12 @@ class MediaTest extends DatabaseTestCase
         $this->assertTrue(Storage::disk('local')->exists("media/{$hash}.png"));
         $this->assertSame(file_get_contents($file), Storage::disk('local')->get("media/{$hash}.png"), 'The original is kept as it came.');
 
-        /* The cover's crop and its scale, and the figure's crop two blocks
-           down: every size a registered type declares, once each. */
+        /* The cover's crop and its scale, the figure's crop two blocks down,
+           and the admin's preview: every size a registered type declares,
+           once each, and the one the admin shows it by. */
         $expected = [];
 
-        foreach (['-40x20-50-50', '-60', '-16x16-50-50'] as $size) {
+        foreach (['-40x20-50-50', '-60', '-16x16-50-50', '-640'] as $size) {
             foreach (['avif', 'webp'] as $format) {
                 $expected[] = "media/{$hash}{$size}.{$format}";
             }
@@ -186,7 +187,7 @@ class MediaTest extends DatabaseTestCase
            holding them, and nothing is written for them. */
         $this->assertSame(['file' => ["This image is already in the library, as image {$media->id}."]], $this->refusal(fn () => $this->upload($file)));
         $this->assertSame(1, DB::table('mainstay_media')->count());
-        $this->assertCount(6, Storage::disk('public')->files('media'));
+        $this->assertCount(8, Storage::disk('public')->files('media'));
     }
 
     #[Test]
@@ -321,7 +322,7 @@ class MediaTest extends DatabaseTestCase
 
         Storage::fake('public');
         $this->upload($file);
-        $this->assertCount(6, Storage::disk('public')->files('media'));
+        $this->assertCount(8, Storage::disk('public')->files('media'));
         $this->assertSame(1, DB::table('mainstay_media')->count());
     }
 

@@ -7,6 +7,7 @@ use finfo;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -134,6 +135,33 @@ class Library
         return $this->find($id, overrideAccess: true);
     }
 
+    /*
+     | The copy the admin shows an image by -- its grid, its picker, an image
+     | field -- written for every image whatever the site declares, since the
+     | original is never served. Scaled only, so a moved focal point keeps it.
+     */
+    public static function preview(): Size
+    {
+        return new Size(640);
+    }
+
+    /*
+     | The library a page at a time, newest first, each with its alt text in
+     | the locale asked for or the request's: what the admin's grid shows.
+     | `trashed` reads the trash alone.
+     */
+    public function paginate(int $perPage = 24, ?int $page = null, ?string $locale = null, bool $trashed = false, bool $overrideAccess = false): LengthAwarePaginator
+    {
+        $this->authorize('viewAny', Media::class, $overrideAccess);
+        $locale ??= App::getLocale();
+
+        return DB::table(self::TABLE)
+            ->when($trashed, fn ($query) => $query->whereNotNull('deleted_at'), fn ($query) => $query->whereNull('deleted_at'))
+            ->orderByDesc('created_at')->orderByDesc('id')
+            ->paginate($perPage, page: $page)
+            ->through(fn (object $row) => $this->media($row, $locale));
+    }
+
     /* An image out of the trash, with its alt text in the locale asked for
        or the request's. It names no size: those are a field's. */
     public function find(int $id, ?string $locale = null, bool $overrideAccess = false): ?Media
@@ -256,16 +284,17 @@ class Library
     }
 
     /*
-     | Every size any registered type or block declares, once each: an upload
-     | does not know which field it is for. Two fields declaring one alike
-     | share its files.
+     | Every size any registered type or block declares, once each, and the
+     | admin's preview: an upload does not know which field it is for. Two
+     | fields declaring one alike share its files.
      |
      | @return list<Size>
      */
     private function sizes(): array
     {
         $classes = array_values($this->mainstay->registered());
-        $read = $sizes = [];
+        $read = [];
+        $sizes = ['640x' => self::preview()];
 
         while (($class = array_pop($classes)) !== null) {
             if (isset($read[$class])) {

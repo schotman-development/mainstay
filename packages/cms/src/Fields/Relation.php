@@ -264,9 +264,37 @@ class Relation extends Field
         return $this->many ? ['type' => 'array', 'items' => $one] : $one;
     }
 
+    /* Whether this holds a list rather than one entry. */
+    public function many(): bool
+    {
+        return $this->many;
+    }
+
+    /*
+     | What a write takes from what the rows posted: each row's id, or
+     | `type:id` where the field points at several types, in the rows' order.
+     | A list posts an empty value ahead of its rows, so one whose last row
+     | was removed still says so; it is dropped here. Anything else goes on
+     | as it is, for the rules to name.
+     */
+    public function fromForm(mixed $posted): mixed
+    {
+        $item = fn (mixed $item) => $this->several() && is_string($item) && str_contains($item, ':')
+            ? ['type' => strstr($item, ':', true), 'id' => substr(strstr($item, ':'), 1)]
+            : $item;
+
+        if (! $this->many) {
+            return $item($posted);
+        }
+
+        return is_array($posted) && array_is_list($posted)
+            ? array_map($item, array_values(array_filter($posted, fn (mixed $value, int $index) => ! ($index === 0 && ($value === null || $value === '')), ARRAY_FILTER_USE_BOTH)))
+            : $posted;
+    }
+
     /* Whether this points at more than one type, and so stores each
        reference with its type. */
-    private function several(): bool
+    public function several(): bool
     {
         return count($this->to) > 1;
     }

@@ -5,7 +5,11 @@ import { dirtyForms } from './dirty-form'
 import { dropdowns } from './dropdown'
 import { entryLists } from './entry-list'
 import { entryStatus } from './entry-status'
+import { focalPoints } from './focal-point'
+import { imageFields } from './image-field'
 import { localTimes } from './local-time'
+import { mediaDrops } from './media-drop'
+import { relationFields } from './relation-field'
 import { sidebar } from './sidebar'
 import { slugs } from './slug'
 import { tagInputs } from './tag-input'
@@ -33,5 +37,9 @@ export function mount(root: ParentNode = document): void {
   dialogs()
   slugs(root)
   localTimes(root)
+  imageFields()
+  relationFields()
+  focalPoints(root)
+  mediaDrops(root)
   dirtyForms(root)
 }

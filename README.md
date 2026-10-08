@@ -16,8 +16,9 @@ between the two.
 > can wait as a draft until it is published, what it replaces is kept as a revision, and the trash
 > can be restored from or emptied. The admin has accounts of its own, a login page, and roles whose
 > capabilities decide who may write and who may publish. It lists each type's entries and edits their
-> fields in every language, rich text in an editor of its own, saving a draft or publishing it, and
-> chooses the front page; images, relations and tags get their editors in the rest of phase 10.
+> fields in every language -- rich text in an editor of its own, images from a media library, related
+> entries and tags -- saving a draft or publishing it, and chooses the front page; an entry's history
+> arrives in the rest of phase 10.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout
