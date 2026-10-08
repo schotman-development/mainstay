@@ -205,7 +205,12 @@ class EntryController
             $live ??= $global ? $this->mainstay->global($class, locale: $locale, depth: 0) : $this->mainstay->findById($class, $id, locale: $locale, depth: 0);
         }
 
-        $revisions = $this->mainstay->revisions()->of($class, $id);
+        try {
+            $revisions = $this->mainstay->revisions()->of($class, $id);
+        } catch (RecordNotFoundException) {
+            throw $this->missing();
+        }
+
         $names = User::query()->whereIn('id', array_filter([$live?->publishedBy, ...$revisions->pluck('publishedBy')]))->pluck('name', 'id');
 
         if (! $global && $live === null) {

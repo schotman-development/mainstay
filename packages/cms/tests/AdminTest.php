@@ -758,8 +758,13 @@ class AdminTest extends DatabaseTestCase
         $this->get($history)->assertSee('Live since '.$went->format('j F Y, H:i').' UTC');
         $this->travelBack();
 
-        /* A revision is restored only under the entry it is of. */
-        $this->post(route('mainstay.revisions.restore', ['post', $untranslated->id, $script->id]))->assertNotFound();
+        /* A revision is restored only under the entry it is of, and an
+           address naming none, or a term, is not found. The history of an
+           entry in the trash is not found either. */
+        $this->post(route('mainstay.revisions.restore', ['post', $untranslated->id, $script->id]))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
+        $this->post(route('mainstay.globals.revisions.restore', ['post', $script->id]))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
+        Mainstay::delete(Post::class, $untranslated->id, overrideAccess: true);
+        $this->get(route('mainstay.entries.history', ['post', $untranslated->id]))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
 
         /* An entry with only a Dutch version has its history in English
            too, named by its Dutch title. */
