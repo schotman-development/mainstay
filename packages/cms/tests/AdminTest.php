@@ -3,19 +3,28 @@
 namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Facades\Blade;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\MessageBag;
+use Illuminate\Support\ViewErrorBag;
 use Illuminate\Testing\TestResponse;
 use InvalidArgumentException;
+use Mainstay\Auth\Capabilities;
 use Mainstay\Auth\Role;
 use Mainstay\Auth\User;
+use Mainstay\Content\Media;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Http\Form;
 use Mainstay\Tests\Fixtures\Accented\Article as Accented;
 use Mainstay\Tests\Fixtures\Broken\Login;
 use Mainstay\Tests\Fixtures\Guide;
+use Mainstay\Tests\Fixtures\Linked\Genre;
+use Mainstay\Tests\Fixtures\Linked\Person;
 use Mainstay\Tests\Fixtures\Linked\Story;
 use Mainstay\Tests\Fixtures\Pictured;
+use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\Signed\Banner;
 use Mainstay\Tests\Fixtures\Signed\Flyer;
@@ -45,7 +54,7 @@ class AdminTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class, Guide::class);
+        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class, Guide::class, Person::class, Story::class, Genre::class, Pictured::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $this->signIn($this->user(role: 'administrator'));
     }
@@ -460,13 +469,238 @@ class AdminTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_field_not_editable_here_yet_still_shows_what_is_wrong_with_it(): void
+    public function an_image_is_uploaded_described_picked_as_a_cover_and_trashed(): void
     {
-        foreach ([[Pictured::class, 'cover'], [Story::class, 'related'], [Story::class, 'genres']] as [$type, $name]) {
-            $drawn = Blade::render('<x-dynamic-component :component="$field->component()" :field="$field" :name="$name" :messages="[\'Not there to point at.\']" />', ['field' => Mainstay::fields($type)[$name], 'name' => $name]);
+        Storage::fake('public');
+        Storage::fake('local');
+        $alt = fn (int $id) => [Mainstay::media()->find($id, 'en')->alt, Mainstay::media()->find($id, 'nl')->alt];
 
-            $this->assertStringContainsString('Not editable here yet.', $drawn);
-            $this->assertStringContainsString('Not there to point at.', $drawn, "{$type}::\${$name}");
+        $this->post(route('mainstay.media.store'), ['file' => UploadedFile::fake()->image('harbour.png', 80, 60), 'alt' => ['en' => 'A harbour at dusk', 'nl' => 'Een haven in de schemering']])->assertSessionHasNoErrors();
+        $harbour = Mainstay::media()->paginate()->first();
+        $this->assertSame(['A harbour at dusk', 'Een haven in de schemering'], $alt($harbour->id));
+
+        /* An alt left empty, which the host's middleware posts as null, marks
+           the image decorative. */
+        $this->post(route('mainstay.media.store'), ['file' => UploadedFile::fake()->image('rule.png', 90, 10), 'alt' => ['en' => '', 'nl' => '']])->assertSessionHasNoErrors();
+        $rule = Mainstay::media()->paginate()->first();
+        $this->assertSame(['', ''], $alt($rule->id));
+        $this->post(route('mainstay.media.store'), ['alt' => ['en' => 'Nothing']])->assertSessionHasErrors(['file' => 'Choose an image to upload.']);
+        $this->post(route('mainstay.media.store'), ['file' => UploadedFile::fake()->image('half.png', 30, 30), 'alt' => ['en' => 'Described in English only']])->assertSessionHasErrors('alt.nl');
+
+        /* From the picker, the grid answers again, the new image first and
+           picked; the picker is drawn without the shell. */
+        $picker = $this->post(route('mainstay.media.store', ['pick' => 1]), ['file' => UploadedFile::fake()->image('pier.png', 70, 50), 'alt' => ['en' => 'A pier', 'nl' => 'Een pier']])->assertOk();
+        $pier = Mainstay::media()->paginate()->first();
+        $this->assertMatchesRegularExpression('/data-pick="'.$pier->id.'"[^>]*data-picked/', $picker->getContent());
+        $this->get(route('mainstay.media', ['pick' => 1]))->assertOk()->assertDontSee('aria-label="Sections"', escape: false)->assertSee('data-pick="'.$harbour->id.'"', escape: false);
+        $this->post(route('mainstay.media.store', ['pick' => 1]), ['file' => UploadedFile::fake()->image('again.png', 80, 60), 'alt' => ['en' => 'Again', 'nl' => 'Weer']])
+            ->assertStatus(422)->assertSee("This image is already in the library, as image {$harbour->id}.")->assertSee('data-pick="'.$harbour->id.'"', escape: false);
+        $this->get(route('mainstay.media'))->assertOk()->assertSee('aria-label="Sections"', escape: false)->assertSeeInOrder(['pier.png', 'rule.png', 'harbour.png']);
+
+        /* Picked as a cover, and read back. */
+        $this->post(route('mainstay.entries.store', 'pictured'), ['title' => 'Harbour', 'cover' => (string) $harbour->id, 'blocks' => '[]', 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $pictured = Mainstay::find(Pictured::class, locale: 'en', overrideAccess: true)->sole();
+        $this->assertSame([$harbour->id, 'A harbour at dusk'], [$pictured->cover->id, $pictured->cover->alt]);
+        $this->get(route('mainstay.entries.edit', ['pictured', $pictured->id]))->assertSee('name="cover" value="'.$harbour->id.'"', escape: false)->assertSee('-640.webp')->assertSee('id="mainstay-picker"', escape: false);
+
+        /* Its focal point moved, and its alt text changed in one language. */
+        $this->post(route('mainstay.media.update', $harbour->id), ['focal' => ['20', '80'], 'alt' => ['en' => 'A harbour at night', 'nl' => 'Een haven in de schemering']])->assertSessionHasNoErrors();
+        $this->assertSame([20, 80], Mainstay::media()->find($harbour->id)->focal);
+        $this->assertSame(['A harbour at night', 'Een haven in de schemering'], $alt($harbour->id));
+
+        /* The trash: out of the grid, shown as missing on the entry and kept
+           there, back again; and gone for good. */
+        $this->post(route('mainstay.media.delete', $harbour->id))->assertRedirect(route('mainstay.media'));
+        $this->get(route('mainstay.media'))->assertDontSee('harbour.png');
+        $this->get(route('mainstay.media.trash'))->assertSee('harbour.png');
+        $this->get(route('mainstay.entries.edit', ['pictured', $pictured->id]))->assertSee('Missing')->assertSee('name="cover" value="'.$harbour->id.'"', escape: false);
+        $this->post(route('mainstay.media.restore', $harbour->id))->assertRedirect(route('mainstay.media.trash'));
+        $this->assertNotNull(Mainstay::media()->find($harbour->id));
+        $this->post(route('mainstay.media.delete', $rule->id));
+        $this->post(route('mainstay.media.destroy', $rule->id))->assertRedirect(route('mainstay.media.trash'));
+        $this->assertSame(0, Mainstay::media()->paginate(trashed: true)->total());
+        $this->post(route('mainstay.media.destroy', 999))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
+
+        /* Offered to whoever may read the library, as its reads ask, with
+           Upload for whoever may upload, and each write on an image for
+           whoever the library would let make it; a host's policy closing
+           the library closes the link and the screens alike. */
+        $edit = $this->get(route('mainstay.media.edit', $harbour->id))->assertSee('form="media-form"', escape: false)->assertSee('Move to trash');
+        $this->assertMatchesRegularExpression('/<div\s+data-focal\s+class/', $edit->getContent());
+        $this->post(route('mainstay.media.delete', $pier->id));
+        $this->get(route('mainstay.media.trash'))->assertSee('Restore')->assertSee('Delete for good');
+
+        $this->signIn($this->user(['upload_media']));
+        $this->get(route('mainstay.media'))->assertSee('data-dialog-open="upload"', escape: false);
+        $edit = $this->get(route('mainstay.media.edit', $harbour->id))->assertDontSee('form="media-form"', escape: false)->assertDontSee('Move to trash')->assertSee('<fieldset disabled', escape: false);
+        $this->assertDoesNotMatchRegularExpression('/<div\s+data-focal\s+class/', $edit->getContent(), 'No focal point to set where it cannot be saved.');
+        $this->get(route('mainstay.media.trash'))->assertSee('pier.png')->assertDontSee('Restore')->assertDontSee('Delete for good');
+
+        $this->signIn($this->user(Capabilities::of(Story::class)));
+        $this->get(route('mainstay.admin'))->assertSee('href="/admin/media"', escape: false);
+        $this->get(route('mainstay.media'))->assertOk()->assertDontSee('data-dialog-open="upload"', escape: false);
+        $this->get(route('mainstay.media', ['pick' => 1]))->assertOk()->assertSee('data-pick="'.$harbour->id.'"', escape: false)->assertDontSee('Upload a new one');
+        $this->get(route('mainstay.media.edit', $harbour->id))->assertDontSee('form="media-form"', escape: false);
+        $this->post(route('mainstay.media.update', $harbour->id), ['alt' => ['en' => 'Mine now']])->assertForbidden();
+
+        Gate::policy(Media::class, ClosedPolicy::class);
+        $this->get(route('mainstay.admin'))->assertDontSee('href="/admin/media"', escape: false);
+        $this->get(route('mainstay.media'))->assertForbidden();
+        $this->get(route('mainstay.media', ['pick' => 1]))->assertForbidden();
+    }
+
+    #[Test]
+    public function relations_are_posted_in_an_order_and_read_back_in_it(): void
+    {
+        $make = fn (string $type, string $title) => Mainstay::create($type, ['title' => $title, 'slug' => strtolower($title)], locale: 'en', overrideAccess: true);
+        [$ada, $bo, $one, $two, $three] = [$make(Person::class, 'Ada'), $make(Person::class, 'Bo'), $make(Story::class, 'One'), $make(Story::class, 'Two'), $make(Story::class, 'Three')];
+
+        $this->post(route('mainstay.entries.store', 'story'), [
+            'title' => 'Four', 'slug' => 'four', 'blocks' => '[]', 'genres' => [''],
+            'author' => (string) $ada->id,
+            'related' => ['', (string) $three->id, (string) $one->id],
+            'pick' => "story:{$two->id}",
+            'picks' => ['', "person:{$bo->id}", "story:{$one->id}", "person:{$ada->id}"],
+            'intent' => 'publish',
+        ])->assertSessionHasNoErrors();
+        $four = Mainstay::findByUri('/stories/four', locale: 'en');
+        $refer = fn (array $entries) => array_map(fn ($entry) => [class_basename($entry), $entry->id], $entries);
+
+        $this->assertSame($ada->id, $four->author->id);
+        $this->assertSame([$three->id, $one->id], array_column($four->related, 'id'));
+        $this->assertSame([['Story', $two->id]], $refer([$four->pick]));
+        $this->assertSame([['Person', $bo->id], ['Story', $one->id], ['Person', $ada->id]], $refer($four->picks));
+
+        /* Drawn as rows in that order, the type named where there are
+           several; the search finds titles across the types. */
+        $form = $this->get(route('mainstay.entries.edit', ['story', $four->id]))
+            ->assertSeeInOrder(['name="related[]" value="'.$three->id.'"', 'name="related[]" value="'.$one->id.'"'], escape: false)
+            ->assertSeeInOrder(['name="picks[]" value="person:'.$bo->id.'"', 'name="picks[]" value="story:'.$one->id.'"'], escape: false);
+        $this->assertMatchesRegularExpression('#value="person:'.$bo->id.'">\s*<span data-relation-title[^>]*>Bo</span>\s*<span data-relation-type[^>]*>Person</span>#', $form->getContent(), 'Each row with its title and, among several types, its type.');
+        $this->get(route('mainstay.relations', ['story', 'picks', 'q' => 'O']))
+            ->assertSee('data-value="person:'.$bo->id.'"', escape: false)
+            ->assertSee('data-value="story:'.$two->id.'"', escape: false)
+            ->assertDontSee('data-value="person:'.$ada->id.'"', escape: false);
+        $this->get(route('mainstay.relations', ['story', 'title', 'q' => 'O']))->assertNotFound();
+        $this->get(route('mainstay.relations', ['story', 'genres', 'q' => 'O']))->assertNotFound();
+
+        /* In the form's locale: an entry with no Dutch is not found in Dutch. */
+        Mainstay::update(Story::class, $two->id, ['title' => 'Twee', 'slug' => 'twee'], locale: 'nl', overrideAccess: true);
+        $this->get(route('mainstay.relations', ['story', 'related', 'q' => 'T', 'locale' => 'nl']))->assertSee('data-title="Twee"', escape: false)->assertDontSee('Three');
+        $this->get(route('mainstay.relations', ['story', 'related', 'q' => 'T']))->assertSee('data-title="Two"', escape: false)->assertSee('data-title="Three"', escape: false);
+
+        /* Twenty at most. */
+        foreach (range(1, 21) as $n) {
+            Mainstay::create(Story::class, ['title' => "Many {$n}", 'slug' => "many-{$n}"], locale: 'en', overrideAccess: true);
+        }
+
+        $this->assertSame(20, substr_count($this->get(route('mainstay.relations', ['story', 'related', 'q' => 'Many']))->getContent(), 'data-relation-pick'));
+
+        /* Reordered, and then emptied: none left. */
+        $this->post(route('mainstay.entries.update', ['story', $four->id]), ['related' => ['', (string) $one->id, (string) $three->id], ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $this->assertSame([$one->id, $three->id], array_column(Mainstay::findById(Story::class, $four->id, locale: 'en')->related, 'id'));
+
+        $form = $this->get(route('mainstay.entries.edit', ['story', $four->id]));
+        $this->post(route('mainstay.entries.update', ['story', $four->id]), ['related' => [''], 'picks' => [''], 'author' => '', 'pick' => '', ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $four = Mainstay::findById(Story::class, $four->id, locale: 'en');
+        $this->assertSame([[], [], null, null], [$four->related, $four->picks, $four->author, $four->pick]);
+    }
+
+    #[Test]
+    public function tags_are_picked_by_id_and_created_by_text_in_every_language(): void
+    {
+        $crime = Mainstay::create(Genre::class, ['title' => 'Crime', 'slug' => 'crime'], locale: 'en', overrideAccess: true);
+        Mainstay::update(Genre::class, $crime->id, ['title' => 'Misdaad', 'slug' => 'misdaad'], locale: 'nl', overrideAccess: true);
+        $genre = fn (string $slug, string $locale = 'en') => Mainstay::find(Genre::class, where: ['slug' => $slug], locale: $locale)->first();
+
+        $this->get(route('mainstay.entries.create', 'story'))->assertSee('<option value="Crime" data-value="id:'.$crime->id.'"></option>', escape: false);
+        $this->get(route('mainstay.entries.create', ['story', 'locale' => 'nl']))->assertSee('<option value="Misdaad" data-value="id:'.$crime->id.'"></option>', escape: false);
+
+        /* One picked, three typed: a new one, a number, and one whose slug a
+           term already has, which is that term and kept once. */
+        $this->post(route('mainstay.entries.store', 'story'), ['title' => 'Five', 'slug' => 'five', 'blocks' => '[]', 'genres' => ['', "id:{$crime->id}", 'new:Science fiction', 'new:2026', 'new:Crime'], 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $five = Mainstay::findByUri('/stories/five', locale: 'en');
+        $this->assertSame(['Crime', 'Science fiction', '2026'], array_column($five->genres, 'title'));
+        $this->assertSame(['Science fiction', 'science-fiction'], [$genre('science-fiction', 'nl')->title, $genre('science-fiction', 'nl')->slug], 'Written in every locale alike.');
+        $this->get(route('mainstay.entries.edit', ['story', $five->id]))
+            ->assertSee('value="id:'.$genre('2026')->id.'"', escape: false)
+            ->assertSeeInOrder(['<span data-tag-label>Crime</span>', '<span data-tag-label>Science fiction</span>', '<span data-tag-label>2026</span>'], escape: false);
+
+        /* A save refused creates none, and a title that makes no slug is
+           named. */
+        $this->post(route('mainstay.entries.update', ['story', $five->id]), ['title' => str_repeat('x', 300), 'genres' => ['', 'new:Western']])->assertSessionHasErrors('title');
+        $this->assertNull($genre('western'));
+        $this->post(route('mainstay.entries.update', ['story', $five->id]), ['genres' => ['', 'new:!!!']])->assertSessionHasErrors(['genres' => 'The tag "!!!" makes no slug. Give it a letter or a digit.']);
+        $this->post(route('mainstay.entries.update', ['story', $five->id]), ['genres' => ['', 'new:'.str_repeat('y', 300)]])
+            ->assertSessionHasErrors(['genres' => 'The tag "'.str_repeat('y', 40).'..." was refused: The title field must not be greater than 255 characters. The slug field must not be greater than 255 characters.'])
+            ->assertSessionDoesntHaveErrors(['title', 'slug']);
+
+        /* A slug a term has in another language is that term: typed in the
+           English form as its Dutch title, it is Crime. */
+        $form = $this->get(route('mainstay.entries.edit', ['story', $five->id]));
+        $this->post(route('mainstay.entries.update', ['story', $five->id]), ['genres' => ['', 'new:Misdaad'], ...$this->drawn($form)])->assertSessionHasNoErrors();
+        $this->assertSame([$crime->id], array_column(Mainstay::drafts()->of(Story::class, $five->id, locale: 'en', overrideAccess: true)->entry->genres, 'id'));
+        $this->assertCount(3, Mainstay::find(Genre::class, locale: 'en'), 'Crime, Science fiction and 2026, and nothing new.');
+
+        /* Without manage, creating is refused naming it, and the save with
+           it; picking is not. */
+        $this->signIn($this->user(Capabilities::of(Story::class)));
+        $this->post(route('mainstay.entries.store', 'story'), ['title' => 'Six', 'slug' => 'six', 'genres' => ['', 'new:Horror']])->assertSessionHasErrors(['genres' => 'Adding a new tag needs manage_genres.']);
+        $this->assertNull($genre('horror'));
+        $this->assertCount(0, Mainstay::drafts()->all(Story::class, locale: 'en', overrideAccess: true)->filter(fn ($draft) => $draft->entryId === null), 'No new story drafted.');
+        $this->post(route('mainstay.entries.store', 'story'), ['title' => 'Six', 'slug' => 'six', 'genres' => ['', "id:{$crime->id}"]])->assertSessionHasNoErrors();
+
+        /* The last tag removed leaves none. */
+        $this->signIn($this->user(role: 'administrator'));
+        $form = $this->get(route('mainstay.entries.edit', ['story', $five->id]));
+        $this->post(route('mainstay.entries.update', ['story', $five->id]), ['genres' => [''], ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $this->assertSame([], Mainstay::findById(Story::class, $five->id, locale: 'en')->genres);
+    }
+
+    #[Test]
+    public function a_form_draws_what_its_fields_point_at_as_missing_where_its_reader_may_not_read_it(): void
+    {
+        Storage::fake('public');
+        Storage::fake('local');
+        $crime = Mainstay::create(Genre::class, ['title' => 'Crime', 'slug' => 'crime'], locale: 'en', overrideAccess: true);
+        $ada = Mainstay::create(Person::class, ['title' => 'Ada', 'slug' => 'ada'], locale: 'en', overrideAccess: true);
+        $one = Mainstay::create(Story::class, ['title' => 'One', 'slug' => 'one', 'author' => $ada->id, 'genres' => [$crime->id]], locale: 'en', overrideAccess: true);
+        $cover = Mainstay::media()->upload(UploadedFile::fake()->image('cover.png', 40, 30), ['en' => 'A cover', 'nl' => 'Een omslag'], overrideAccess: true);
+        $edit = route('mainstay.entries.edit', ['story', $one->id]);
+
+        /* A host's policies closing the taxonomy, the relation's type and
+           the library to every reader. */
+        Gate::policy(Genre::class, ClosedPolicy::class);
+        Gate::policy(Person::class, ClosedPolicy::class);
+        Gate::policy(Media::class, ClosedPolicy::class);
+
+        $this->get($edit)->assertOk()->assertSee('<span data-tag-label>Missing ('.$crime->id.')</span>', escape: false)->assertSee('value="'.$ada->id.'"', escape: false);
+
+        /* And after a refused save, the posted references are drawn again
+           the same way. */
+        $this->from($edit)->post(route('mainstay.entries.update', ['story', $one->id]), ['title' => str_repeat('x', 300), 'author' => (string) $ada->id, 'genres' => ['', "id:{$crime->id}"]])->assertSessionHasErrors('title');
+        $this->get($edit)->assertOk()->assertSee('value="'.$ada->id.'"', escape: false)->assertSee('<span data-tag-label>Missing ('.$crime->id.')</span>', escape: false);
+        $create = route('mainstay.entries.create', 'pictured');
+        $this->from($create)->post(route('mainstay.entries.store', 'pictured'), ['title' => str_repeat('x', 300), 'cover' => (string) $cover->id])->assertSessionHasErrors('title');
+        $this->get($create)->assertOk()->assertSee('name="cover" value="'.$cover->id.'"', escape: false)->assertSee('Missing');
+
+        /* A search leaves out the type it may not read. */
+        $this->get(route('mainstay.relations', ['story', 'picks', 'q' => 'a']))->assertOk()->assertDontSee('person:');
+    }
+
+    #[Test]
+    public function a_relation_an_image_and_tags_show_what_is_wrong_with_them_under_their_names(): void
+    {
+        $errors = fn (array $messages) => ['errors' => (new ViewErrorBag)->put('default', new MessageBag($messages))];
+        $story = $this->withSession($errors([
+            'related.0' => ['The related.0 field is not there to point at.'],
+            'author' => ['The author field is gone.'],
+            'genres' => ['Adding a new tag needs manage_genres.'],
+        ]))->get(route('mainstay.entries.create', 'story'))->getContent();
+        $pictured = $this->withSession($errors(['cover' => ['The cover field is not in the library.']]))->get(route('mainstay.entries.create', 'pictured'))->getContent();
+
+        foreach (['related.0 field is not there', 'author field is gone', 'needs manage_genres', 'cover field is not in the library'] as $message) {
+            $this->assertSame(1, substr_count($story.$pictured, $message), "Under its field, and not again above the form: {$message}");
         }
     }
 }

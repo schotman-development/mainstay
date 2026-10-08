@@ -52,6 +52,25 @@ class Terms extends Relation
         return parent::bind($property);
     }
 
+    /*
+     | What a write takes from the tag input's chips: `id:5` for a term
+     | picked, `new:` and its title for one typed, which the admin creates
+     | before it saves -- so a tag called "2026" is not read as an id. The
+     | empty value a list posts ahead of its chips is dropped, as a
+     | relation's is.
+     */
+    public function fromForm(mixed $posted): mixed
+    {
+        $posted = parent::fromForm($posted);
+
+        return is_array($posted) ? array_map(fn (mixed $chip) => match (true) {
+            ! is_string($chip) => $chip,
+            str_starts_with($chip, 'id:') => substr($chip, 3),
+            str_starts_with($chip, 'new:') => ['new' => substr($chip, 4)],
+            default => $chip,
+        }, $posted) : $posted;
+    }
+
     /* Kept in the pivot, which the layer reads and writes itself. */
     public function column(): ?array
     {

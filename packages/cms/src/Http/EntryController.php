@@ -6,6 +6,7 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
@@ -17,7 +18,8 @@ use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
-use Mainstay\Fields\Text;
+use Mainstay\Fields\Relation;
+use Mainstay\Fields\Terms;
 use Mainstay\Mainstay;
 use Mainstay\Navigation;
 use Mainstay\Ui\EntryList;
@@ -59,8 +61,8 @@ class EntryController
     {
         $class = $this->type($type, entries: true);
         [$shown, $draft, $elsewhere] = $this->read($request, $class, fn (string $locale) => [
-            $this->mainstay->findById($class, $id, locale: $locale, depth: 0),
-            is_subclass_of($class, Taxonomy::class) ? null : $this->mainstay->drafts()->of($class, $id, locale: $locale, depth: 0),
+            $this->mainstay->findById($class, $id, locale: $locale, depth: 1),
+            is_subclass_of($class, Taxonomy::class) ? null : $this->mainstay->drafts()->of($class, $id, locale: $locale, depth: 1),
         ]);
 
         return $this->form($request, $class, $shown, $draft, $elsewhere, route('mainstay.entries.update', [$type, $id]), $id);
@@ -71,7 +73,7 @@ class EntryController
     {
         $class = $this->type($type, entries: true);
         [$shown, $held, $elsewhere] = $this->read($request, $class, function (string $locale) use ($draft) {
-            $read = $this->mainstay->drafts()->find($draft, locale: $locale, depth: 0);
+            $read = $this->mainstay->drafts()->find($draft, locale: $locale, depth: 1);
 
             return [null, $read];
         });
@@ -181,6 +183,44 @@ class EntryController
     }
 
     /*
+     | What a relation's search offers: the entries of the types it points at
+     | whose titles hold the query, in the form's locale, as the rows the
+     | field adds. Drawn as HTML for the field to put under its search.
+     |
+     | ponytail: the target types are read into memory and matched by title,
+     | as the list is; past a few thousand entries this wants a `like` the
+     | layer does not have yet.
+     */
+    public function relations(Request $request, string $type, string $field): View
+    {
+        $class = $this->type($type);
+        $relation = Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class]))[$field] ?? null;
+
+        if (! $relation instanceof Relation || $relation instanceof Terms) {
+            throw $this->missing();
+        }
+
+        $query = is_string($request->query('q')) ? trim($request->query('q')) : '';
+        $found = [];
+
+        /* A type the reader may not read is not searched, as it is not
+           shown. */
+        foreach ($query === '' ? [] : $relation->to as $target) {
+            foreach (Form::readable(fn () => $this->mainstay->find($target, locale: $this->locale($request), depth: 0)) ?? [] as $entry) {
+                if (count($found) < 20 && mb_stripos($entry->title, $query) !== false) {
+                    $found[] = [
+                        'value' => $relation->several() ? $target::handle().':'.$entry->id : (string) $entry->id,
+                        'title' => $entry->title,
+                        'type' => $relation->several() ? Navigation::label($target, plural: false) : null,
+                    ];
+                }
+            }
+        }
+
+        return view('mainstay::relations', ['found' => $found, 'query' => $query]);
+    }
+
+    /*
      | A save from a form: a term written live, anything else saved as its
      | draft and, for Publish, put live in the same request. A publish the
      | layer refuses -- a required field empty, a path taken -- leaves the
@@ -195,14 +235,18 @@ class EntryController
         $handle = $class::handle();
 
         if (is_subclass_of($class, Taxonomy::class)) {
-            $term = $id === null ? $this->mainstay->create($class, $data, locale: $locale) : $this->mainstay->update($class, $id, $data, locale: $locale);
+            $term = DB::transaction(fn () => $id === null
+                ? $this->mainstay->create($class, Form::terms($class, $data), locale: $locale)
+                : $this->mainstay->update($class, $id, Form::terms($class, $data), locale: $locale));
 
             return redirect()->to($this->localized($request, route('mainstay.entries.edit', [$handle, $term->id])))->with('status', 'Saved.');
         }
 
         $global = is_subclass_of($class, GlobalSet::class);
         $before = $this->current($request, $class, $id, $draft);
-        $saved = $this->mainstay->drafts()->save($class, $data, entry: $id, draft: $draft, locale: $locale);
+        /* Tags typed are created with the save, and gone with it if it is
+           refused. */
+        $saved = DB::transaction(fn () => $this->mainstay->drafts()->save($class, Form::terms($class, $data), entry: $id, draft: $draft, locale: $locale));
 
         $here = $this->localized($request, match (true) {
             $global => route('mainstay.entries', $handle),
@@ -335,8 +379,8 @@ class EntryController
     private function global(Request $request, string $class): View
     {
         [$shown, $draft, $elsewhere] = $this->read($request, $class, fn (string $locale) => [
-            $this->mainstay->global($class, locale: $locale, depth: 0),
-            $this->mainstay->drafts()->of($class, locale: $locale, depth: 0),
+            $this->mainstay->global($class, locale: $locale, depth: 1),
+            $this->mainstay->drafts()->of($class, locale: $locale, depth: 1),
         ]);
 
         return $this->form($request, $class, $shown, $draft, $elsewhere, route('mainstay.entries.store', $class::handle()));
@@ -461,14 +505,7 @@ class EntryController
        route ends in, in the first locale's pattern. */
     private function slug(string $class): ?string
     {
-        $route = $this->mainstay->route($class);
-        $pattern = is_array($route) ? reset($route) : $route;
-
-        if ($pattern === null || ! preg_match('/\{(\w+)\}\z/', $pattern, $last) || $last[1] === 'title') {
-            return null;
-        }
-
-        return ($this->mainstay->fields($class)[$last[1]] ?? null) instanceof Text ? $last[1] : null;
+        return Form::slug($class);
     }
 
     /* Where a live entry is read, by locale. */
@@ -540,12 +577,9 @@ class EntryController
         return new HttpResponseException(response()->view('mainstay::missing', status: 404));
     }
 
-    /* The locale a screen is in: the one asked for, the default otherwise. */
     private function locale(Request $request): string
     {
-        $locales = array_keys($this->mainstay->locales());
-
-        return in_array($request->query('locale'), $locales, true) ? $request->query('locale') : $locales[0];
+        return Form::locale($request);
     }
 
     /* The locales to look in, the one asked for first. */
