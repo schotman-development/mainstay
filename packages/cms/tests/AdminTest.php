@@ -689,6 +689,102 @@ class AdminTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function history_names_who_published_each_version_and_restores_one_as_the_draft(): void
+    {
+        /* A seeder's write is a script's. */
+        $id = Mainstay::create(Post::class, $this->values(), locale: 'en', overrideAccess: true)->id;
+        $history = route('mainstay.entries.history', ['post', $id]);
+        $this->get($history)->assertOk()->assertSee('Published by a script')->assertSee('No earlier versions');
+        $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('href="'.$history.'"', escape: false);
+
+        /* Two publishes by two people, named newest first. */
+        [$ada, $bo, $cy] = [$this->user(role: 'administrator'), $this->user(role: 'administrator'), $this->user(role: 'administrator')];
+
+        foreach ([[$ada, 'By Ada'], [$bo, 'By Bo']] as [$user, $title]) {
+            $this->signIn($user);
+            $form = $this->get(route('mainstay.entries.edit', ['post', $id]));
+            $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => $title]), ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+            $this->get($history)->assertSeeInOrder(['Live since', "Published by {$user->name}", 'Live until', 'Restore'], escape: false);
+        }
+
+        $this->get($history)->assertSeeInOrder(['Live since', "Published by {$bo->name}", 'Live until', "Published by {$ada->name}", 'Live until', 'Published by a script']);
+
+        /* A translation added names the third on the live version, and
+           files nothing. */
+        $this->signIn($cy);
+        $form = $this->get(route('mainstay.entries.edit', ['post', $id, 'locale' => 'nl']));
+        $this->post(route('mainstay.entries.update', ['post', $id, 'locale' => 'nl']), [...$this->values(['title' => 'Hallo', 'slug' => 'hallo']), ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $page = $this->get($history)->assertSeeInOrder(['Live since', "Published by {$cy->name}", 'Live until', "Published by {$ada->name}", 'Live until', 'Published by a script'])->getContent();
+        $this->assertSame(2, substr_count($page, 'Live until'));
+
+        /* An account gone since is named as one. */
+        $ada->delete();
+        $this->get($history)->assertSee('Published by a deleted account');
+
+        /* The script's version, holding a field the type has dropped since
+           and a language no longer configured, restored: the form opens on
+           it as the draft and says what it could not bring back. */
+        $script = Mainstay::revisions()->of(Post::class, $id, overrideAccess: true)->last();
+        $snapshot = json_decode(DB::table('mainstay_revisions')->where('id', $script->id)->value('snapshot'), true);
+        $snapshot['fields']['subtitle'] = 'Dropped';
+        $snapshot['locales']['de'] = ['title' => 'Hallo'];
+        DB::table('mainstay_revisions')->where('id', $script->id)->update(['snapshot' => json_encode($snapshot)]);
+
+        $this->post(route('mainstay.revisions.restore', ['post', $id, $script->id]))
+            ->assertRedirect(route('mainstay.entries.edit', ['post', $id]))
+            ->assertSessionHas('status', 'That version is the draft now. Look it over, then publish it.');
+        $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('Not brought back -- subtitle: The type no longer declares it. DE title: de is no longer a content locale.')->assertSee('Unpublished changes')->assertSee('value="Hello"', escape: false);
+
+        /* From the Dutch history, back to the Dutch form; and the form in a
+           language the entry has no version in still links its history. */
+        $this->post(route('mainstay.revisions.restore', ['post', $id, $script->id, 'locale' => 'nl']))->assertRedirect(route('mainstay.entries.edit', ['post', $id, 'locale' => 'nl']));
+        $this->assertMatchesRegularExpression('#action="[^"]*/revisions/\d+\?locale=nl"#', $this->get(route('mainstay.entries.history', ['post', $id, 'locale' => 'nl']))->getContent());
+        $untranslated = Mainstay::create(Post::class, $this->values(['slug' => 'only-english']), locale: 'en', overrideAccess: true);
+        $this->get(route('mainstay.entries.edit', ['post', $untranslated->id, 'locale' => 'nl']))->assertSee('There is no NL version yet')->assertSee('Every version and who published it');
+        $this->assertSame('Hello', Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true)->entry->title);
+
+        /* Restored and published, the same version restored again is what
+           is live, which the history says. */
+        $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->publish($draft->id, overrideAccess: true);
+        $this->post(route('mainstay.revisions.restore', ['post', $id, $script->id]))
+            ->assertRedirect($history)->assertSessionHas('status', 'Nothing to restore: that version is what is live.');
+
+        /* Live since it replaced the version before, which a write changing
+           nothing a day later does not move. */
+        $went = Mainstay::revisions()->of(Post::class, $id, overrideAccess: true)->first()->createdAt->setTimezone('UTC');
+        $this->travel(1)->days();
+        Mainstay::update(Post::class, $id, ['title' => 'Hello'], locale: 'en', overrideAccess: true);
+        $this->get($history)->assertSee('Live since '.$went->format('j F Y, H:i').' UTC');
+        $this->travelBack();
+
+        /* A revision is restored only under the entry it is of. */
+        $this->post(route('mainstay.revisions.restore', ['post', $untranslated->id, $script->id]))->assertNotFound();
+
+        /* An entry with only a Dutch version has its history in English
+           too, named by its Dutch title. */
+        $dutch = Mainstay::create(Post::class, $this->values(['title' => 'Alleen Nederlands', 'slug' => 'alleen-nederlands']), locale: 'nl', overrideAccess: true);
+        $this->get(route('mainstay.entries.history', ['post', $dutch->id]))->assertOk()->assertSee('History of Alleen Nederlands');
+
+        /* A global has its history too, linked from its form, once saved as
+           well as before; a list and a term have none. */
+        $this->get(route('mainstay.globals.history', 'banner'))->assertOk()->assertSee('No earlier versions');
+        Mainstay::saveGlobal(Banner::class, ['text' => 'Hello'], locale: 'en', overrideAccess: true);
+        $this->get(route('mainstay.entries', 'banner'))->assertSee('href="'.route('mainstay.globals.history', 'banner').'"', escape: false);
+        $this->get(route('mainstay.globals.history', 'banner'))->assertOk()->assertSee('Live since')->assertSee('Published by');
+        Mainstay::saveGlobal(Banner::class, ['text' => 'Hello again'], locale: 'en', overrideAccess: true);
+        $banner = Mainstay::revisions()->of(Banner::class, overrideAccess: true)->sole();
+        $this->post(route('mainstay.revisions.restore', ['post', $id, $banner->id]))->assertNotFound();
+        $this->post(route('mainstay.globals.revisions.restore', ['banner', $script->id]))->assertNotFound();
+        $this->post(route('mainstay.globals.revisions.restore', ['banner', $banner->id]))->assertRedirect(route('mainstay.entries', 'banner'));
+        $this->assertSame('Hello', Mainstay::drafts()->of(Banner::class, locale: 'en', overrideAccess: true)->entry->text);
+        $this->get(route('mainstay.globals.history', 'post'))->assertNotFound();
+        $topic = Mainstay::create(Topic::class, ['title' => 'Topic', 'slug' => 'topic'], locale: 'en', overrideAccess: true);
+        $this->get(route('mainstay.entries.history', ['topic', $topic->id]))->assertNotFound();
+        $this->get(route('mainstay.entries.edit', ['topic', $topic->id]))->assertOk()->assertDontSee('Every version and who published it');
+    }
+
+    #[Test]
     public function a_relation_an_image_and_tags_show_what_is_wrong_with_them_under_their_names(): void
     {
         $errors = fn (array $messages) => ['errors' => (new ViewErrorBag)->put('default', new MessageBag($messages))];

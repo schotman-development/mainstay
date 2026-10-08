@@ -39,6 +39,8 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::post('{type}', [EntryController::class, 'store'])->name('mainstay.entries.store');
     Route::get('{type}/new', [EntryController::class, 'create'])->name('mainstay.entries.create');
     Route::get('{type}/trash', [EntryController::class, 'trashed'])->name('mainstay.entries.trash');
+    Route::get('{type}/history', [EntryController::class, 'history'])->name('mainstay.globals.history');
+    Route::post('{type}/revisions/{revision}', [EntryController::class, 'restoreGlobalRevision'])->whereNumber('revision')->name('mainstay.globals.revisions.restore');
     Route::post('{type}/trash', [EntryController::class, 'trashMany'])->name('mainstay.entries.trash-many');
 
     Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
@@ -52,6 +54,8 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::post('{type}/{id}/restore', [EntryController::class, 'restore'])->whereNumber('id')->name('mainstay.entries.restore');
     Route::post('{type}/{id}/destroy', [EntryController::class, 'destroy'])->whereNumber('id')->name('mainstay.entries.destroy');
     Route::post('{type}/{id}/front', [EntryController::class, 'front'])->whereNumber('id')->name('mainstay.entries.front');
+    Route::get('{type}/{id}/history', [EntryController::class, 'history'])->whereNumber('id')->name('mainstay.entries.history');
+    Route::post('{type}/{id}/revisions/{revision}', [EntryController::class, 'restoreRevision'])->whereNumber(['id', 'revision'])->name('mainstay.revisions.restore');
 
     Route::any('{path}', fn () => response()->view('mainstay::missing', status: 404))->where('path', '.*')->name('mainstay.missing');
 });

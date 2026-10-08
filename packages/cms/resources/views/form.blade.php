@@ -126,6 +126,14 @@
                     <p class="text-sm">{{ $owner ?? 'Nobody' }}</p>
                 </x-mainstay::field-section>
             @endunless
+
+            {{-- What was live before, for an entry that has been live and a
+                 global; a term keeps none. --}}
+            @if ($global || ($id !== null && ! $term))
+                <x-mainstay::field-section label="History">
+                    <a href="{{ $localized($global ? route('mainstay.globals.history', $handle) : route('mainstay.entries.history', [$handle, $id])) }}" class="text-sm text-accent hover:underline">Every version and who published it</a>
+                </x-mainstay::field-section>
+            @endif
         </aside>
     </form>
 

@@ -3,6 +3,7 @@
 namespace Mainstay\Http;
 
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -180,6 +181,111 @@ class EntryController
         $this->mainstay->setFrontPage($this->type($type, entries: true), $id);
 
         return back()->with('status', 'This is the front page now.');
+    }
+
+    /*
+     | An entry's versions, or a global's, newest first: the live one, and
+     | every one a write replaced and filed, each with when and who
+     | published it -- an account's name, "a script" for none, "a deleted
+     | account" for an id no account has -- and Restore, which makes one the
+     | draft. Terms have none.
+     */
+    public function history(Request $request, string $type, ?int $id = null): View
+    {
+        $class = $this->type($type);
+        $global = is_subclass_of($class, GlobalSet::class);
+
+        if ($global === ($id !== null) || is_subclass_of($class, Taxonomy::class)) {
+            throw $this->missing();
+        }
+
+        $live = null;
+
+        foreach ($this->order($this->locale($request)) as $locale) {
+            $live ??= $global ? $this->mainstay->global($class, locale: $locale, depth: 0) : $this->mainstay->findById($class, $id, locale: $locale, depth: 0);
+        }
+
+        $revisions = $this->mainstay->revisions()->of($class, $id);
+        $names = User::query()->whereIn('id', array_filter([$live?->publishedBy, ...$revisions->pluck('publishedBy')]))->pluck('name', 'id');
+
+        if (! $global && $live === null) {
+            throw $this->missing();
+        }
+
+        return view('mainstay::history', [
+            'class' => $class,
+            'id' => $id,
+            /* When the live version went live: when the one before it was
+               replaced, or the entry was first written. Not its last write,
+               which a save changing nothing moves too. */
+            'since' => $revisions->first()?->createdAt ?? $live?->createdAt,
+            'handle' => $class::handle(),
+            'label' => Navigation::label($class),
+            'title' => $global ? Navigation::label($class) : ($live->title ?: 'Untitled'),
+            'form' => $this->localized($request, $global ? route('mainstay.entries', $type) : route('mainstay.entries.edit', [$type, $id])),
+            'live' => $live,
+            'revisions' => $revisions,
+            'who' => fn (?int $user) => $user === null ? 'a script' : ($names[$user] ?? 'a deleted account'),
+            'restores' => Gate::about($class)->allows('update', $global || $live === null ? [$class, $class] : [$live]),
+        ]);
+    }
+
+    /*
+     | A revision made the draft, and the form opened on it, saying what it
+     | could not bring back: a field the type no longer declares, a locale
+     | no longer configured, a value its field now refuses. Only a revision
+     | of the entry -- or the global -- the address names; any other is not
+     | found here.
+     */
+    public function restoreRevision(Request $request, string $type, int $id, int $revision): RedirectResponse
+    {
+        return $this->revert($request, $type, $id, $revision);
+    }
+
+    public function restoreGlobalRevision(Request $request, string $type, int $revision): RedirectResponse
+    {
+        return $this->revert($request, $type, null, $revision);
+    }
+
+    private function revert(Request $request, string $type, ?int $id, int $revision): RedirectResponse
+    {
+        $class = $this->type($type);
+        $global = is_subclass_of($class, GlobalSet::class);
+
+        if ($global === ($id !== null) || is_subclass_of($class, Taxonomy::class)) {
+            throw $this->missing();
+        }
+
+        try {
+            if (! $this->mainstay->revisions()->of($class, $id)->contains('id', $revision)) {
+                throw $this->missing();
+            }
+
+            $draft = $this->mainstay->revisions()->restore($revision);
+        } catch (RecordNotFoundException) {
+            throw $this->missing();
+        }
+
+        if ($draft === null) {
+            return redirect()->to($this->localized($request, $global ? route('mainstay.globals.history', $type) : route('mainstay.entries.history', [$type, $id])))
+                ->with('status', 'Nothing to restore: that version is what is live.');
+        }
+
+        $unrestored = [];
+
+        foreach ($draft->unrestored['fields'] ?? [] as $name => $why) {
+            $unrestored[] = "{$name}: {$why}";
+        }
+
+        foreach ($draft->unrestored['locales'] ?? [] as $locale => $fields) {
+            foreach ($fields as $name => $why) {
+                $unrestored[] = strtoupper($locale)." {$name}: {$why}";
+            }
+        }
+
+        return redirect()->to($this->localized($request, $global ? route('mainstay.entries', $type) : route('mainstay.entries.edit', [$type, $id])))
+            ->with('status', 'That version is the draft now. Look it over, then publish it.')
+            ->withErrors($unrestored === [] ? [] : ['revision' => ['Not brought back -- '.implode(' ', $unrestored)]]);
     }
 
     /*
