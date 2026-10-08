@@ -21,6 +21,7 @@ use Mainstay\Tests\Fixtures\Broken\MainstayPasswordResetTokens;
 use Mainstay\Tests\Fixtures\Broken\MainstayRevisions;
 use Mainstay\Tests\Fixtures\Broken\MainstayRoles;
 use Mainstay\Tests\Fixtures\Broken\MainstayUsers;
+use Mainstay\Tests\Fixtures\Broken\Publisher;
 use Mainstay\Tests\Fixtures\Broken\Reserved;
 use Mainstay\Tests\Fixtures\Broken\Templated;
 use Mainstay\Tests\Fixtures\Broken\Uris;
@@ -106,7 +107,7 @@ class SchemaTest extends DatabaseTestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertSame(
-            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'template', 'created_at', 'updated_at', 'deleted_at'],
+            ['id', 'site_id', 'title', 'reading_minutes', 'featured', 'published_at', 'status', 'owner_id', 'published_by', 'template', 'created_at', 'updated_at', 'deleted_at'],
             Schema::getColumnListing('article'),
         );
         $this->assertSame(
@@ -904,7 +905,7 @@ class SchemaTest extends DatabaseTestCase
         $this->artisan('mainstay:sync')->assertSuccessful();
 
         $this->assertSame(
-            ['id', 'site_id', 'site_name', 'template', 'owner_id', 'created_at', 'updated_at', 'deleted_at'],
+            ['id', 'site_id', 'site_name', 'template', 'owner_id', 'published_by', 'created_at', 'updated_at', 'deleted_at'],
             Schema::getColumnListing('site_settings'),
         );
     }
@@ -915,6 +916,7 @@ class SchemaTest extends DatabaseTestCase
         foreach ([
             Reserved::class => 'has a field stored as site_id, a column Mainstay keeps for itself',
             Templated::class => 'has a field stored as template, a column Mainstay keeps for itself',
+            Publisher::class => 'has a field stored as published_by, a column Mainstay keeps for itself',
             Collided::class => 'has two properties stored in the same column',
             Uris::class => 'would be stored in uris, a table Mainstay keeps for itself',
             MainstayDrafts::class => 'would be stored in mainstay_drafts, a table Mainstay keeps for itself',

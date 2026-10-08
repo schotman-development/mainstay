@@ -12,6 +12,9 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
+use Mainstay\Auth\Gate as Signed;
+use Mainstay\Auth\Role;
+use Mainstay\Auth\User;
 use Mainstay\Content\Media;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Tests\Fixtures\Drafted\About;
@@ -111,6 +114,97 @@ class DraftTest extends DatabaseTestCase
     private function posted(Bulletin $read): array
     {
         return array_map(fn (string $name) => $read->{$name}, array_combine($names = array_keys(Mainstay::fields(Bulletin::class)), $names));
+    }
+
+    #[Test]
+    public function the_live_version_names_who_published_it_and_each_revision_who_had(): void
+    {
+        $role = Role::query()->where('name', 'administrator')->sole();
+        [$ada, $bo, $cy] = array_map(fn (string $name) => User::query()->create(['name' => $name, 'email' => strtolower($name).'@example.com', 'password' => 'correct horse battery', 'role_id' => $role->id]), ['Ada', 'Bo', 'Cy']);
+        $as = fn (?User $user) => $this->app['request']->attributes->set(Signed::USER, $user);
+        $by = fn (string $type, int $id) => Mainstay::findById($type, $id, locale: 'en', overrideAccess: true)->publishedBy;
+
+        $as($ada);
+        $story = Mainstay::create(Story::class, ['title' => 'One', 'slug' => 'one'], locale: 'en');
+        $this->assertSame($ada->id, $by(Story::class, $story->id));
+        $genre = Mainstay::create(Genre::class, ['title' => 'Noir', 'slug' => 'noir'], locale: 'en');
+        $this->assertSame($ada->id, $by(Genre::class, $genre->id), 'A term names its writer too.');
+
+        /* A write that changes nothing names nobody new. */
+        $as($bo);
+        Mainstay::update(Story::class, $story->id, ['title' => 'One'], locale: 'en');
+        $this->assertSame($ada->id, $by(Story::class, $story->id));
+
+        Mainstay::update(Genre::class, $genre->id, ['title' => 'Noir, darker'], locale: 'en');
+        $this->assertSame($bo->id, $by(Genre::class, $genre->id), 'And its next writer.');
+
+        /* A publish replacing Ada's version names Bo, and files hers under
+           her name. */
+        Mainstay::drafts()->publish(Mainstay::drafts()->save(Story::class, ['title' => 'One, again'], entry: $story->id, locale: 'en')->id);
+        $this->assertSame($bo->id, $by(Story::class, $story->id));
+        $this->assertSame([$ada->id], Mainstay::revisions()->of(Story::class, $story->id)->pluck('publishedBy')->all());
+
+        /* A translation added names Cy, and replaces nothing to file. */
+        $as($cy);
+        Mainstay::update(Story::class, $story->id, ['title' => 'Een', 'slug' => 'een'], locale: 'nl');
+        $this->assertSame($cy->id, $by(Story::class, $story->id));
+        $this->assertCount(1, Mainstay::revisions()->of(Story::class, $story->id));
+
+        /* With two languages, a write that changes nothing still names
+           nobody new, whatever order the driver reads them back in: with its
+           statistics, Postgres scans the table in the order rows lie, which
+           an update moves. */
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('analyze story_locales');
+        }
+
+        $as($bo);
+        Mainstay::update(Story::class, $story->id, ['title' => 'One, again'], locale: 'en');
+        Mainstay::update(Story::class, $story->id, ['title' => 'Een'], locale: 'nl');
+        $this->assertSame($cy->id, $by(Story::class, $story->id));
+        $as($cy);
+
+        /* Code on its own authority names nobody, whoever is signed in, and
+           files the version Cy last changed under Cy. */
+        Mainstay::update(Story::class, $story->id, ['title' => 'One, by a script'], locale: 'en', overrideAccess: true);
+        $this->assertNull($by(Story::class, $story->id));
+        $this->assertSame([$cy->id, $ada->id], Mainstay::revisions()->of(Story::class, $story->id, overrideAccess: true)->pluck('publishedBy')->all());
+        $this->assertNull($by(Story::class, Mainstay::create(Story::class, ['title' => 'Two', 'slug' => 'two'], locale: 'en', overrideAccess: true)->id), 'A create on its own authority names nobody too.');
+
+        /* Nor does publishing a draft on it. */
+        Mainstay::drafts()->publish(Mainstay::drafts()->save(Story::class, ['title' => 'One, published by a script'], entry: $story->id, locale: 'en')->id, overrideAccess: true);
+        $this->assertNull($by(Story::class, $story->id));
+
+        /* A restore from the trash that moves the slug to a free path
+           changes what is live: it names who restored it, and files the
+           version it moved. One that moves nothing names nobody new. */
+        Mainstay::delete(Story::class, $story->id, overrideAccess: true);
+        $taken = Mainstay::create(Story::class, ['title' => 'Taken', 'slug' => 'one'], locale: 'en', overrideAccess: true);
+        $as($bo);
+        Mainstay::restore(Story::class, $story->id);
+        $this->assertSame([$bo->id, 'one-2'], [$by(Story::class, $story->id), Mainstay::findById(Story::class, $story->id, locale: 'en')->slug]);
+        Mainstay::revisions()->restore(Mainstay::revisions()->of(Story::class, $story->id)->first()->id);
+        $this->assertSame('one', Mainstay::drafts()->of(Story::class, $story->id, locale: 'en')->entry->slug, 'The version before the move is kept.');
+        Mainstay::drafts()->discard(Mainstay::drafts()->of(Story::class, $story->id, locale: 'en')->id);
+        Mainstay::delete(Story::class, $taken->id, overrideAccess: true);
+        Mainstay::delete(Story::class, $story->id, overrideAccess: true);
+        $as($cy);
+        Mainstay::restore(Story::class, $story->id);
+        $this->assertSame($bo->id, $by(Story::class, $story->id));
+
+        /* A new entry's first publish names who published it, and a
+           global's save who saved it, each nobody on code's own authority. */
+        $as($ada);
+        $first = Mainstay::drafts()->publish(Mainstay::drafts()->save(Story::class, ['title' => 'Three', 'slug' => 'three'], locale: 'en')->id);
+        $this->assertSame($ada->id, $by(Story::class, $first->id));
+        $masthead = fn () => Mainstay::global(Masthead::class, locale: 'en', overrideAccess: true)->publishedBy;
+        Mainstay::saveGlobal(Masthead::class, ['motto' => 'First'], locale: 'en');
+        $this->assertSame($ada->id, $masthead());
+        $as($bo);
+        Mainstay::saveGlobal(Masthead::class, ['motto' => 'Second'], locale: 'en');
+        $this->assertSame($bo->id, $masthead());
+        Mainstay::saveGlobal(Masthead::class, ['motto' => 'Third'], locale: 'en', overrideAccess: true);
+        $this->assertNull($masthead());
     }
 
     #[Test]

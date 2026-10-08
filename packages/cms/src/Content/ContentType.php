@@ -18,6 +18,11 @@ abstract class ContentType
 
     public ?int $ownerId;
 
+    /* Who put the live version there: the user whose publish or write
+       changed it, none for code on its own authority or for what was
+       written before anyone was named. */
+    public ?int $publishedBy;
+
     public string $locale;
 
     public ?CarbonImmutable $createdAt;

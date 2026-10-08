@@ -213,7 +213,7 @@ class ContentStore
            here. So update() and saveGlobal() ask `publish` too. */
         [$internal, $reads] = $this->writes($type, ['create', 'publish'], $type, $overrideAccess);
 
-        $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, Gate::user()?->getKey());
+        $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, Gate::user()?->getKey(), $this->publisher($overrideAccess));
 
         return $this->readBack($type, $id, $locale, $internal, $reads ? null : array_keys($data), $overrideAccess);
     }
@@ -255,7 +255,7 @@ class ContentStore
 
             try {
                 $values = $this->validate($type, $data, $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess);
-                $this->filed($type, $id, fn () => $this->write($type, $id, $values, $data, $locale, $translations->has($locale), $reads));
+                $this->filed($type, $id, fn () => $this->write($type, $id, $values, $data, $locale, $translations->has($locale), $reads), $this->publisher($overrideAccess));
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -362,7 +362,7 @@ class ContentStore
                 $stored = $row === null ? [] : $this->stored($type, $row, $translations->get($locale), $internal);
                 $values = $this->validate($type, $data, $stored, $internal, $overrideAccess);
                 $held = $row === null ? null : (int) $row->id;
-                $id = $this->filed($type, $held, fn () => $this->write($type, $held, $values, $data, $locale, $translations->has($locale), $reads));
+                $id = $this->filed($type, $held, fn () => $this->write($type, $held, $values, $data, $locale, $translations->has($locale), $reads, publisher: $this->publisher($overrideAccess)), $this->publisher($overrideAccess));
 
                 break;
             } catch (UniqueConstraintViolationException $exception) {
@@ -634,7 +634,7 @@ class ContentStore
             $held = $global ? $this->live($type, 0, $overrideAccess)[0]?->id : $draft->entry_id;
             $held = $held === null ? null : (int) $held;
             $owner = $global || $draft->owner_id === null ? null : (int) $draft->owner_id;
-            $published = $this->filed($type, $held, fn () => $this->published($type, $held, $changes, $internal, $reads, $overrideAccess, $nested, $owner));
+            $published = $this->filed($type, $held, fn () => $this->published($type, $held, $changes, $internal, $reads, $overrideAccess, $nested, $owner), $this->publisher($overrideAccess));
 
             DB::table(self::DRAFTS)->where('id', $id)->delete();
 
@@ -674,7 +674,7 @@ class ContentStore
 
             if ($id === null) {
                 /* Owned by who started the draft, whoever publishes it. */
-                $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, $owner);
+                $id = $this->write($type, null, $this->validate($type, $data, [], $internal, $overrideAccess), $data, $locale, false, $reads, $owner, $this->publisher($overrideAccess));
 
                 continue;
             }
@@ -708,8 +708,8 @@ class ContentStore
 
         return DB::table(self::REVISIONS)->where('site_id', $this->site())->where('type', $type::handle())->where('entry_id', $entry ?? 0)
             ->orderByDesc('id')
-            ->get(['id', 'created_at'])
-            ->map(fn (object $revision) => new Revision((int) $revision->id, $entry, $this->moment->cast($revision->created_at)));
+            ->get(['id', 'created_at', 'published_by'])
+            ->map(fn (object $revision) => new Revision((int) $revision->id, $entry, $this->moment->cast($revision->created_at), $revision->published_by === null ? null : (int) $revision->published_by));
     }
 
     /*
@@ -819,14 +819,16 @@ class ContentStore
         $this->attach($type, [$row]);
         [, $reads] = $this->writes($type, 'restore', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
 
-        return DB::transaction(function () use ($type, $handle, $id, $reads) {
+        return DB::transaction(function () use ($type, $handle, $id, $reads, $overrideAccess) {
             $now = $this->stamp(CarbonImmutable::now());
 
             if (DB::table($handle)->where('id', $id)->whereNotNull('deleted_at')->update(['deleted_at' => null, 'updated_at' => $now]) === 0) {
                 throw new RecordNotFoundException("{$type} {$id} left the trash while it was being restored.");
             }
 
-            $this->suffix($type, $id);
+            /* A slug moved to a free path changes what is live, as a write
+               does: it names who restored it, and files what it replaced. */
+            $this->filed($type, $id, fn () => $this->suffix($type, $id), $this->publisher($overrideAccess));
             $this->paths($type, $id, $this->site(), false, $reads, $this->snapshotted(1));
 
             /* None to a caller that may not read the type: a path spells out
@@ -977,7 +979,7 @@ class ContentStore
         }
 
         $translation = $translations->get($locale);
-        $built = (object) ['id' => $row?->id, 'owner_id' => $row?->owner_id, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+        $built = (object) ['id' => $row?->id, 'owner_id' => $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
 
         if (! $global) {
             $built->template = array_key_exists('template', $changes['fields']) ? $changes['fields']['template'] : $row?->template;
@@ -1072,7 +1074,7 @@ class ContentStore
     private function unpublished(string $type, object $draft): Entry
     {
         $changes = $this->changes($draft);
-        $row = (object) ['id' => null, 'owner_id' => $draft->owner_id, 'template' => $changes['fields']['template'] ?? null, 'created_at' => null, 'updated_at' => null];
+        $row = (object) ['id' => null, 'owner_id' => $draft->owner_id, 'published_by' => null, 'template' => $changes['fields']['template'] ?? null, 'created_at' => null, 'updated_at' => null];
 
         foreach ($this->mainstay->fields($type) as $name => $field) {
             if (! $field->localized && array_key_exists($name, $changes['fields'])) {
@@ -1115,27 +1117,45 @@ class ContentStore
     }
 
     /*
-     | Runs `$write`, and where it replaces something live -- a value a
-     | locale already held, not a translation added -- files the entry as it
-     | was before, once for the call however many locales it writes. None for
-     | an entry being created, which replaces nothing, and none for a term,
-     | which has no history.
+     | Who a write names as having published what it puts live: the user
+     | signed in to the admin, and nobody for code writing on its own
+     | authority, whoever is signed in.
+     */
+    private function publisher(bool $overrideAccess): ?int
+    {
+        return $overrideAccess ? null : Gate::user()?->getKey();
+    }
+
+    /*
+     | Runs `$write`, and where it changes what is live, names `$publisher`
+     | as who published it -- a translation added included, a write that
+     | changes nothing leaving it. Where it replaces something live -- a value
+     | a locale already held, not a translation added -- it files the entry as
+     | it was before, with who had published that, once for the call however
+     | many locales it writes. An entry being created replaces nothing, and
+     | is named on its insert; a term has no history.
      |
      | The row is locked before the entry is read, so a write beside this one
      | waits rather than filing what this one is about to replace.
      */
-    private function filed(string $type, ?int $id, Closure $write): mixed
+    private function filed(string $type, ?int $id, Closure $write, ?int $publisher): mixed
     {
-        if ($id === null || is_subclass_of($type, Taxonomy::class)) {
+        if ($id === null) {
             return $write();
         }
 
-        return DB::transaction(function () use ($type, $id, $write) {
+        return DB::transaction(function () use ($type, $id, $write, $publisher) {
             $before = $this->snapshot($type, $id, lock: true);
+            $had = DB::table($type::handle())->where('id', $id)->lockForUpdate()->value('published_by');
             $written = $write();
+            $after = $this->snapshot($type, $id);
 
-            if ($this->replaced($before, $this->snapshot($type, $id))) {
-                $this->file($type, $id, $before);
+            if ($after !== $before) {
+                DB::table($type::handle())->where('id', $id)->update(['published_by' => $publisher]);
+            }
+
+            if (! is_subclass_of($type, Taxonomy::class) && $this->replaced($before, $after)) {
+                $this->file($type, $id, $before, $had === null ? null : (int) $had);
             }
 
             return $written;
@@ -1167,7 +1187,9 @@ class ContentStore
             }
         }
 
-        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
+        /* In one order, so two snapshots of the same content are equal
+           however the driver happens to hand the rows back. */
+        foreach (DB::table("{$handle}_locales")->where('parent_id', $id)->orderBy('locale')->when($nested, fn (Builder $query) => $query->lockForUpdate())->get() as $translation) {
             $shape['locales'][$translation->locale] = [];
 
             foreach ($fields as $name => $field) {
@@ -1207,11 +1229,11 @@ class ContentStore
      | only to the second, and by primary key, so the delete locks those rows
      | and no gap beside them.
      */
-    private function file(string $type, int $id, array $snapshot): void
+    private function file(string $type, int $id, array $snapshot, ?int $publisher): void
     {
         $key = ['site_id' => $this->site(), 'type' => $type::handle(), 'entry_id' => is_subclass_of($type, GlobalSet::class) ? 0 : $id];
 
-        DB::table(self::REVISIONS)->insert([...$key, 'snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 'created_at' => $this->stamp(CarbonImmutable::now())]);
+        DB::table(self::REVISIONS)->insert([...$key, 'snapshot' => json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 'published_by' => $publisher, 'created_at' => $this->stamp(CarbonImmutable::now())]);
 
         if (($keep = config('mainstay.revisions')) === null) {
             return;
@@ -1662,7 +1684,7 @@ class ContentStore
             ->where("{$handle}.site_id", $this->site())
             ->when($trashed, fn (Builder $query) => $query->whereNotNull("{$handle}.deleted_at"), fn (Builder $query) => $query->whereNull("{$handle}.deleted_at"))
             ->select([
-                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', ...($routed ? ['template'] : []), 'created_at', 'updated_at', ...array_keys($shared)]),
+                ...array_map(fn (string $column) => "{$handle}.{$column}", ['id', 'owner_id', 'published_by', ...($routed ? ['template'] : []), 'created_at', 'updated_at', ...array_keys($shared)]),
                 ...array_map(fn (string $column) => "{$locales}.{$column}", array_keys($localized)),
                 ...($routed ? ['uris.uri'] : []),
             ]);
@@ -2242,7 +2264,7 @@ class ContentStore
      | be validated, not to be written: written back, they would put a field
      | another save changed in the meantime back the way it was.
      */
-    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads, ?int $owner = null): int
+    private function write(string $type, ?int $id, array $values, array $given, string $locale, bool $translated, bool $reads, ?int $owner = null, ?int $publisher = null): int
     {
         $handle = $type::handle();
         $site = $this->site();
@@ -2253,13 +2275,13 @@ class ContentStore
         /* Blank is no view of its own, which is how one is taken off. */
         $template = $routed && array_key_exists('template', $given) ? ['template' => blank($given['template']) ? null : $given['template']] : [];
 
-        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template, $routed, $values, $given, $owner) {
+        return DB::transaction(function () use ($type, $handle, $id, $site, $locale, $translated, $reads, $localized, $shared, $serialize, $changed, $template, $routed, $values, $given, $owner, $publisher) {
             $created = $id === null;
 
             $now = $this->stamp(CarbonImmutable::now());
 
             if ($id === null) {
-                $id = DB::table($handle)->insertGetId(['site_id' => $site, 'owner_id' => $owner, ...$serialize($shared), ...$template, 'created_at' => $now, 'updated_at' => $now]);
+                $id = DB::table($handle)->insertGetId(['site_id' => $site, 'owner_id' => $owner, 'published_by' => $publisher, ...$serialize($shared), ...$template, 'created_at' => $now, 'updated_at' => $now]);
             } else {
                 /* Only while it is out of the trash, and asked again after. A
                    delete committed since the load leaves the update nothing
@@ -2553,6 +2575,7 @@ class ContentStore
            which spells out the fields it is built from. */
         if ($only === null) {
             $entry->ownerId = $row->owner_id === null ? null : (int) $row->owner_id;
+            $entry->publishedBy = ($row->published_by ?? null) === null ? null : (int) $row->published_by;
             $entry->createdAt = blank($row->created_at) ? null : $this->moment->cast($row->created_at);
             $entry->updatedAt = blank($row->updated_at) ? null : $this->moment->cast($row->updated_at);
         }

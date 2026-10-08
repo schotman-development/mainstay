@@ -77,7 +77,7 @@ class ContentSchema
                A global has neither, so the names are left to its fields. */
             $entry = is_subclass_of($type, Entry::class);
 
-            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', ...($entry ? ['template', 'missing'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
+            foreach (['id', 'site_id', 'parent_id', 'locale', 'owner_id', 'published_by', ...($entry ? ['template', 'missing'] : []), 'created_at', 'updated_at', 'deleted_at', 'uri'] as $reserved) {
                 if ($columns->has($reserved)) {
                     throw new InvalidArgumentException("{$type} has a field stored as {$reserved}, a column Mainstay keeps for itself. Rename the property.");
                 }
@@ -108,10 +108,12 @@ class ContentSchema
                        users table a precondition of every sync and a line of
                        every host's migrations, and the id a deleted account
                        leaves belongs to nobody, which reads as someone else's.
-                       dateTime rather than timestamp, the column a
-                       Date(time: true) wants: MySQL shifts a timestamp by the
-                       session's zone and stops it at 2038. */
+                       published_by, who put the live version there, has none
+                       for the same reason. dateTime rather than timestamp,
+                       the column a Date(time: true) wants: MySQL shifts a
+                       timestamp by the session's zone and stops it at 2038. */
                     $table->unsignedBigInteger('owner_id')->nullable();
+                    $table->unsignedBigInteger('published_by')->nullable();
                     if ($entry) {
                         $table->string('template')->nullable();
                     }
