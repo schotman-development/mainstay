@@ -925,14 +925,15 @@ class ContentStore
             $this->writes($old[0], 'publish', fn () => $this->hydrate($old[0], $row, null, true), $overrideAccess);
         }
 
-        DB::transaction(function () use ($type, $new, $old) {
+        DB::transaction(function () use ($type, $new, $old, $overrideAccess) {
             DB::table('sites')->where('id', $this->site())->lockForUpdate()->value('id');
             DB::table('sites')->where('id', $this->site())->update(['front_type' => $new[0] ?? null, 'front_id' => $new[1] ?? null]);
             $this->front = $new ?? false;
 
-            /* The old one first, so `/` is free for the new one to take. */
+            /* The old one first, so `/` is free for the new one to take. A
+               slug moved to a free path is a write, as on a restore. */
             if ($old !== null && [$old[0]::handle(), $old[1]] !== $new) {
-                $this->suffix($old[0], $old[1]);
+                $this->filed($old[0], $old[1], fn () => $this->suffix($old[0], $old[1]), $this->publisher($overrideAccess));
                 $this->paths($old[0], $old[1], $this->site(), false, true, $this->snapshotted(1));
             }
 

@@ -208,6 +208,35 @@ class DraftTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_front_page_moved_off_its_path_names_who_moved_it_and_keeps_what_it_moved(): void
+    {
+        $role = Role::query()->where('name', 'administrator')->sole();
+        [$ada, $bo] = array_map(fn (string $name) => User::query()->create(['name' => $name, 'email' => strtolower($name).'@example.com', 'password' => 'correct horse battery', 'role_id' => $role->id]), ['Ada', 'Bo']);
+        $as = fn (?User $user) => $this->app['request']->attributes->set(Signed::USER, $user);
+
+        /* Ada's front page answers `/`, so a script can give another story
+           its slug; making a third the front page moves hers to a free one. */
+        $as($ada);
+        $home = Mainstay::create(Story::class, ['title' => 'Home', 'slug' => 'home'], locale: 'en');
+        Mainstay::setFrontPage(Story::class, $home->id);
+        $as(null);
+        Mainstay::create(Story::class, ['title' => 'Another home', 'slug' => 'home'], locale: 'en', overrideAccess: true);
+        $front = Mainstay::create(Story::class, ['title' => 'Front', 'slug' => 'front'], locale: 'en', overrideAccess: true);
+        $as($bo);
+        Mainstay::setFrontPage(Story::class, $front->id);
+
+        $moved = Mainstay::findById(Story::class, $home->id, locale: 'en');
+        $this->assertSame(['home-2', $bo->id], [$moved->slug, $moved->publishedBy]);
+        $this->assertSame([$ada->id], Mainstay::revisions()->of(Story::class, $home->id)->pluck('publishedBy')->all(), 'The version before the move is kept, under who had published it.');
+
+        /* Moved on code's own authority, with Bo still signed in, it names
+           nobody. */
+        Mainstay::create(Story::class, ['title' => 'Another front', 'slug' => 'front'], locale: 'en', overrideAccess: true);
+        Mainstay::setFrontPage(Story::class, $home->id, overrideAccess: true);
+        $this->assertSame(['front-2', null], [Mainstay::findById(Story::class, $front->id, locale: 'en')->slug, Mainstay::findById(Story::class, $front->id, locale: 'en')->publishedBy]);
+    }
+
+    #[Test]
     public function every_draft_of_a_type_is_listed_newest_first_save_a_trashed_entrys(): void
     {
         $live = $this->story('Live');
