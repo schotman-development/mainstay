@@ -112,3 +112,34 @@ test('the blank chip in the template is not one of the tags', () => {
 
   expect(tags()).toEqual(['editor'])
 })
+
+test('a tag typed as one of its datalist options posts the option, and one matching none its text after data-tag-new', () => {
+  document.body.innerHTML = `
+    <form>
+      <div data-tag-input data-tag-new="new:">
+        <input data-tag-field list="terms" data-placeholder="Add a tag">
+        <template data-tag-template>${chip('')}</template>
+      </div>
+      <datalist id="terms"><option value="Laravel" data-value="id:5"></option></datalist>
+    </form>`
+  tagInputs()
+
+  const input = document.querySelector<HTMLInputElement>('[data-tag-field]')!
+  let heard = 0
+
+  document.querySelector('form')!.addEventListener('input', () => heard++)
+
+  for (const typed of ['laravel', '2026', 'LARAVEL']) {
+    input.value = typed
+    press(input, 'Enter')
+  }
+
+  expect(tags()).toEqual(['id:5', 'new:2026'])
+  expect([...document.querySelectorAll('[data-tag] > [data-tag-label]')].map((label) => label.textContent)).toEqual(['Laravel', '2026'])
+  expect(heard).toBe(2)
+
+  press(input, 'Backspace')
+
+  expect(tags()).toEqual(['id:5'])
+  expect(heard).toBe(3)
+})

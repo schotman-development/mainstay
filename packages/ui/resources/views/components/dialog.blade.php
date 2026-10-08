@@ -1,4 +1,4 @@
-@props(['id', 'label'])
+@props(['id', 'label', 'wide' => false])
 
 {{--
  | A question asked over the page, on the platform's own <dialog>: shown modal
@@ -12,7 +12,7 @@
 <dialog
     id="{{ $id }}"
     aria-labelledby="{{ $id }}-label"
-    {{ $attributes->class('m-auto w-full max-w-md rounded-control border border-border bg-canvas p-0 text-ink shadow-lg backdrop:bg-ink/30') }}
+    {{ $attributes->class(($wide ? 'max-w-3xl' : 'max-w-md').' m-auto w-full rounded-control border border-border bg-canvas p-0 text-ink shadow-lg backdrop:bg-ink/30') }}
 >
     <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
         <h2 id="{{ $id }}-label" class="text-sm font-medium">{{ $label }}</h2>
