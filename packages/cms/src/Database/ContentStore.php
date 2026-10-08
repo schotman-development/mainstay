@@ -828,8 +828,9 @@ class ContentStore
 
             /* A slug moved to a free path changes what is live, as a write
                does: it names who restored it, and files what it replaced. */
-            $this->filed($type, $id, fn () => $this->suffix($type, $id), $this->publisher($overrideAccess));
-            $this->paths($type, $id, $this->site(), false, $reads, $this->snapshotted(1));
+            $nested = $this->snapshotted(1);
+            $this->filed($type, $id, fn () => $this->suffix($type, $id, $nested), $this->publisher($overrideAccess));
+            $this->paths($type, $id, $this->site(), false, $reads, $nested);
 
             /* None to a caller that may not read the type: a path spells out
                the fields it is built from. */
@@ -933,8 +934,9 @@ class ContentStore
             /* The old one first, so `/` is free for the new one to take. A
                slug moved to a free path is a write, as on a restore. */
             if ($old !== null && [$old[0]::handle(), $old[1]] !== $new) {
-                $this->filed($old[0], $old[1], fn () => $this->suffix($old[0], $old[1]), $this->publisher($overrideAccess));
-                $this->paths($old[0], $old[1], $this->site(), false, true, $this->snapshotted(1));
+                $nested = $this->snapshotted(1);
+                $this->filed($old[0], $old[1], fn () => $this->suffix($old[0], $old[1], $nested), $this->publisher($overrideAccess));
+                $this->paths($old[0], $old[1], $this->site(), false, true, $nested);
             }
 
             if ($new !== null) {
@@ -1300,8 +1302,12 @@ class ContentStore
      | a literal segment or a select whose options a suffix would leave, or a
      | path another route or locale answers, which no suffix frees, is left
      | for paths() to refuse, naming it.
+     |
+     | Read with a lock where a plain read answers from a caller's older
+     | snapshot -- `$nested`, as paths() reads -- so a slug another request
+     | has changed since is not suffixed back from the old one.
      */
-    private function suffix(string $type, int $id): void
+    private function suffix(string $type, int $id, bool $nested): void
     {
         if (($patterns = $this->patterns($type)) === null) {
             return;
@@ -1310,11 +1316,11 @@ class ContentStore
         $handle = $type::handle();
         $site = $this->site();
         $fields = $this->mainstay->fields($type);
-        $taken = fn (string $locale, string $uri) => DB::table('uris')->where('site_id', $site)->where('locale', $locale)->where('uri', $uri)->exists();
+        $taken = fn (string $locale, string $uri) => DB::table('uris')->where('site_id', $site)->where('locale', $locale)->where('uri', $uri)->when($nested, fn (Builder $query) => $query->lockForUpdate())->value('id') !== null;
 
         foreach (array_keys($patterns) as $locale) {
-            $row = DB::table($handle)->where('id', $id)->first();
-            $translations = DB::table("{$handle}_locales")->where('parent_id', $id)->get()->keyBy('locale');
+            $row = DB::table($handle)->where('id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->first();
+            $translations = DB::table("{$handle}_locales")->where('parent_id', $id)->when($nested, fn (Builder $query) => $query->lockForUpdate())->get()->keyBy('locale');
 
             if (! $translations->has($locale) || ! $taken($locale, $this->built($type, $patterns[$locale], $row, $translations[$locale]))) {
                 continue;

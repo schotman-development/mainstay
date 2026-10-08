@@ -263,6 +263,76 @@ class DraftTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_slug_renamed_beside_a_callers_transaction_is_not_suffixed_back_from_the_old_one(): void
+    {
+        /* A front page whose slug is on its own row, one for every
+           language, and a story whose slug is on a locale's. */
+        $home = Mainstay::create(Sheet::class, ['title' => 'Home', 'slug' => 'home-page'], locale: 'en', overrideAccess: true);
+        $gone = Mainstay::create(Story::class, ['title' => 'Gone', 'slug' => 'gone-page'], locale: 'en', overrideAccess: true);
+        Mainstay::create(Sheet::class, ['title' => 'Another home', 'slug' => 'home'], locale: 'en', overrideAccess: true);
+        Mainstay::create(Story::class, ['title' => 'Another gone', 'slug' => 'gone'], locale: 'en', overrideAccess: true);
+        /* With a lock, as the store reads: a plain read here answers from
+           the caller's snapshot too. */
+        $slugs = fn () => [DB::table('sheet')->where('id', $home->id)->lockForUpdate()->value('slug'), DB::table('story_locales')->where('parent_id', $gone->id)->lockForUpdate()->value('slug')];
+        $uris = fn () => [DB::table('uris')->where('type', 'sheet')->where('entry_id', $home->id)->value('uri'), DB::table('uris')->where('type', 'story')->where('entry_id', $gone->id)->value('uri')];
+
+        $this->twice(function () use ($home, $gone) {
+            /* Off their paths, under slugs others hold. */
+            Mainstay::setFrontPage(Sheet::class, $home->id, overrideAccess: true);
+            Mainstay::delete(Story::class, $gone->id, overrideAccess: true);
+            DB::table('sheet')->where('id', $home->id)->update(['slug' => 'home']);
+            DB::table('story_locales')->where('parent_id', $gone->id)->update(['slug' => 'gone']);
+        }, function () use ($home, $gone, $slugs, $uris) {
+            /* Another connection renames each to a free slug after the
+               caller's snapshot: read as it was, the old slug is taken, and
+               its suffix would write over the rename. */
+            $renamed = $this->beside(fn () => DB::connection('beside')->table('sheet')->where('id', $home->id)->update(['slug' => 'house']));
+            $this->beside(fn () => DB::connection('beside')->table('story_locales')->where('parent_id', $gone->id)->update(['slug' => 'went']));
+            Mainstay::setFrontPage(null, overrideAccess: true);
+            Mainstay::restore(Story::class, $gone->id, overrideAccess: true);
+
+            $this->assertSame($renamed ? ['house', 'went'] : ['home-2', 'gone-2'], $slugs());
+            $this->assertSame($renamed ? ['/sheets/house', '/stories/went'] : ['/sheets/home-2', '/stories/gone-2'], $uris());
+        });
+    }
+
+    #[Test]
+    public function a_suffix_inside_a_callers_transaction_sees_the_paths_taken_and_freed_beside_it(): void
+    {
+        $freed = Mainstay::create(Story::class, ['title' => 'Freed', 'slug' => 'freed-page'], locale: 'en', overrideAccess: true);
+        $taken = Mainstay::create(Story::class, ['title' => 'Taken', 'slug' => 'taken-page'], locale: 'en', overrideAccess: true);
+        $holder = Mainstay::create(Story::class, ['title' => 'Holder', 'slug' => 'freed'], locale: 'en', overrideAccess: true);
+        $taker = Mainstay::create(Story::class, ['title' => 'Taker', 'slug' => 'spare'], locale: 'en', overrideAccess: true);
+        Mainstay::create(Story::class, ['title' => 'Another taken', 'slug' => 'taken'], locale: 'en', overrideAccess: true);
+        $slugs = fn () => array_map(fn (Story $story) => DB::table('story_locales')->where('parent_id', $story->id)->lockForUpdate()->value('slug'), [$freed, $taken]);
+
+        $this->twice(function () use ($freed, $taken, $holder, $taker) {
+            /* In the trash, each under a slug another story holds. */
+            Mainstay::delete(Story::class, $freed->id, overrideAccess: true);
+            Mainstay::delete(Story::class, $taken->id, overrideAccess: true);
+            Mainstay::update(Story::class, $holder->id, ['slug' => 'freed'], locale: 'en', overrideAccess: true);
+            Mainstay::update(Story::class, $taker->id, ['slug' => 'spare'], locale: 'en', overrideAccess: true);
+            DB::table('story_locales')->where('parent_id', $freed->id)->update(['slug' => 'freed']);
+            DB::table('story_locales')->where('parent_id', $taken->id)->update(['slug' => 'taken']);
+        }, function () use ($freed, $taken, $holder, $taker, $slugs) {
+            /* After the caller's snapshot, another connection frees the one
+               path and takes the other's first suffix. Read as they were,
+               the first is suffixed for nothing, and the second takes a
+               suffix now held and is refused. */
+            $moved = $this->beside(function () use ($holder, $taker) {
+                foreach ([[$holder, 'elsewhere'], [$taker, 'taken-2']] as [$story, $slug]) {
+                    DB::connection('beside')->table('story_locales')->where('parent_id', $story->id)->update(['slug' => $slug]);
+                    DB::connection('beside')->table('uris')->where('type', 'story')->where('entry_id', $story->id)->update(['uri' => "/stories/{$slug}"]);
+                }
+            });
+            Mainstay::restore(Story::class, $freed->id, overrideAccess: true);
+            Mainstay::restore(Story::class, $taken->id, overrideAccess: true);
+
+            $this->assertSame($moved ? ['freed', 'taken-3'] : ['freed-2', 'taken-2'], $slugs());
+        });
+    }
+
+    #[Test]
     public function every_draft_of_a_type_is_listed_newest_first_save_a_trashed_entrys(): void
     {
         $live = $this->story('Live');
