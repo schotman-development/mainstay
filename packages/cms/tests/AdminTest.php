@@ -697,10 +697,13 @@ class AdminTest extends DatabaseTestCase
         $this->get($history)->assertOk()->assertSee('Published by a script')->assertSee('No earlier versions');
         $this->get(route('mainstay.entries.edit', ['post', $id]))->assertSee('href="'.$history.'"', escape: false);
 
-        /* Two publishes by two people, named newest first. */
+        /* Two publishes by two people, named newest first, some minutes
+           after the entry was first written. */
+        $this->travel(10)->minutes();
         [$ada, $bo, $cy] = [$this->user(role: 'administrator'), $this->user(role: 'administrator'), $this->user(role: 'administrator')];
 
         foreach ([[$ada, 'By Ada'], [$bo, 'By Bo']] as [$user, $title]) {
+            $this->travel(1)->minutes();
             $this->signIn($user);
             $form = $this->get(route('mainstay.entries.edit', ['post', $id]));
             $this->post(route('mainstay.entries.update', ['post', $id]), [...$this->values(['title' => $title]), ...$this->drawn($form), 'intent' => 'publish'])->assertSessionHasNoErrors();
@@ -746,6 +749,7 @@ class AdminTest extends DatabaseTestCase
         /* Restored and published, the same version restored again is what
            is live, which the history says. */
         $draft = Mainstay::drafts()->of(Post::class, $id, locale: 'en', overrideAccess: true);
+        $this->travel(1)->minutes();
         Mainstay::drafts()->publish($draft->id, overrideAccess: true);
         $this->post(route('mainstay.revisions.restore', ['post', $id, $script->id]))
             ->assertRedirect($history)->assertSessionHas('status', 'Nothing to restore: that version is what is live.');
@@ -786,6 +790,8 @@ class AdminTest extends DatabaseTestCase
         $this->get(route('mainstay.globals.history', 'post'))->assertNotFound();
         $topic = Mainstay::create(Topic::class, ['title' => 'Topic', 'slug' => 'topic'], locale: 'en', overrideAccess: true);
         $this->get(route('mainstay.entries.history', ['topic', $topic->id]))->assertNotFound();
+        $this->post(route('mainstay.revisions.restore', ['topic', $topic->id, $script->id]))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
+        $this->post(route('mainstay.revisions.restore', ['banner', 1, $banner->id]))->assertNotFound()->assertSee('aria-label="Sections"', escape: false);
         $this->get(route('mainstay.entries.edit', ['topic', $topic->id]))->assertOk()->assertDontSee('Every version and who published it');
     }
 
