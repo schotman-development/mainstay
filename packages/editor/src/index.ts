@@ -1,3 +1,2 @@
-export { Editor } from './Editor'
-export type { EditorProps } from './Editor'
-export { schema } from './schema'
+export { editor, editors } from './editor'
+export { linkable, schema } from './schema'

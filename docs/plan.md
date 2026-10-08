@@ -15,12 +15,12 @@ from live until it is published, every version a write replaces is kept as a rev
 made from again, and the trash is restored from or emptied. The admin has accounts of its own
 behind a login, and the query layer asks Gate about the one signed in, whose role's capabilities --
 each type's own, or a form covering every type -- decide what it may write and publish. Phase
-10's first part is done too: every entry has a title, and the admin lists each type's entries and
-edits their plain fields in every language, saving a draft or publishing it, with the trash and the
-front page as buttons.
+10's first two parts are done too: every entry has a title, and the admin lists each type's entries
+and edits their fields in every language -- rich text in a ProseMirror editor, a page's blocks as
+raw JSON -- saving a draft or publishing it, with the trash and the front page as buttons.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
-`src/js` — and `packages/editor` is a built ProseMirror island declaring the document schema the
-package renders.
+`src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
+document schema the package renders.
 
 The order puts content working before anyone can log in to it. Up to phase 8 everything is driven
 from PHP — the site's own seeders, import commands, tinker — against a real site. Identity and the
@@ -1119,16 +1119,22 @@ are renumbered with the plan.
 
 **The editor without React.** The island becomes `editor(element)`, mounting a ProseMirror view on a
 field's element and writing the document's JSON into the field's hidden input on every change, so the
-form posts it, `FormData` sees it and the unsaved-changes warning covers it. React rendered one `<div>`
-for ProseMirror to own and gives an editor per field, mounted idempotently by the behaviour layer as
-every other module is, nothing it needs, so `react`, `react-dom` and the React plugin leave the
-editor, the admin bundle and the root, and the committed bundle sheds them.
+form posts it, `FormData` sees it and the unsaved-changes warning covers it. Until something changes
+the input holds what the server drew, so an untouched editor posts its fingerprint back, and an
+editor emptied to one blank paragraph posts nothing, which is no document. React rendered one `<div>`
+for ProseMirror to own and gave nothing else, so `editors()` mounts one per field from the admin's
+script beside the behaviour layer's `mount()`, idempotently as every module is, and `react`,
+`react-dom` and the React plugin leave the editor, the admin bundle and the root. The committed
+bundle drops from 409 to 229 KB.
 
 - A toolbar above the text: paragraph or heading 2 to 4, bold, italic, code, link, bullet and
   numbered list, quote, code block, rule -- the schema's nodes and marks and no more -- each showing
-  when it is active, with the usual keys for the marks.
-- A link asks for its address in the dialog, checked by the schema's `linkable()` before the mark is
-  set; on a link the same dialog edits or removes it.
+  when it is active, with the usual keys for the marks, Mod-k for a link and Shift-Enter for a line
+  break.
+- A link asks for its address in a dialog, checked by the schema's `linkable()` before the mark is
+  set; on a link the same dialog edits or removes all of it, and with nothing selected it inserts
+  the address as the link's text. The dialog is drawn once, pushed onto a `dialogs` stack the shell
+  draws outside the entry's form, so its own form can submit.
 - Pasted HTML is parsed through the schema, so what it does not know falls away, as the blocks
   decision foresaw.
 - Enter splits a list item, and Mod-] and Mod-[ indent and outdent it, leaving Tab to move focus,
@@ -1136,18 +1142,20 @@ editor, the admin bundle and the root, and the committed bundle sheds them.
   adds.
 
 The RichText component is the hidden input holding the document, the toolbar and the element the
-editor mounts on, and `fromForm()` decodes the JSON. Without JavaScript the document shows rendered
-and read-only, and posts unchanged.
+editor mounts on. `Field::fromForm()` decodes the JSON for every field kept as JSON, a blank one
+as null, and refuses JSON that does not parse with the parser's message. Without JavaScript the
+document shows rendered and read-only, and posts unchanged.
 
 **The raw blocks field.** A Blocks field is the page builder's, edited on the site from phase 12. In
 the admin it is a debug field, for repairing what the page builder writes when the site's editor
 breaks: the field's stored JSON, pretty-printed, in a monospace textarea under a "Raw content"
 disclosure. `fromForm()` decodes it and the save validates it as any write, so JSON that does not
 parse is refused with the parser's message, and a wrong block with the paths phase 5's rules give,
-`blocks.1.data.title`, listed above the textarea. Whoever may edit the entry sees it.
+`blocks.1.data.title`, listed above the textarea, which the form now does for any error under a
+field's name. Whoever may edit the entry sees it.
 
-**The site.** An article on writing in the admin, and "The admin" gains its rich text and raw content
-section.
+**The site.** "Writing in the admin", the draft 10a left, is written and published, the next article
+waits as a draft, and "The admin" gains its rich text and raw content section.
 
 **The check.** `AdminTest`: a document posted and read back as the layer stores it, one outside the
 schema refused naming the node; blocks posted as JSON and read back, JSON that does not parse

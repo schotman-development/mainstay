@@ -23,24 +23,16 @@
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit"
   },
-  "peerDependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
-  },
   "dependencies": {
     "prosemirror-commands": "^1.7.2",
     "prosemirror-history": "^1.5.0",
     "prosemirror-keymap": "^1.2.3",
     "prosemirror-model": "^1.25.11",
+    "prosemirror-schema-list": "^1.5.1",
     "prosemirror-state": "^1.4.4",
     "prosemirror-view": "^1.42.3"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^6.1.1",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   }

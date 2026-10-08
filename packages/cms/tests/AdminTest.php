@@ -3,6 +3,7 @@
 namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
 use InvalidArgumentException;
@@ -12,6 +13,9 @@ use Mainstay\Facades\Mainstay;
 use Mainstay\Http\Form;
 use Mainstay\Tests\Fixtures\Accented\Article as Accented;
 use Mainstay\Tests\Fixtures\Broken\Login;
+use Mainstay\Tests\Fixtures\Guide;
+use Mainstay\Tests\Fixtures\Linked\Story;
+use Mainstay\Tests\Fixtures\Pictured;
 use Mainstay\Tests\Fixtures\Post;
 use Mainstay\Tests\Fixtures\Signed\Banner;
 use Mainstay\Tests\Fixtures\Signed\Flyer;
@@ -20,11 +24,11 @@ use Mainstay\Tests\Fixtures\Signed\Topic;
 use PHPUnit\Framework\Attributes\Test;
 
 /*
- | The phase 10a check: the admin's frame, lists and scalar forms, over the
- | query layer -- a round trip in two languages, saving and publishing, two
- | editors on one draft, the list and the trash, who is offered what, terms,
- | globals and the front page. The layer underneath runs on every driver in
- | its own suites; this drives it through HTTP.
+ | The phase 10 check: the admin's frame, lists and forms, over the query
+ | layer -- a round trip in two languages, saving and publishing, two editors
+ | on one draft, the list and the trash, who is offered what, terms, globals,
+ | the front page, rich text and the raw blocks. The layer underneath runs on
+ | every driver in its own suites; this drives it through HTTP.
  */
 class AdminTest extends DatabaseTestCase
 {
@@ -41,7 +45,7 @@ class AdminTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class);
+        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class, Guide::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $this->signIn($this->user(role: 'administrator'));
     }
@@ -362,5 +366,107 @@ class AdminTest extends DatabaseTestCase
         $this->assertNull(Form::fingerprint($field, 'not a date', posted: true));
         $this->assertNull(Form::fingerprint(Mainstay::fields(Post::class)['readingMinutes'], 'four', posted: true), 'Not cast to 0 and taken for an unchanged 0.');
         $this->assertSame("One\nTwo", Mainstay::fields(Post::class)['editorNote']->fromForm("One\r\nTwo"), 'A textarea\'s CRLF is stored as the lines it ends.');
+    }
+
+    #[Test]
+    public function a_document_from_the_editor_reads_back_as_stored_and_one_outside_the_schema_is_refused(): void
+    {
+        $document = json_decode(file_get_contents(__DIR__.'/Fixtures/document.json'), true);
+
+        $this->post(route('mainstay.entries.store', 'guide'), ['title' => 'Fields', 'body' => json_encode($document), 'aside' => '', 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $guide = Mainstay::find(Guide::class, locale: 'en', overrideAccess: true)->sole();
+        $this->assertEquals($document, $guide->body->toArray());
+        $this->assertNull($guide->aside, 'An editor left empty posts nothing, which is no document.');
+
+        /* Drawn rendered for a browser without the editor, beside the JSON it
+           posts back, untouched, as unchanged; one link dialog for the three
+           editors. */
+        $form = $this->get(route('mainstay.entries.edit', ['guide', $guide->id]))->assertOk()
+            ->assertSee('<h2>Declared in code</h2>', escape: false)
+            ->assertSee('data-rich-text-toolbar', escape: false);
+        $this->assertSame(1, substr_count($form->getContent(), 'id="mainstay-link"'));
+        $form->assertSee('name="aside" value=""', escape: false);
+        /* Enter in the address submits with the dialog's first submit
+           button, which has to be Apply rather than Remove link. */
+        $this->assertMatchesRegularExpression('#id="mainstay-link".*?<button[^>]*type="submit"[^>]*value="apply"#s', $form->getContent());
+        $this->assertDoesNotMatchRegularExpression('#id="mainstay-link".*?<button[^>]*type="submit"[^>]*value="remove".*?value="apply"#s', $form->getContent());
+        preg_match('/name="body" value="([^"]*)"/', $form->getContent(), $body);
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['title' => 'Fields', 'body' => html_entity_decode($body[1]), 'aside' => '', ...$this->drawn($form)])
+            ->assertSessionHas('status', 'Nothing to save: this is what is live.');
+
+        /* A node the schema does not have is named, and JSON that does not
+           parse is refused in the parser's words. */
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['body' => json_encode(['type' => 'doc', 'content' => [['type' => 'image']]])])
+            ->assertSessionHasErrors(['body' => 'The body field has a node at content.0 of a type it does not know: image.']);
+        $this->get(route('mainstay.entries.edit', ['guide', $guide->id]))->assertSee('id="field-body-error"', escape: false)->assertSee('of a type it does not know: image.');
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['body' => '{"type": "doc",'])
+            ->assertSessionHasErrors(['body' => 'The body field does not parse as JSON: Syntax error.']);
+        $this->get(route('mainstay.entries.edit', ['guide', $guide->id]))->assertSee('name="body" value="{&quot;type&quot;: &quot;doc&quot;,"', escape: false);
+        $this->assertNull(Mainstay::drafts()->of(Guide::class, $guide->id, locale: 'en', overrideAccess: true));
+
+        /* A document posted with a save another field refused is drawn as
+           posted, rendered too. */
+        $kept = ['type' => 'doc', 'content' => [['type' => 'heading', 'attrs' => ['level' => 2], 'content' => [['type' => 'text', 'text' => 'Kept while refused']]]]];
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['body' => json_encode($kept), 'blocks' => '['])->assertSessionHasErrors('blocks');
+        $this->get(route('mainstay.entries.edit', ['guide', $guide->id]))->assertSee('<h2>Kept while refused</h2>', escape: false);
+
+        /* Two editors: one changes the body; the other, drawn before, changes
+           the title and posts the body it drew with its keys in the editor's
+           order rather than the column's. The first one's body stays. */
+        $changed = $document;
+        $changed['content'][0]['content'][0]['text'] = 'Changed by one';
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['title' => 'Fields', 'body' => json_encode($changed), ...$this->drawn($form)])->assertSessionHasNoErrors();
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['title' => 'Fields, by another', 'body' => json_encode($document), ...$this->drawn($form)])->assertSessionHasNoErrors();
+        $draft = Mainstay::drafts()->of(Guide::class, $guide->id, locale: 'en', overrideAccess: true);
+        $this->assertSame(['Fields, by another', 'Changed by one'], [$draft->entry->title, $draft->entry->body->toArray()['content'][0]['content'][0]['text']]);
+    }
+
+    #[Test]
+    public function blocks_are_posted_as_json_and_a_wrong_one_is_listed_at_its_path(): void
+    {
+        $blocks = [
+            ['type' => 'callout', 'data' => ['heading' => 'Mind the gap', 'tone' => 'warning']],
+            ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]],
+        ];
+
+        $this->post(route('mainstay.entries.store', 'guide'), ['title' => 'Blocks', 'blocks' => json_encode($blocks), 'intent' => 'publish'])->assertSessionHasNoErrors();
+        $guide = Mainstay::find(Guide::class, locale: 'en', overrideAccess: true)->sole();
+        $this->assertSame(['Mind the gap', 'warning', 'One'], [$guide->blocks[0]->heading, $guide->blocks[0]->tone, $guide->blocks[1]->slides[0]->title]);
+
+        /* Pretty-printed in a textarea, which posts it back with its lines
+           ending in CRLF: unchanged all the same. */
+        $edit = route('mainstay.entries.edit', ['guide', $guide->id]);
+        $form = $this->get($edit)->assertOk()->assertSee('Raw content');
+        preg_match('#<textarea[^>]*name="blocks"[^>]*>(.*?)</textarea>#s', $form->getContent(), $raw);
+        $this->assertStringContainsString("[\n    {\n", html_entity_decode($raw[1]));
+        $this->post(route('mainstay.entries.update', ['guide', $guide->id]), ['title' => 'Blocks', 'blocks' => str_replace("\n", "\r\n", html_entity_decode($raw[1])), ...$this->drawn($form)])
+            ->assertSessionHas('status', 'Nothing to save: this is what is live.');
+
+        /* JSON that does not parse is refused, and comes back to be corrected. */
+        $this->from($edit)->post(route('mainstay.entries.update', ['guide', $guide->id]), ['blocks' => '[{"type": "callout",'])
+            ->assertSessionHasErrors(['blocks' => 'The blocks field does not parse as JSON: Syntax error.']);
+        $refused = $this->get($edit)->assertSee('[{&quot;type&quot;: &quot;callout&quot;,', escape: false);
+        $this->assertMatchesRegularExpression('#<details\s+open\s*>#', $refused->getContent(), 'Open, to show what is wrong.');
+
+        /* A slide with no title is a draft's to hold and a publish's to
+           refuse, listed above the textarea by where it is. */
+        $blocks[1]['data']['slides'][0]['data']['title'] = '';
+        $this->from($edit)->post(route('mainstay.entries.update', ['guide', $guide->id]), ['blocks' => json_encode($blocks), 'intent' => 'publish'])
+            ->assertSessionHasErrors('blocks.1.data.slides.0.data.title');
+        $this->assertSame('', Mainstay::drafts()->of(Guide::class, $guide->id, locale: 'en', overrideAccess: true)->entry->blocks[1]->slides[0]->title);
+        $listed = $this->get($edit)->getContent();
+        $this->assertMatchesRegularExpression('#The blocks\.1\.data\.slides\.0\.data\.title field is required\.</p>\s*</div>\s*<textarea#', $listed);
+        $this->assertSame(1, substr_count($listed, 'field is required.'), 'Under its field, and not again above the form.');
+    }
+
+    #[Test]
+    public function a_field_not_editable_here_yet_still_shows_what_is_wrong_with_it(): void
+    {
+        foreach ([[Pictured::class, 'cover'], [Story::class, 'related'], [Story::class, 'genres']] as [$type, $name]) {
+            $drawn = Blade::render('<x-dynamic-component :component="$field->component()" :field="$field" :name="$name" :messages="[\'Not there to point at.\']" />', ['field' => Mainstay::fields($type)[$name], 'name' => $name]);
+
+            $this->assertStringContainsString('Not editable here yet.', $drawn);
+            $this->assertStringContainsString('Not there to point at.', $drawn, "{$type}::\${$name}");
+        }
     }
 }

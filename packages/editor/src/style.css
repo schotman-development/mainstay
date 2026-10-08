@@ -3,3 +3,60 @@
 .ProseMirror {
   outline: none;
 }
+
+/* The document as it reads, whether the editor holds it or the page drew it
+   read-only: Tailwind's reset takes every margin, marker and size away. */
+[data-rich-text-body] > * + * {
+  margin-top: 0.75em;
+}
+
+[data-rich-text-body] h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+[data-rich-text-body] h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+[data-rich-text-body] h4 {
+  font-weight: 600;
+}
+
+[data-rich-text-body] ul {
+  list-style: disc;
+  padding-left: 1.5em;
+}
+
+[data-rich-text-body] ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+}
+
+[data-rich-text-body] blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 1em;
+  color: var(--color-muted);
+}
+
+[data-rich-text-body] code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+[data-rich-text-body] pre {
+  background: var(--color-surface);
+  border-radius: var(--radius-control);
+  padding: 0.75em 1em;
+  overflow-x: auto;
+}
+
+[data-rich-text-body] a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+[data-rich-text-body] hr {
+  border-color: var(--color-border);
+}

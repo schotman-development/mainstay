@@ -40,9 +40,10 @@ final class Form
      | back: a date with an offset is the moment it was drawn as, and text is
      | compared as the host's middleware leaves it -- trimmed, an empty one
      | null -- with its lines ending as they would in a textarea's. So code
-     | that wrote spaces around a title does not read as an edit. Null where a
-     | posted value is not one the field takes: it is always sent, so the
-     | write says why.
+     | that wrote spaces around a title does not read as an edit, and a tree
+     | is compared with its keys in one order, since a column and an editor
+     | each write them in their own. Null where a posted value is not one the
+     | field takes: it is always sent, so the write says why.
      */
     public static function fingerprint(Field $field, mixed $value, bool $posted = false): ?string
     {
@@ -57,10 +58,26 @@ final class Form
                 $stored = trim(str_replace("\r\n", "\n", $stored));
             }
 
-            return sha1(json_encode($stored === '' ? null : $stored, JSON_THROW_ON_ERROR));
+            return sha1(json_encode($stored === '' ? null : self::sorted($stored), JSON_THROW_ON_ERROR));
         } catch (Throwable) {
             return null;
         }
+    }
+
+    /* Every map in a tree with its keys sorted; a list keeps its order. */
+    private static function sorted(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $value = array_map(self::sorted(...), $value);
+
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+
+        return $value;
     }
 
     /*

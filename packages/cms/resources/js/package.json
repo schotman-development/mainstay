@@ -11,15 +11,10 @@
   },
   "dependencies": {
     "@mainstay/editor": "workspace:*",
-    "@mainstay/ui": "workspace:*",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "@mainstay/ui": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^6.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"

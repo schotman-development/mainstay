@@ -5,8 +5,9 @@
     $state = \Mainstay\Ui\EntryForm::saveState(drafted: $draft !== null, publishes: $publishes);
     $shared = count(\Mainstay\Facades\Mainstay::locales()) > 1;
     /* An error no field on this screen is there to show: a stale draft, the
-       front page, a path that names no field. */
-    $loose = collect($errors->getMessages())->reject(fn ($messages, $key) => isset($fields[$key]) || $key === 'template')->flatten()->all();
+       front page, a path that names no field. One inside a field --
+       blocks.1.data.title -- is that field's to show. */
+    $loose = collect($errors->getMessages())->reject(fn ($messages, $key) => isset($fields[\Illuminate\Support\Str::before($key, '.')]) || $key === 'template')->flatten()->all();
 @endphp
 
 {{--
@@ -85,7 +86,7 @@
                             :field="$field"
                             :name="$name"
                             :value="old($name, $values[$name])"
-                            :messages="$errors->get($name)"
+                            :messages="[...$errors->get($name), ...\Illuminate\Support\Arr::flatten($errors->get($name.'.*'))]"
                             :hint="$shared && ! $field->localized ? 'The same in every language.' : null"
                             :data-slug-from="$name === $slug ? 'title' : null"
                         />

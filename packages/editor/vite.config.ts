@@ -1,8 +1,6 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  plugins: [react()],
   build: {
     lib: {
       entry: 'src/index.ts',
@@ -10,7 +8,7 @@ export default defineConfig({
       fileName: () => 'index.js',
     },
     rollupOptions: {
-      external: [/^prosemirror-/, 'react', 'react-dom', 'react/jsx-runtime'],
+      external: [/^prosemirror-/],
     },
   },
 })
