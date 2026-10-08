@@ -125,7 +125,7 @@ class DraftTest extends DatabaseTestCase
         $new = Mainstay::drafts()->save(Story::class, ['title' => 'New', 'slug' => 'new'], locale: 'en', overrideAccess: true);
         $dutch = Mainstay::drafts()->save(Story::class, ['title' => 'Nieuw', 'slug' => 'nieuw'], locale: 'nl', overrideAccess: true);
         Mainstay::drafts()->save(Person::class, ['title' => 'Someone else', 'slug' => 'someone'], locale: 'en', overrideAccess: true);
-        DB::table('mainstay_drafts')->where('id', $changed->id)->update(['updated_at' => '2026-10-08 00:00:00']);
+        DB::table('mainstay_drafts')->where('id', $changed->id)->update(['updated_at' => now('UTC')->addDay()->format('Y-m-d H:i:s')]);
 
         $all = Mainstay::drafts()->all(Story::class, locale: 'en', overrideAccess: true);
         $this->assertSame([$changed->id, $new->id], $all->pluck('id')->all());
