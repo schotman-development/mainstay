@@ -237,6 +237,32 @@ class DraftTest extends DatabaseTestCase
     }
 
     #[Test]
+    public function a_front_page_change_moving_nothing_names_nobody_inside_a_callers_transaction(): void
+    {
+        $bo = User::query()->create(['name' => 'Bo', 'email' => 'bo@example.com', 'password' => 'correct horse battery', 'role_id' => Role::query()->where('name', 'administrator')->sole()->id]);
+        $home = Mainstay::create(Story::class, ['title' => 'Home', 'slug' => 'home'], locale: 'en', overrideAccess: true);
+        $other = Mainstay::create(Story::class, ['title' => 'Other', 'slug' => 'other'], locale: 'en', overrideAccess: true);
+
+        $this->twice(function () use ($home) {
+            Mainstay::setFrontPage(Story::class, $home->id, overrideAccess: true);
+            DB::table('story')->where('id', $home->id)->update(['template' => null, 'published_by' => null]);
+            DB::table('mainstay_revisions')->delete();
+        }, function () use ($home, $other, $bo) {
+            /* Another connection changes the old front page after the
+               caller's snapshot; its path is free, so the change moves
+               nothing, and reading it as it was before would take that for
+               a change. */
+            $this->beside(fn () => DB::connection('beside')->table('story')->where('id', $home->id)->update(['template' => 'story']));
+            $this->app['request']->attributes->set(Signed::USER, $bo);
+            Mainstay::setFrontPage(Story::class, $other->id);
+            $this->app['request']->attributes->set(Signed::USER, null);
+
+            $this->assertSame([null, 0], [DB::table('story')->where('id', $home->id)->value('published_by'), DB::table('mainstay_revisions')->count()]);
+            Mainstay::setFrontPage(null, overrideAccess: true);
+        });
+    }
+
+    #[Test]
     public function every_draft_of_a_type_is_listed_newest_first_save_a_trashed_entrys(): void
     {
         $live = $this->story('Live');

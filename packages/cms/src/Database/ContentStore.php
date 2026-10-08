@@ -1174,7 +1174,10 @@ class ContentStore
     {
         $handle = $type::handle();
         $nested = $this->snapshotted(1);
-        $row = DB::table($handle)->where('id', $id)->whereNull('deleted_at')->when($lock, fn (Builder $query) => $query->lockForUpdate())->first()
+        /* With a lock inside a caller's transaction too, where a plain read
+           answers from its older snapshot: the read after a write that did
+           not touch this row would otherwise see it as it was. */
+        $row = DB::table($handle)->where('id', $id)->whereNull('deleted_at')->when($lock || $nested, fn (Builder $query) => $query->lockForUpdate())->first()
             ?? throw new RecordNotFoundException("{$type} {$id} was deleted while it was being saved.");
 
         $this->attach($type, [$row], $nested);
