@@ -870,4 +870,29 @@ class AdminTest extends DatabaseTestCase
         $this->assertStringContainsString('checked="checked"', $this->control($this->get("/admin/roles/{$role->id}")->assertOk()->assertSee('No type derives these any longer'), 'edit_ghosts'));
         $this->get('/admin/roles')->assertOk()->assertSee('Flyer drafts');
     }
+
+    #[Test]
+    public function an_entry_is_given_to_another_account_from_its_form(): void
+    {
+        $writer = $this->user(['edit_notes', 'edit_published_notes', 'publish_notes']);
+        $this->user(Capabilities::of(Flyer::class));
+        $note = Mainstay::create(Note::class, ['title' => 'Unowned', 'slug' => 'unowned'], locale: 'en', overrideAccess: true);
+
+        $form = $this->get("/admin/note/{$note->id}")->assertOk()->assertSee('name="owner" form="author-form"', false);
+        $this->assertStringContainsString('disabled selected', $form->getContent(), 'Nobody owns it yet, and nobody is no one to give it to.');
+        $this->control($form, (string) $writer->id);
+        $this->assertSame(0, preg_match('/<option value="\d+"[^>]*>Ada 3</', $form->getContent()), 'Not to an account that cannot write notes.');
+
+        $this->post("/admin/note/{$note->id}/author", ['owner' => $writer->id])->assertRedirect()->assertSessionHas('status', 'The author is changed.');
+        $this->assertSame($writer->id, Mainstay::findById(Note::class, $note->id, locale: 'en')->ownerId);
+
+        $this->signIn($writer);
+        $this->get("/admin/note/{$note->id}")->assertOk()->assertDontSee('name="owner"', false)->assertSee($writer->name);
+
+        $draft = Mainstay::drafts()->save(Note::class, ['title' => 'Started', 'slug' => 'started'], locale: 'en');
+        $this->get("/admin/note/drafts/{$draft->id}")->assertOk()->assertSee($writer->name);
+
+        $this->signIn(User::query()->whereHas('role', fn ($query) => $query->where('name', 'administrator'))->sole());
+        $this->assertStringContainsString('selected', $this->control($this->get("/admin/note/drafts/{$draft->id}")->assertOk(), (string) $writer->id));
+    }
 }

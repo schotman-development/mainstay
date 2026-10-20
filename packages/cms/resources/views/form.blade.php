@@ -121,11 +121,28 @@
                 </x-mainstay::field>
             @endif
 
-            @unless ($global)
+            @if ($authors !== null)
+                {{-- Its own form, posted at once, as the front page is: the
+                     unsaved-changes guard asks before an edit is left. --}}
+                <x-mainstay::field label="Author" for="field-owner" rail>
+                    <div class="flex gap-2">
+                        <x-mainstay::select id="field-owner" name="owner" form="author-form">
+                            @unless (isset($authors[$owner_id]))
+                                <option value="" disabled selected>{{ $owner ?? 'Nobody' }}</option>
+                            @endunless
+                            @foreach ($authors as $account => $name)
+                                <option value="{{ $account }}" @selected($account === $owner_id)>{{ $name }}</option>
+                            @endforeach
+                        </x-mainstay::select>
+                        <x-mainstay::button variant="secondary" type="submit" form="author-form">Change</x-mainstay::button>
+                    </div>
+                    <x-mainstay::messages id="field-owner-error" :messages="$errors->get('owner')" />
+                </x-mainstay::field>
+            @elseif (! $global)
                 <x-mainstay::field-section label="Author">
                     <p class="text-sm">{{ $owner ?? 'Nobody' }}</p>
                 </x-mainstay::field-section>
-            @endunless
+            @endif
 
             {{-- What was live before, for an entry that has been live and a
                  global; a term keeps none. --}}
@@ -139,6 +156,10 @@
 
     @if ($deletes)
         <form id="trash-form" method="post" action="{{ $localized(route('mainstay.entries.delete', [$handle, $id])) }}">@csrf</form>
+    @endif
+
+    @if ($authors !== null)
+        <form id="author-form" method="post" action="{{ $assigns }}">@csrf</form>
     @endif
 
     @if ($routed && $live && ! $front)

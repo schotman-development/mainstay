@@ -67,6 +67,7 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
     Route::post('{type}/drafts/{draft}', [EntryController::class, 'saveDraft'])->whereNumber('draft')->name('mainstay.drafts.update');
     Route::post('{type}/drafts/{draft}/discard', [EntryController::class, 'discard'])->whereNumber('draft')->name('mainstay.drafts.discard');
+    Route::post('{type}/drafts/{draft}/author', [EntryController::class, 'assignDraft'])->whereNumber('draft')->name('mainstay.drafts.assign');
     Route::get('{type}/relations/{field}', [EntryController::class, 'relations'])->name('mainstay.relations');
 
     Route::get('{type}/{id}', [EntryController::class, 'edit'])->whereNumber('id')->name('mainstay.entries.edit');
@@ -74,6 +75,7 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::post('{type}/{id}/trash', [EntryController::class, 'trash'])->whereNumber('id')->name('mainstay.entries.delete');
     Route::post('{type}/{id}/restore', [EntryController::class, 'restore'])->whereNumber('id')->name('mainstay.entries.restore');
     Route::post('{type}/{id}/destroy', [EntryController::class, 'destroy'])->whereNumber('id')->name('mainstay.entries.destroy');
+    Route::post('{type}/{id}/author', [EntryController::class, 'assign'])->whereNumber('id')->name('mainstay.entries.assign');
     Route::post('{type}/{id}/front', [EntryController::class, 'front'])->whereNumber('id')->name('mainstay.entries.front');
     Route::get('{type}/{id}/history', [EntryController::class, 'history'])->whereNumber('id')->name('mainstay.entries.history');
     Route::post('{type}/{id}/revisions/{revision}', [EntryController::class, 'restoreRevision'])->whereNumber(['id', 'revision'])->name('mainstay.revisions.restore');
