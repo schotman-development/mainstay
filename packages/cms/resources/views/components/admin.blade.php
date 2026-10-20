@@ -25,6 +25,7 @@
                 :name="$user->name"
                 :email="$user->email"
             >
+                <x-mainstay::dropdown-item as="a" :href="route('mainstay.account')">Account settings</x-mainstay::dropdown-item>
                 <form method="POST" action="{{ route('mainstay.logout') }}">
                     @csrf
                     <x-mainstay::dropdown-item type="submit">Sign out</x-mainstay::dropdown-item>

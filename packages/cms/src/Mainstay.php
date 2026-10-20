@@ -34,7 +34,7 @@ class Mainstay
 
     /* The first segments of the admin's own screens, which a type's handle,
        naming its screens' segment, cannot be. */
-    private const ADMIN = ['media', 'login', 'logout'];
+    private const ADMIN = ['media', 'login', 'logout', 'users', 'roles', 'account'];
 
     /** @var array<string, class-string<ContentType>> */
     private array $types = [];
@@ -114,7 +114,8 @@ class Mainstay
             }
 
             /* Nor one claiming a segment the admin draws a screen of its own
-               at: its list would be the library's or the login's address. */
+               at: its list would be the library's, the login's or the accounts'
+               address. */
             if (in_array($handle, self::ADMIN, true)) {
                 throw new InvalidArgumentException("{$type} would be called \"{$handle}\", which the admin uses for a screen of its own. Rename the class.");
             }

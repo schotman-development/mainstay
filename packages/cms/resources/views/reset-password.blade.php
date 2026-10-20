@@ -1,4 +1,4 @@
-@extends('mainstay::auth', ['title' => 'Choose a new password'])
+@extends('mainstay::auth', ['title' => 'Choose a password'])
 
 @section('form')
     <form method="POST" action="{{ route('mainstay.password.update') }}">
@@ -12,19 +12,19 @@
             @enderror
         </x-mainstay::field>
 
-        <x-mainstay::field label="New password" for="password">
+        <x-mainstay::field label="Password" for="password">
             <x-mainstay::input id="password" name="password" type="password" autocomplete="new-password" required autofocus />
             @error('password')
                 <p class="pt-1.5 text-xs text-danger">{{ $message }}</p>
             @enderror
         </x-mainstay::field>
 
-        <x-mainstay::field label="New password again" for="password_confirmation">
+        <x-mainstay::field label="Password again" for="password_confirmation">
             <x-mainstay::input id="password_confirmation" name="password_confirmation" type="password" autocomplete="new-password" required />
         </x-mainstay::field>
 
         <div class="flex justify-end px-4 py-3.5">
-            <x-mainstay::button type="submit">Change password</x-mainstay::button>
+            <x-mainstay::button type="submit">Save password</x-mainstay::button>
         </div>
     </form>
 @endsection
