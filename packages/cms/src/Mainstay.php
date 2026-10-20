@@ -340,6 +340,13 @@ class Mainstay
         $this->store()->destroy($type, ...$arguments);
     }
 
+    /* `Mainstay::assign(Article::class, 5, owner: 3)` gives an entry to
+       another account. */
+    public function assign(string $type, mixed ...$arguments): void
+    {
+        $this->store()->assign($type, ...$arguments);
+    }
+
     /* The entry served at `/`, as [type, id], or null. */
     public function frontPage(): ?array
     {

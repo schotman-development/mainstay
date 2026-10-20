@@ -55,6 +55,13 @@ class EntryPolicy
             : $this->needs($user, $entry::class, 'publish', ...$this->others($user, $entry, 'edit_others'));
     }
 
+    /* Giving an entry to another account: changing it, and changing someone
+       else's whoever it is now, since that is what it becomes. */
+    public function assign(?User $user, Entry $entry): Response
+    {
+        return $this->needs($user, $entry::class, 'edit', ...(isset($entry->id) ? ['edit_published', 'edit_others'] : ['edit_others']));
+    }
+
     public function delete(?User $user, Entry $entry): Response
     {
         return $this->needs($user, $entry::class, 'delete', ...$this->others($user, $entry, 'delete_others'));
