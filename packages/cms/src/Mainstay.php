@@ -7,6 +7,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
+use Mainstay\Auth\Accounts;
 use Mainstay\Auth\Capabilities;
 use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
@@ -369,6 +370,13 @@ class Mainstay
     public function revisions(): Revisions
     {
         return new Revisions($this->store());
+    }
+
+    /* Accounts and roles, written as the admin writes them:
+       `Mainstay::accounts()->create(...)`. */
+    public function accounts(): Accounts
+    {
+        return new Accounts($this);
     }
 
     private function store(): ContentStore

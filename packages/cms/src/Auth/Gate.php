@@ -6,6 +6,7 @@ use Illuminate\Auth\Access\Gate as AccessGate;
 use Illuminate\Contracts\Auth\Access\Gate as GateContract;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
+use Mainstay\Policies\AccountPolicy;
 use Mainstay\Policies\EntryPolicy;
 use Mainstay\Policies\GlobalPolicy;
 use Mainstay\Policies\TermPolicy;
@@ -59,6 +60,15 @@ class Gate extends AccessGate
             is_subclass_of($type, Taxonomy::class) => TermPolicy::class,
             default => EntryPolicy::class,
         });
+    }
+
+    /* The gate for accounts and roles, AccountPolicy answering for both
+       unless the host chose another. */
+    public static function accounts(): self
+    {
+        $gate = self::for(User::class, AccountPolicy::class);
+
+        return $gate->getPolicyFor(Role::class) === null ? $gate->policy(Role::class, AccountPolicy::class) : $gate;
     }
 
     /*
