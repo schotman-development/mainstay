@@ -18,7 +18,8 @@ between the two.
 > capabilities decide who may write and who may publish. It lists each type's entries and edits their
 > fields in every language -- rich text in an editor of its own, images from a media library, related
 > entries and tags -- saving a draft or publishing it, chooses the front page, and shows each entry's
-> history, naming who published each version.
+> history, naming who published each version. Accounts are invited from the admin by mail, roles are
+> drawn as a grid of the types' capabilities, and everyone has settings of their own.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout
@@ -50,7 +51,8 @@ the catch-all's middleware, or whether it runs at all, are configurable:
 php artisan vendor:publish --tag=mainstay-config
 ```
 
-Nothing on the web makes the first account. Make it on the server:
+Nothing on the web makes the first account. Make it on the server, and invite the rest from the
+admin's Users:
 
 ```bash
 php artisan mainstay:user you@example.com --role=administrator

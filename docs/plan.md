@@ -19,7 +19,9 @@ each type's own, or a form covering every type -- decide what it may write and p
 fields in every language -- rich text in a ProseMirror editor, a page's blocks as raw JSON, images
 picked from a media library of its own, relations as rows and tags typed -- saving a draft or
 publishing it, with the trash, the front page and each entry's history, naming who published each
-version, as screens.
+version, as screens. Phase 11 is done: accounts are invited from the admin to choose their password
+by mail, roles are a grid of the capabilities the types derive, nobody hands out what they do not
+hold, everyone has settings of their own, and an entry's author is changed in its form.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
 document schema the package renders.
