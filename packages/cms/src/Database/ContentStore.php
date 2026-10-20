@@ -982,7 +982,8 @@ class ContentStore
         }
 
         $translation = $translations->get($locale);
-        $built = (object) ['id' => $row?->id, 'owner_id' => $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+        /* An entry not published yet is owned by who its draft names. */
+        $built = (object) ['id' => $row?->id, 'owner_id' => $row === null && ! $global ? $draft->owner_id : $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
 
         if (! $global) {
             $built->template = array_key_exists('template', $changes['fields']) ? $changes['fields']['template'] : $row?->template;
