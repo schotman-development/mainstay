@@ -1258,9 +1258,122 @@ checked in `DraftTest`, on every driver.
 
 The screens phase 9 left: accounts, created and given a role by someone holding `manage_users`; roles
 and the capabilities each holds, from `Mainstay::capabilities()`; and "Account settings", where a user
-changes their own name, email and password. An entry's author is changed here, where accounts are
-listed. How a new account gets its first password, and whether a user's own grants and denials are
-drawn or stay in code, are this phase's to decide.
+changes their own name, email and password. An entry's author is changed in its form, from the
+accounts that may write its type. One pull request.
+
+**The layer.** Accounts and roles are written through `Mainstay::accounts()`, as images are through
+`media()`: `create()`, `update()`, `invite()` and `delete()` for an account, `saveRole()` and
+`deleteRole()` for a role, each asking Mainstay's gate first and skipping it for `overrideAccess`. The
+screens are a transport over it, as over the query layer. `mainstay:user` stays as it is, the way in
+before any account exists.
+
+**Who may.** `AccountPolicy`, for accounts and roles alike. Every ability needs `manage_users` but a
+user's own name, email and password, and nobody hands out what they do not hold themselves. A user
+covers a name of `Mainstay::capabilities()` when holding it would pass every check it can pass: a
+type's own name through `holds(own, every)`, as the policies ask; an all-types name through
+`holds(every)` with no type's own form of it denied, since a role giving `edit_entries` edits every
+type; a shared one through `holds()`; and `*` only through a role of `*` with no denials, `*` being a
+role's and never a grant's. A name no type derives any longer gives nothing and is not counted. So a
+role is saved only by someone covering what it held and what it will hold, and deleted only by
+someone covering it; an account is created with, or moved to, a role only by someone covering that
+role; and an account is changed, invited again or deleted only by someone covering its role and its
+grants. An account that holds `manage_users` and not `*` cannot make an administrator, change one's
+email and reset its password from the mail, or edit the administrator role. Nobody deletes their own
+account. A user changes their own name freely and their email and password with their current
+password, whatever they hold, and their own role only as anyone else's, by covering it.
+
+**What the layer keeps.** An email is unique lowercased, as phase 9 stores it, and so is a role's
+name, for the same reason: the unique index folds case on MySQL and SQL Server and not on the others.
+A role held by an account is not deleted, the message naming how many hold it, rather than the foreign
+key's error. A write made by a user, not `overrideAccess`, that takes away the last account able to
+manage accounts is refused -- one holding `manage_users` with a password, an invited one counting for
+nothing until it signs in -- so the last administrator cannot demote or delete themselves or empty the
+role they hold. Every account and role write runs in a transaction that first reads every role and
+account with `lockForUpdate()`, asks the policy of the caller as those rows have them, writes, and
+checks that last rule against them, so two administrators demoting each other at once cannot both
+pass, and a caller's own transaction's older snapshot is never what decides. A server left with
+none gets one from `mainstay:user`.
+
+**The first password.** An account made in the admin has none: `password` becomes nullable in the
+users table's create migration, which nothing released has run. The provider refuses a null password
+before hashing anything, so an invited account signs in as nothing. `create()` makes it and
+`invite()` mails it an `Invitation` through the host's mailer, naming who made it, with a token from
+the `mainstay` broker's `createToken()` and a link to the reset page, which reads "Choose a password"
+for both; the link expires after the broker's hour, and "Forgot your password?" works for an invited
+account as for any other. The screen invites after the account is committed, so a mailer that fails
+leaves the account made and says so on its page, where "Send the invitation again" waits while it has
+no password; that is not throttled, being an administrator's and not a stranger's.
+
+**The accounts.** `/admin/users` lists every account to whoever may see them: name, email, role, and
+"Invited" for one without a password, sorted by name and not paged.
+
+ponytail: one page of every account, which holds to a few hundred; past that it pages as the media
+grid does.
+
+`/admin/users/new` takes a name, an email and a role, offering the roles the user covers.
+`/admin/users/5` is the same form, with the account's grants and denials listed beneath its role,
+since changing them stays in code; read only, with no Save, for an account the user does not cover,
+as an image is for whoever may not change it. A user's own sends them to Account settings, where
+changing the email asks for the password. Delete asks first and erases the account: its sessions
+end at their next request, its entries keep an owner no account has, which reads as nobody, as phase
+9 has it, and their history names "a deleted account".
+
+**The roles.** `/admin/roles` lists each role and how many accounts hold it. `/admin/roles/new` and
+`/admin/roles/2` take a name and the capabilities, as a grid over `Mainstay::capabilities()`:
+"Everything" for `*`; a row for every entry type and one per entry type, with a column per verb;
+the same for taxonomies and for globals; the media library's two; and `manage_users`. A name the role
+holds and no type derives any longer is listed below, checked, so it can be unchecked; one the user
+does not hold is drawn disabled. Delete shows only for a role nobody holds.
+
+**Account settings.** `/admin/account`, from the user menu, for everyone signed in: their name, email
+and a new password twice, the current password asked for when the email or the password changes,
+through `accounts()->update()` as the account itself. A new password rotates the remember token, as a
+reset does, so another device's remember cookie signs nobody in, whether through `AuthenticateSession`
+or through the login page, which runs outside it and would otherwise take the old cookie; then the
+guard's `logoutOtherDevices()` sends this device a cookie with the new token, keeping it signed in.
+The password rule is `Password::defaults()`, as everywhere.
+
+**The author.** The form's Author becomes a menu for whoever Gate allows `assign`, which
+`EntryPolicy` answers with what `update` needs and `edit_others`: giving an entry away is changing
+someone else's. A term's owner is nothing anyone asks about, so its Author stays as it is. The menu
+offers the accounts Gate would let `create` the type, as the sidebar asks, and posts a form of its
+own, outside the entry's, taking effect at once, as the front page does -- the form's unsaved-changes
+guard asks before an edit is left behind: `Mainstay::assign(Article::class, 5, owner: 3)` for an entry
+and `drafts()->assign(12, owner: 3)` for one not published yet, each refusing an owner who could not
+write the type. It writes `owner_id` alone: no revision, and no `updated_at`, which an open form
+compares to tell another's save. A draft not published reads its owner from the draft, which it does
+not yet -- it reads the live row there is none of, so the list and the form name nobody for it.
+
+**Navigation.** Users and Roles, a section after Globals, for whoever `AccountPolicy` lets see
+accounts, and the command centre with them; "Account settings" in the user menu. Registration refuses
+the handles `users`, `roles` and `account`, as it refuses `media`.
+
+**The site.** The phase 11 article, waiting as a draft, is written and published, and the next, on
+phase 12, waits as one. "Users and roles" says how accounts are made and changed in the admin, and
+"The admin" gains a section. The site's test: an administrator invites a writer, who chooses a
+password from the mailed link and signs in.
+
+**The check.** `AccountTest`, on all four drivers, added to both of CI's test lines.
+
+- Creating an account and inviting it: no password, the mail sent with a working link, signing in
+  refused until it is chosen, sent again while invited, and "Forgot your password?" working for it.
+- Emails and role names unique whatever their case; a held role not deleted, naming the count.
+- Covering: a user with `manage_users` and not `*` refused an administrator's account, the
+  administrator role, a role naming what they lack, and giving one; allowed one they cover, a type's
+  own name through its all-types form included. An editor denied `edit_notes` refused `edit_entries`
+  and `edit_notes` both. A name no type derives not counted against them. Nobody deleting themselves.
+- The last account able to manage accounts not demoted or deleted, nor its role emptied; an invited
+  administrator not counting. Two administrators demoting each other from two connections leaving
+  one, and a caller's transaction holding an older snapshot not deciding it.
+- Account settings: a writer changing their own name, and their email and password only with the
+  current one; a new password signing out another device, its session cookie dropped and its remember
+  cookie sent to the login page, and keeping this one and its remember cookie.
+- Assigning: an entry and a draft given to another account, the draft's owner read back before and
+  after; refused without `edit_others`, to an account that cannot write the type, and to someone
+  without `update`; the draft's `updated_at` and the entry's revisions untouched.
+- The screens: the sidebar's section only for `manage_users`; the list, the forms read only where not
+  covered, the grid's disabled and stale names, the author menu only where `assign` is allowed. Those
+  go in `AdminTest`, on SQLite.
 
 ## Phase 12 — The page builder
 
