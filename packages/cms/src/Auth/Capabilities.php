@@ -7,6 +7,7 @@ use Doctrine\Inflector\Language;
 use Illuminate\Auth\Access\Response;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
+use Mainstay\Mainstay;
 
 /*
  | What a user may be allowed to do, WordPress's way: strings, never stored,
@@ -76,6 +77,41 @@ final class Capabilities
         }
 
         return Response::allow();
+    }
+
+    /*
+     | The first of these names a user could not hand out, or null: one whose
+     | every check would not pass for them. A type's own name passes through
+     | either form, as the policies ask it; an all-types name only where no
+     | type's own form of it is denied, since a role holding `edit_entries`
+     | edits every type; `*` only through a role of `*` with no denials, `*`
+     | being a role's and never a grant's. A name no type derives any longer
+     | gives nothing, so it is not counted.
+     */
+    public static function uncovered(User $user, array $names): ?string
+    {
+        /** @var array<string, list<list<string>>> $needs */
+        $needs = array_map(fn (string $name) => [[$name]], array_combine(self::shared(), self::shared()));
+
+        foreach (app(Mainstay::class)->registered() as $type) {
+            foreach (self::verbs($type) as $verb) {
+                [$own, $every] = self::names($type, $verb);
+                $needs[$own] = [[$own, $every]];
+                $needs[$every][] = [$own, $every];
+            }
+        }
+
+        foreach ($names as $name) {
+            $passes = $name === '*'
+                ? in_array('*', $user->role->capabilities, true) && $user->denials === []
+                : collect($needs[$name] ?? [])->every(fn (array $any) => $user->holds(...$any));
+
+            if (! $passes) {
+                return $name;
+            }
+        }
+
+        return null;
     }
 
     /** @return list<string> */

@@ -18,6 +18,7 @@ use Mainstay\Content\Media;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Http\Form;
 use Mainstay\Tests\Fixtures\Accented\Article as Accented;
+use Mainstay\Tests\Fixtures\Broken\Account;
 use Mainstay\Tests\Fixtures\Broken\Login;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Linked\Genre;
@@ -364,6 +365,7 @@ class AdminTest extends DatabaseTestCase
 
         $this->assertThrows(fn () => $this->get(route('mainstay.entries.create', 'article')), InvalidArgumentException::class, 'there is no view acme::components.fields.color-picker');
         $this->assertThrows(fn () => $this->declare(Login::class), InvalidArgumentException::class, 'would be called "login", which the admin uses for a screen of its own');
+        $this->assertThrows(fn () => $this->declare(Account::class), InvalidArgumentException::class, 'would be called "account", which the admin uses for a screen of its own');
     }
 
     #[Test]
@@ -809,5 +811,88 @@ class AdminTest extends DatabaseTestCase
         foreach (['related.0 field is not there', 'author field is gone', 'needs manage_genres', 'cover field is not in the library'] as $message) {
             $this->assertSame(1, substr_count($story.$pictured, $message), "Under its field, and not again above the form: {$message}");
         }
+    }
+
+    /* The checkbox, select option or input drawn for this value, as a tag. */
+    private function control(TestResponse $response, string $value): string
+    {
+        $this->assertSame(1, preg_match('/<(?:input|option)[^>]*value="'.preg_quote($value, '/').'"[^>]*>/', $response->getContent(), $tag), "Drawn: {$value}");
+
+        return $tag[0];
+    }
+
+    #[Test]
+    public function the_accounts_and_roles_are_offered_only_to_whoever_manages_them(): void
+    {
+        $this->get('/admin')->assertOk()->assertSee('href="/admin/users"', false)->assertSee('href="/admin/roles"', false)->assertSee('href="'.route('mainstay.account').'"', false);
+
+        $this->signIn($this->user(role: 'editor'));
+        $this->get('/admin')->assertOk()->assertDontSee('href="/admin/users"', false)->assertDontSee('href="/admin/roles"', false);
+        $this->get('/admin/users')->assertNotFound();
+        $this->get('/admin/roles/new')->assertNotFound();
+        $this->assertDoesNotMatchRegularExpression('/aria-current="page"[^>]*href=/', $this->get('/admin/account')->assertOk()->assertSee('Editor')->getContent(), 'No sidebar link is marked.');
+    }
+
+    #[Test]
+    public function an_account_is_read_only_to_a_manager_who_does_not_hold_what_it_holds(): void
+    {
+        $admin = User::query()->sole();
+        $manager = $this->user([Capabilities::USERS, 'edit_entries']);
+        $invited = User::query()->create(['name' => 'Grace', 'email' => 'grace@example.com', 'role_id' => Role::query()->where('name', 'editor')->value('id'), 'grants' => ['edit_others_media'], 'denials' => ['delete_entries']]);
+        $this->signIn($manager);
+
+        $this->get('/admin/users')->assertOk()->assertSeeInOrder([$admin->name, $manager->name, 'Grace', 'Invited']);
+        $this->get("/admin/users/{$manager->id}")->assertRedirect(route('mainstay.account'));
+
+        $read = $this->get("/admin/users/{$admin->id}")->assertOk()->assertDontSee('form="account-form">Save', false);
+        $this->assertStringContainsString('<fieldset disabled', $read->getContent());
+
+        $this->get("/admin/users/{$invited->id}")->assertOk()->assertSee('edit_others_media')->assertSee('delete_entries');
+        $this->post("/admin/users/{$admin->id}", ['name' => 'Taken', 'email' => 'taken@example.com', 'role' => $admin->role_id])->assertForbidden();
+        $this->assertSame($admin->email, $admin->fresh()->email);
+    }
+
+    #[Test]
+    public function the_role_grid_draws_what_the_user_cannot_hand_out_disabled_and_a_stale_name_beneath(): void
+    {
+        $this->signIn($this->user([Capabilities::USERS, 'edit_entries']));
+
+        $grid = $this->get('/admin/roles/new')->assertOk();
+        $this->assertStringNotContainsString('disabled="disabled"', $this->control($grid, 'edit_flyers'), 'Held through edit_entries.');
+        $this->assertStringContainsString('disabled="disabled"', $this->control($grid, 'publish_flyers'));
+        $this->assertStringContainsString('disabled="disabled"', $this->control($grid, '*'));
+
+        $this->post('/admin/roles', ['name' => 'Flyer drafts', 'capabilities' => ['edit_flyers', 'edit_notes']])->assertRedirect();
+        $role = Role::query()->where('name', 'flyer drafts')->sole();
+        $this->assertSame(['edit_flyers', 'edit_notes'], $role->capabilities);
+
+        $role->update(['capabilities' => ['edit_flyers', 'edit_ghosts']]);
+        $this->assertStringContainsString('checked="checked"', $this->control($this->get("/admin/roles/{$role->id}")->assertOk()->assertSee('No type derives these any longer'), 'edit_ghosts'));
+        $this->get('/admin/roles')->assertOk()->assertSee('Flyer drafts');
+    }
+
+    #[Test]
+    public function an_entry_is_given_to_another_account_from_its_form(): void
+    {
+        $writer = $this->user(['edit_notes', 'edit_published_notes', 'publish_notes']);
+        $this->user(Capabilities::of(Flyer::class));
+        $note = Mainstay::create(Note::class, ['title' => 'Unowned', 'slug' => 'unowned'], locale: 'en', overrideAccess: true);
+
+        $form = $this->get("/admin/note/{$note->id}")->assertOk()->assertSee('name="owner" form="author-form"', false);
+        $this->assertStringContainsString('disabled selected', $form->getContent(), 'Nobody owns it yet, and nobody is no one to give it to.');
+        $this->control($form, (string) $writer->id);
+        $this->assertSame(0, preg_match('/<option value="\d+"[^>]*>Ada 3</', $form->getContent()), 'Not to an account that cannot write notes.');
+
+        $this->post("/admin/note/{$note->id}/author", ['owner' => $writer->id])->assertRedirect()->assertSessionHas('status', 'The author is changed.');
+        $this->assertSame($writer->id, Mainstay::findById(Note::class, $note->id, locale: 'en')->ownerId);
+
+        $this->signIn($writer);
+        $this->get("/admin/note/{$note->id}")->assertOk()->assertDontSee('name="owner"', false)->assertSee($writer->name);
+
+        $draft = Mainstay::drafts()->save(Note::class, ['title' => 'Started', 'slug' => 'started'], locale: 'en');
+        $this->get("/admin/note/drafts/{$draft->id}")->assertOk()->assertSee($writer->name);
+
+        $this->signIn(User::query()->whereHas('role', fn ($query) => $query->where('name', 'administrator'))->sole());
+        $this->assertStringContainsString('selected', $this->control($this->get("/admin/note/drafts/{$draft->id}")->assertOk(), (string) $writer->id));
     }
 }

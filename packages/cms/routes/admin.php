@@ -7,6 +7,8 @@ use Mainstay\Http\EntryController;
 use Mainstay\Http\LoginController;
 use Mainstay\Http\MediaController;
 use Mainstay\Http\PasswordController;
+use Mainstay\Http\RoleController;
+use Mainstay\Http\UserController;
 
 Route::get('login', [LoginController::class, 'show'])->name('mainstay.login');
 Route::post('login', [LoginController::class, 'store']);
@@ -19,7 +21,8 @@ Route::post('reset-password', [PasswordController::class, 'update'])->name('main
 
 /*
  | Every screen under a type's handle, which registration keeps from being
- | `login`, `logout` or `media`. A path none of them answers is the admin's
+ | one of the admin's own: `login`, `logout`, `media`, `users`, `roles`,
+ | `account`. A path none of them answers is the admin's
  | own not-found, drawn in the shell: named as the others are, so no entry
  | can be given a path anywhere under the prefix.
  */
@@ -35,6 +38,24 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::post('media/{id}/restore', [MediaController::class, 'restore'])->whereNumber('id')->name('mainstay.media.restore');
     Route::post('media/{id}/destroy', [MediaController::class, 'destroy'])->whereNumber('id')->name('mainstay.media.destroy');
 
+    Route::get('users', [UserController::class, 'index'])->name('mainstay.users');
+    Route::post('users', [UserController::class, 'store'])->name('mainstay.users.store');
+    Route::get('users/new', [UserController::class, 'create'])->name('mainstay.users.create');
+    Route::get('users/{id}', [UserController::class, 'edit'])->whereNumber('id')->name('mainstay.users.edit');
+    Route::post('users/{id}', [UserController::class, 'update'])->whereNumber('id')->name('mainstay.users.update');
+    Route::post('users/{id}/invite', [UserController::class, 'invite'])->whereNumber('id')->name('mainstay.users.invite');
+    Route::post('users/{id}/destroy', [UserController::class, 'destroy'])->whereNumber('id')->name('mainstay.users.destroy');
+
+    Route::get('roles', [RoleController::class, 'index'])->name('mainstay.roles');
+    Route::post('roles', [RoleController::class, 'store'])->name('mainstay.roles.store');
+    Route::get('roles/new', [RoleController::class, 'create'])->name('mainstay.roles.create');
+    Route::get('roles/{id}', [RoleController::class, 'edit'])->whereNumber('id')->name('mainstay.roles.edit');
+    Route::post('roles/{id}', [RoleController::class, 'update'])->whereNumber('id')->name('mainstay.roles.update');
+    Route::post('roles/{id}/destroy', [RoleController::class, 'destroy'])->whereNumber('id')->name('mainstay.roles.destroy');
+
+    Route::get('account', [UserController::class, 'account'])->name('mainstay.account');
+    Route::post('account', [UserController::class, 'saveAccount'])->name('mainstay.account.update');
+
     Route::get('{type}', [EntryController::class, 'index'])->name('mainstay.entries');
     Route::post('{type}', [EntryController::class, 'store'])->name('mainstay.entries.store');
     Route::get('{type}/new', [EntryController::class, 'create'])->name('mainstay.entries.create');
@@ -46,6 +67,7 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
     Route::post('{type}/drafts/{draft}', [EntryController::class, 'saveDraft'])->whereNumber('draft')->name('mainstay.drafts.update');
     Route::post('{type}/drafts/{draft}/discard', [EntryController::class, 'discard'])->whereNumber('draft')->name('mainstay.drafts.discard');
+    Route::post('{type}/drafts/{draft}/author', [EntryController::class, 'assignDraft'])->whereNumber('draft')->name('mainstay.drafts.assign');
     Route::get('{type}/relations/{field}', [EntryController::class, 'relations'])->name('mainstay.relations');
 
     Route::get('{type}/{id}', [EntryController::class, 'edit'])->whereNumber('id')->name('mainstay.entries.edit');
@@ -53,6 +75,7 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::post('{type}/{id}/trash', [EntryController::class, 'trash'])->whereNumber('id')->name('mainstay.entries.delete');
     Route::post('{type}/{id}/restore', [EntryController::class, 'restore'])->whereNumber('id')->name('mainstay.entries.restore');
     Route::post('{type}/{id}/destroy', [EntryController::class, 'destroy'])->whereNumber('id')->name('mainstay.entries.destroy');
+    Route::post('{type}/{id}/author', [EntryController::class, 'assign'])->whereNumber('id')->name('mainstay.entries.assign');
     Route::post('{type}/{id}/front', [EntryController::class, 'front'])->whereNumber('id')->name('mainstay.entries.front');
     Route::get('{type}/{id}/history', [EntryController::class, 'history'])->whereNumber('id')->name('mainstay.entries.history');
     Route::post('{type}/{id}/revisions/{revision}', [EntryController::class, 'restoreRevision'])->whereNumber(['id', 'revision'])->name('mainstay.revisions.restore');

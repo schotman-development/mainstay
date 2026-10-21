@@ -7,6 +7,7 @@ use Doctrine\Inflector\Language;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Str;
 use Mainstay\Auth\Gate;
+use Mainstay\Auth\User;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Media;
 use Mainstay\Content\Taxonomy;
@@ -18,9 +19,10 @@ class Navigation
      | The admin's sections, as data for <x-mainstay::sidebar>, built from the
      | registered types rather than written by hand: each entry type and then
      | each taxonomy under Content, the media library, and each global under
-     | Globals. A type is offered only to someone who may write to it -- its
-     | list is no use to anyone else -- the library to someone who may read
-     | it, and a section with nothing in it is left out.
+     | Globals, and the accounts and roles. A type is offered only to someone
+     | who may write to it -- its list is no use to anyone else -- the library
+     | to someone who may read it, the accounts to someone who may manage
+     | them, and a section with nothing in it is left out.
      |
      | Links come from route(), so an admin mounted at another path or on a
      | subdirectory's app gets its own.
@@ -33,7 +35,7 @@ class Navigation
         return array_values(array_filter([
             [
                 /* No group name: the root of the panel is not a category of anything. */
-                'items' => [['href' => route('mainstay.admin', absolute: false), 'label' => 'Dashboard', 'icon' => self::icon('<path d="M3.25 1.75h9.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5v-9.5a1.5 1.5 0 0 1 1.5-1.5zM5.25 10.75V7.5M8 10.75V5.25M10.75 10.75V8.75" />')]],
+                'items' => [['href' => route('mainstay.admin', absolute: false), 'exact' => true, 'label' => 'Dashboard', 'icon' => self::icon('<path d="M3.25 1.75h9.5a1.5 1.5 0 0 1 1.5 1.5v9.5a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5v-9.5a1.5 1.5 0 0 1 1.5-1.5zM5.25 10.75V7.5M8 10.75V5.25M10.75 10.75V8.75" />')]],
             ],
             [
                 'label' => 'Content',
@@ -48,6 +50,12 @@ class Navigation
             [
                 'label' => 'Globals',
                 'items' => array_map(fn (string $type) => $item($type, self::icon('<path d="M1.75 4.75h12.5M1.75 11.25h12.5" /><circle cx="6" cy="4.75" r="1.75" /><circle cx="10" cy="11.25" r="1.75" />')), array_values(array_filter($types, fn (string $type) => is_subclass_of($type, GlobalSet::class)))),
+            ],
+            [
+                'items' => self::accounts() ? [
+                    ['href' => route('mainstay.users', absolute: false), 'label' => 'Users', 'icon' => self::icon('<circle cx="6" cy="5.25" r="2.5" /><path d="M1.75 13.75c0-2.5 1.9-4.25 4.25-4.25s4.25 1.75 4.25 4.25M10.75 2.9a2.4 2.4 0 0 1 0 4.7M12.25 9.75c1.2.5 2 1.85 2 4" />')],
+                    ['href' => route('mainstay.roles', absolute: false), 'label' => 'Roles', 'icon' => self::icon('<path d="M8 1.75 2.75 3.75v4c0 3.1 2.2 5.35 5.25 6.5 3.05-1.15 5.25-3.4 5.25-6.5v-4z" />')],
+                ] : [],
             ],
         ], fn (array $section) => $section['items'] !== []));
     }
@@ -105,6 +113,13 @@ class Navigation
     public static function library(): bool
     {
         return self::media('viewAny');
+    }
+
+    /* Whether the signed-in user may manage accounts and roles: the question
+       their every screen and write asks. */
+    public static function accounts(): bool
+    {
+        return Gate::accounts()->allows('viewAny', User::class);
     }
 
     /* Whether the signed-in user may upload to the media library. */

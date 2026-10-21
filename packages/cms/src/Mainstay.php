@@ -7,6 +7,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
 use InvalidArgumentException;
+use Mainstay\Auth\Accounts;
 use Mainstay\Auth\Capabilities;
 use Mainstay\Content\Block;
 use Mainstay\Content\ContentType;
@@ -33,7 +34,7 @@ class Mainstay
 
     /* The first segments of the admin's own screens, which a type's handle,
        naming its screens' segment, cannot be. */
-    private const ADMIN = ['media', 'login', 'logout'];
+    private const ADMIN = ['media', 'login', 'logout', 'users', 'roles', 'account'];
 
     /** @var array<string, class-string<ContentType>> */
     private array $types = [];
@@ -113,7 +114,8 @@ class Mainstay
             }
 
             /* Nor one claiming a segment the admin draws a screen of its own
-               at: its list would be the library's or the login's address. */
+               at: its list would be the library's, the login's or the accounts'
+               address. */
             if (in_array($handle, self::ADMIN, true)) {
                 throw new InvalidArgumentException("{$type} would be called \"{$handle}\", which the admin uses for a screen of its own. Rename the class.");
             }
@@ -340,6 +342,13 @@ class Mainstay
         $this->store()->destroy($type, ...$arguments);
     }
 
+    /* `Mainstay::assign(Article::class, 5, owner: 3)` gives an entry to
+       another account. */
+    public function assign(string $type, mixed ...$arguments): void
+    {
+        $this->store()->assign($type, ...$arguments);
+    }
+
     /* The entry served at `/`, as [type, id], or null. */
     public function frontPage(): ?array
     {
@@ -362,6 +371,13 @@ class Mainstay
     public function revisions(): Revisions
     {
         return new Revisions($this->store());
+    }
+
+    /* Accounts and roles, written as the admin writes them:
+       `Mainstay::accounts()->create(...)`. */
+    public function accounts(): Accounts
+    {
+        return new Accounts($this);
     }
 
     private function store(): ContentStore

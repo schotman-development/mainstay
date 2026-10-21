@@ -57,6 +57,6 @@ class PasswordController
             throw ValidationException::withMessages(['email' => 'This link has expired or been used. Ask for another.']);
         }
 
-        return redirect()->route('mainstay.login')->with('status', 'Your password is changed. Sign in with it.');
+        return redirect()->route('mainstay.login')->with('status', 'Your password is saved. Sign in with it.');
     }
 }

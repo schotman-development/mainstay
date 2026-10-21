@@ -25,6 +25,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static void setFrontPage(?string $type, ?int $id = null, bool $overrideAccess = false)
  * @method static \Mainstay\Database\Drafts drafts()
  * @method static \Mainstay\Database\Revisions revisions()
+ * @method static \Mainstay\Auth\Accounts accounts()
+ * @method static void assign(string $type, int $id, int $owner, bool $overrideAccess = false)
  * @method static \Mainstay\Content\GlobalSet|null global(string $type, ?string $locale = null, bool $overrideAccess = false, int $depth = 1)
  * @method static \Mainstay\Content\GlobalSet saveGlobal(string $type, array $data, ?string $locale = null, bool $overrideAccess = false)
  * @method static string template(\Mainstay\Content\Entry $entry)

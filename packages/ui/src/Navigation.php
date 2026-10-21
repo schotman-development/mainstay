@@ -18,9 +18,10 @@ class Navigation
      | Prefix matching on the path, so /admin/pages/42 still marks Pages -- an
      | exact test would leave every detail page with nothing marked at all.
      | Longest wins, because a dashboard mounted at /admin is a prefix of every
-     | other section and would otherwise claim all of them. A root item is the
-     | one exception: "/" prefixes the whole site, so it only ever matches
-     | itself.
+     | other section and would otherwise claim all of them. A root item is one
+     | exception: "/" prefixes the whole site, so it only ever matches itself.
+     | An item marked `exact` is the other: a dashboard that is not the section
+     | of every page without an item of its own, like a user's settings.
      |
      | Ties go to the first in document order, which is how the caller controls
      | which of two equally-good matches wins.
@@ -38,7 +39,7 @@ class Navigation
         foreach (self::flatten($sections) as $key => $item) {
             $href = self::normalise((string) ($item['href'] ?? ''));
 
-            if ($path !== $href && ($href === '/' || ! str_starts_with($path, $href.'/'))) {
+            if ($path !== $href && ($href === '/' || ! empty($item['exact']) || ! str_starts_with($path, $href.'/'))) {
                 continue;
             }
 

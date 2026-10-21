@@ -46,4 +46,10 @@ class Drafts
     {
         $this->store->discardDraft($id, $overrideAccess);
     }
+
+    /* Gives an entry not published yet to another account. */
+    public function assign(int $id, int $owner, bool $overrideAccess = false): void
+    {
+        $this->store->assignDraft($id, $owner, $overrideAccess);
+    }
 }

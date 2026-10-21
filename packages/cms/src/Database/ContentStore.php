@@ -22,6 +22,7 @@ use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use JsonException;
 use Mainstay\Auth\Gate;
+use Mainstay\Auth\User;
 use Mainstay\Content\ContentType;
 use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
@@ -882,6 +883,56 @@ class ContentStore
     }
 
     /*
+     | Gives an entry to another account, one that may write its type. Its
+     | owner is nothing a reader sees, so this files no revision and leaves
+     | the stamps as they are, which an open form compares to tell another's
+     | save. A term's owner is nothing anyone asks about, so it has none to
+     | give.
+     */
+    public function assign(string $type, int $id, int $owner, bool $overrideAccess = false): void
+    {
+        $type = $this->entry($type);
+
+        if (is_subclass_of($type, Taxonomy::class)) {
+            throw new InvalidArgumentException("{$type} is a taxonomy, and nothing asks who owns a term.");
+        }
+
+        [$row] = $this->load($type, $id, $overrideAccess);
+        $this->writes($type, 'assign', fn () => $this->hydrate($type, $row, null, true), $overrideAccess);
+        $this->owner($type, $owner);
+
+        DB::table($type::handle())->where('id', $id)->update(['owner_id' => $owner]);
+    }
+
+    /* The same for an entry not published yet, which its draft owns. */
+    public function assignDraft(int $id, int $owner, bool $overrideAccess = false): void
+    {
+        $draft = DB::table(self::DRAFTS)->where('site_id', $this->site())->where('id', $id)->first()
+            ?? throw new RecordNotFoundException("Draft {$id} is not there to assign.");
+        $type = $this->drafted($this->handled($draft->type));
+
+        if ($draft->entry_id !== null) {
+            throw new InvalidArgumentException("Draft {$id} is of what is live, which is what has an owner: assign() the entry.");
+        }
+
+        $this->writes($type, 'assign', fn () => $this->unpublished($type, $draft), $overrideAccess);
+        $this->owner($type, $owner);
+
+        DB::table(self::DRAFTS)->where('id', $id)->update(['owner_id' => $owner]);
+    }
+
+    /* An owner is an account Gate would let make one of the type, as the
+       admin offers them. */
+    private function owner(string $type, int $owner): void
+    {
+        $account = User::query()->find($owner);
+
+        if ($account === null || Gate::about($type)->forUser($account)->denies('create', [$type, $type])) {
+            throw ValidationException::withMessages(['owner' => $account === null ? "There is no account {$owner}." : "{$account->name} cannot write these, so cannot own one."]);
+        }
+    }
+
+    /*
      | The entry served at `/`, as its type and id, or null: this site's
      | choice, as WordPress's static front page is.
      |
@@ -982,7 +1033,8 @@ class ContentStore
         }
 
         $translation = $translations->get($locale);
-        $built = (object) ['id' => $row?->id, 'owner_id' => $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+        /* An entry not published yet is owned by who its draft names. */
+        $built = (object) ['id' => $row?->id, 'owner_id' => $row === null && ! $global ? $draft->owner_id : $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
 
         if (! $global) {
             $built->template = array_key_exists('template', $changes['fields']) ? $changes['fields']['template'] : $row?->template;

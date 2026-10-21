@@ -121,6 +121,17 @@ class NavigationTest extends TestCase
         $this->assertNull($this->marked([['items' => [['href' => '', 'label' => 'Home']]]], '/anything'));
     }
 
+    #[Test]
+    public function an_exact_item_marks_only_its_own_path(): void
+    {
+        $sections = $this->sections;
+        $sections[0]['items'][0]['exact'] = true;
+
+        $this->assertSame('Overview', $this->marked($sections, '/admin'));
+        $this->assertNull($this->marked($sections, '/admin/account'));
+        $this->assertSame('Pages', $this->marked($sections, '/admin/pages/42'));
+    }
+
     /* Matching that stopped at the first level handed this to Collections. */
     #[Test]
     public function a_sub_item_route_beats_the_parent_it_hangs_off(): void

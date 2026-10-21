@@ -176,6 +176,23 @@ class EntryController
         return back()->with('status', 'Deleted for good.');
     }
 
+    /* Gives an entry, or one not published yet, to another account at once,
+       as the front page is set: its own form, beside the entry's. */
+    public function assign(Request $request, string $type, int $id): RedirectResponse
+    {
+        $this->mainstay->assign($this->type($type, entries: true), $id, owner: (int) $request->input('owner'));
+
+        return back()->with('status', 'The author is changed.');
+    }
+
+    public function assignDraft(Request $request, string $type, int $draft): RedirectResponse
+    {
+        $this->type($type, entries: true);
+        $this->mainstay->drafts()->assign($draft, owner: (int) $request->input('owner'));
+
+        return back()->with('status', 'The author is changed.');
+    }
+
     public function front(Request $request, string $type, int $id): RedirectResponse
     {
         $this->mainstay->setFrontPage($this->type($type, entries: true), $id);
@@ -606,10 +623,34 @@ class EntryController
                 ($entry ?? $other)->ownerId === null => null,
                 default => User::query()->whereKey(($entry ?? $other)->ownerId)->value('name'),
             },
+            'owner_id' => ($entry ?? $other)?->ownerId,
+            ...$this->authors($class, $entry ?? $other, $id, $current),
             'action' => $this->localized($request, $action),
             'publishes' => ! $term && $gate->allows('publish', $entry instanceof Entry ? [$entry] : [$class, $class]),
             'deletes' => $live && $gate->allows('delete', [$shown]),
         ]);
+    }
+
+    /*
+     | The Author menu, for whoever may give this entry away: every account
+     | Gate would let make one of the type, as the sidebar asks, and where
+     | it posts -- the entry, or the draft of one not published yet. A term's
+     | owner is nothing anyone asks about, so it has no menu.
+     |
+     | @return array{authors: ?array<int, string>, assigns: ?string}
+     */
+    private function authors(string $class, ?ContentType $entry, ?int $id, ?Draft $draft): array
+    {
+        if (! $entry instanceof Entry || is_subclass_of($class, Taxonomy::class) || Gate::about($class)->denies('assign', [$entry])) {
+            return ['authors' => null, 'assigns' => null];
+        }
+
+        return [
+            'authors' => User::query()->with('role')->orderBy('name')->get()
+                ->filter(fn (User $user) => Gate::about($class)->forUser($user)->allows('create', [$class, $class]))
+                ->pluck('name', 'id')->all(),
+            'assigns' => $id !== null ? route('mainstay.entries.assign', [$class::handle(), $id]) : route('mainstay.drafts.assign', [$class::handle(), $draft->id]),
+        ];
     }
 
     /* The field the slug follows the title into: the Text field the type's
