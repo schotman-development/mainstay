@@ -117,7 +117,7 @@
 
             @if ($canvas)
                 <x-mainstay::tab-panel id="content" class="flex min-h-0 flex-1 flex-col">
-                    <x-mainstay::canvas :url="$canvas" :blocks="$blocks" />
+                    <x-mainstay::canvas :url="$canvas" :block="$block" sidebar="mainstay-block" :blocks="$blocks" :invalid="$invalid" :pictures="$pictures" />
                 </x-mainstay::tab-panel>
             @endif
         </div>
@@ -180,6 +180,11 @@
             @endif
         </aside>
     </form>
+
+    {{-- Beside the entry's form, over its rail: see block-sidebar. --}}
+    @if ($canvas)
+        <x-mainstay::block-sidebar id="mainstay-block" />
+    @endif
 
     @if ($deletes)
         <form id="trash-form" method="post" action="{{ $localized(route('mainstay.entries.delete', [$handle, $id])) }}">@csrf</form>

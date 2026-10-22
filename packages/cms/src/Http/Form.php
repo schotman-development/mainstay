@@ -9,8 +9,11 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Mainstay\Auth\Capabilities;
+use Mainstay\Content\Block;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
+use Mainstay\Fields\Blocks;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Relation;
 use Mainstay\Fields\Terms;
@@ -261,6 +264,82 @@ final class Form
         }
 
         return $data;
+    }
+
+    /* A block's name in the admin: its handle, as words. */
+    public static function label(string $block): string
+    {
+        return Str::ucfirst(str_replace('_', ' ', $block::handle()));
+    }
+
+    /*
+     | Every block a type's content can hold, by handle: the ones it names,
+     | and the items of every list inside them, all the way down.
+     |
+     | @return array<string, class-string<Block>>
+     */
+    public static function blocks(string $type): array
+    {
+        $mainstay = app(Mainstay::class);
+        $content = $mainstay->fields($type)['content'] ?? null;
+        $found = [];
+        $walk = function (array $blocks) use (&$walk, &$found, $mainstay): void {
+            foreach ($blocks as $block) {
+                if (! isset($found[$block::handle()])) {
+                    $found[$block::handle()] = $block;
+                    $walk(array_merge([], ...array_map(fn (Field $field) => $field instanceof Blocks ? $field->of : [], array_values($mainstay->fields($block)))));
+                }
+            }
+        };
+
+        $walk($content instanceof Content ? $content->blocks() : []);
+
+        return $found;
+    }
+
+    /*
+     | A site block's errors, from a check that reported them under `$prefix`
+     | -- `content.content.3.attrs.` -- by where they are in the block,
+     | `data.headline` or `data.items.1.data.title`, each message naming the
+     | field by its label rather than by its path. `$item` is the block as it
+     | was checked, which says what a nested item is.
+     |
+     | @return array<string, list<string>>
+     */
+    public static function blockErrors(Content $content, mixed $item, array $errors, string $prefix): array
+    {
+        $found = [];
+
+        foreach ($errors as $key => $messages) {
+            if (! str_starts_with($key, $prefix)) {
+                continue;
+            }
+
+            $path = substr($key, strlen($prefix));
+            $label = self::labelAt($content->listed($item), is_array($item) ? $item['data'] ?? null : null, explode('.', $path));
+            $found[$path] = array_map(fn (string $message) => $label === null ? $message : str_replace([$key, str_replace('_', ' ', Str::snake($key))], $label, $message), $messages);
+        }
+
+        return $found;
+    }
+
+    /* The label of the field at `data.items.1.data.title` in a block of
+       `$block` holding `$data`, or null where that is no field. */
+    private static function labelAt(?string $block, mixed $data, array $path): ?string
+    {
+        if ($block === null || array_shift($path) !== 'data' || ! is_array($data)) {
+            return null;
+        }
+
+        $field = app(Mainstay::class)->fields($block)[array_shift($path) ?? ''] ?? null;
+
+        if ($field === null || $path === []) {
+            return $field?->label();
+        }
+
+        $item = $field instanceof Blocks ? $data[$field->name][array_shift($path)] ?? null : null;
+
+        return self::labelAt($field instanceof Blocks ? $field->block($item) : null, is_array($item) ? $item['data'] ?? null : null, $path);
     }
 
     /* Every map in a tree with its keys sorted; a list keeps its order. */

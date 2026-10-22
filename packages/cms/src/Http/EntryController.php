@@ -5,6 +5,7 @@ namespace Mainstay\Http;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -25,6 +26,7 @@ use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
 use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
+use Mainstay\Fields\Image;
 use Mainstay\Fields\Relation;
 use Mainstay\Fields\Terms;
 use Mainstay\Mainstay;
@@ -33,6 +35,7 @@ use Mainstay\Ui\EntryList;
 use ReflectionProperty;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
+use TypeError;
 
 /*
  | The admin's screens over the query layer: a type's list and trash, an
@@ -217,6 +220,131 @@ class EntryController
             app()->forgetInstance('auth.driver');
             App::setLocale($language);
         }
+    }
+
+    /*
+     | A site block of the content, for the Content tab: posted as the
+     | document holds it, `block`, once it is selected, or as its sidebar
+     | posts it after a field changed -- `id`, `type` and `data`, each field
+     | through its fromForm() -- with `op` adding, moving or removing an item
+     | of a list inside it. Checked as the canvas checks the content, by
+     | Mainstay::preview() as a draft save would, nothing written. Answered
+     | with the block as the document is to hold it, its HTML drawn for the
+     | editor as the canvas draws it, and, when it is selected or a list
+     | changed, its sidebar: every field, drawn by the component Details
+     | draws its kind with, showing the `errors` posted with it -- a refused
+     | save's, by where they are in it. A check that refuses it answers why,
+     | with the block as converted and its sidebar showing each message at
+     | its field, what was refused left empty, so it can be put right there;
+     | anything else refused answers why alone.
+     */
+    public function block(Request $request, string $type): JsonResponse
+    {
+        return $this->drawBlock($request, $type);
+    }
+
+    public function entryBlock(Request $request, string $type, int $id): JsonResponse
+    {
+        return $this->drawBlock($request, $type, id: $id);
+    }
+
+    public function draftBlock(Request $request, string $type, int $draft): JsonResponse
+    {
+        return $this->drawBlock($request, $type, draft: $draft);
+    }
+
+    private function drawBlock(Request $request, string $type, ?int $id = null, ?int $draft = null): JsonResponse
+    {
+        $class = $this->type($type, entries: true);
+        $content = $this->mainstay->fields($class)['content'];
+
+        if ($this->mainstay->route($class) === null) {
+            throw $this->missing();
+        }
+
+        $locale = $this->locale($request);
+        $drawn = is_string($request->input('block')) || $request->filled('op');
+        $item = is_string($request->input('block'))
+            ? json_decode($request->input('block'), true)
+            : $content->itemFromForm($this->operated($request, ['id' => $request->input('id'), 'type' => $request->input('type'), 'data' => (array) $request->input('data', [])]));
+
+        if ($content->listed($item) === null) {
+            return response()->json(['messages' => ['The content holds no block of the type '.json_encode(is_array($item) ? $item['type'] ?? null : null).'.']], 422);
+        }
+
+        try {
+            $entry = $this->mainstay->preview($class, $id, ['content' => ['type' => 'doc', 'content' => [['type' => 'block', 'attrs' => $item]]]], draft: $draft, locale: $locale);
+        } catch (ValidationException $exception) {
+            $prefix = 'content.content.0.attrs.';
+            $errors = Form::blockErrors($content, $item, $exception->errors(), $prefix);
+
+            $shown = $item;
+            Arr::forget($shown, array_keys($errors));
+
+            try {
+                $read = $drawn ? $content->readItem($shown) : null;
+            } catch (InvalidArgumentException|TypeError) {
+                $read = null;
+            }
+
+            return response()->json([
+                'messages' => array_values(array_unique([...Arr::flatten($errors), ...Arr::flatten(array_filter($exception->errors(), fn (string $key) => ! str_starts_with($key, $prefix), ARRAY_FILTER_USE_KEY))])),
+                'block' => $item,
+                'form' => $read === null ? null : view('mainstay::block', ['block' => $read, 'messages' => $errors])->render(),
+            ], 422);
+        } catch (AuthorizationException|RecordNotFoundException|InvalidArgumentException $exception) {
+            return response()->json(['messages' => [$exception->getMessage()]], $exception instanceof AuthorizationException ? 403 : 404);
+        }
+
+        $block = $entry->content->blocks()[0];
+
+        try {
+            $html = $this->asVisitor($request, $locale, fn () => $this->mainstay->marked(fn () => $block->toHtml()));
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json(['messages' => [$exception->getMessage() ?: 'The block stopped drawing with '.class_basename($exception).'.']], 500);
+        }
+
+        $errors = json_decode((string) $request->input('errors'), true);
+        $errors = array_map(fn (array $messages) => array_values(array_filter($messages, is_string(...))), array_filter(is_array($errors) ? $errors : [], is_array(...)));
+
+        return response()->json([
+            'block' => $entry->content->toArray()['content'][0]['attrs'],
+            'html' => $html,
+            'form' => $drawn ? view('mainstay::block', ['block' => $block, 'messages' => $errors])->render() : null,
+        ]);
+    }
+
+    /*
+     | The posted block with `op` done to the list `list` names -- `data[items]`,
+     | or one inside an item of it: an item of the type `kind` added at its
+     | end, or the one at `index` moved up, moved down or removed.
+     */
+    private function operated(Request $request, array $item): array
+    {
+        $list = $request->input('list');
+
+        if (! in_array($op = $request->input('op'), ['add', 'up', 'down', 'remove'], true) || ! is_string($list) || ! str_starts_with($list, 'data[')) {
+            return $item;
+        }
+
+        $path = str_replace(['][', '[', ']'], ['.', '.', ''], $list);
+        $items = array_values(array_filter((array) Arr::get($item, $path), 'is_array'));
+        $index = (int) $request->input('index');
+        $to = $op === 'up' ? $index - 1 : $index + 1;
+
+        if ($op === 'add') {
+            $items[] = ['id' => (string) Str::ulid(), 'type' => is_string($kind = $request->input('kind')) ? $kind : '', 'data' => []];
+        } elseif ($op === 'remove' && isset($items[$index])) {
+            array_splice($items, $index, 1);
+        } elseif ($op !== 'remove' && isset($items[$index], $items[$to])) {
+            [$items[$index], $items[$to]] = [$items[$to], $items[$index]];
+        }
+
+        Arr::set($item, $path, $items);
+
+        return $item;
     }
 
     /* Throws a draft away, unless someone else saved it after this form drew
@@ -434,7 +562,12 @@ class EntryController
     public function relations(Request $request, string $type, string $field): View
     {
         $class = $this->type($type);
-        $relation = Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class]))[$field] ?? null;
+        /* A block's, in its sidebar, by the block's handle: `hero.story`. */
+        [$block, $name] = str_contains($field, '.') ? explode('.', $field, 2) : [null, $field];
+        $fields = $block === null
+            ? Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class]))
+            : (isset(Form::blocks($class)[$block]) ? $this->mainstay->fields(Form::blocks($class)[$block]) : []);
+        $relation = $fields[$name] ?? null;
 
         if (! $relation instanceof Relation || $relation instanceof Terms) {
             throw $this->missing();
@@ -761,14 +894,51 @@ class EntryController
                 $current !== null => route('mainstay.canvas.draft', [$class::handle(), $current->id]),
                 default => route('mainstay.canvas.create', $class::handle()),
             }) : null,
+            'block' => $routed ? $this->localized($request, match (true) {
+                $id !== null => route('mainstay.block.entry', [$class::handle(), $id]),
+                $current !== null => route('mainstay.block.draft', [$class::handle(), $current->id]),
+                default => route('mainstay.block.create', $class::handle()),
+            }) : null,
             'blocks' => collect(($fields['content'] ?? null) instanceof Content ? $fields['content']->blocks() : [])
-                ->mapWithKeys(fn (string $block) => [$block::handle() => Str::ucfirst(str_replace('_', ' ', $block::handle()))])->all(),
+                ->mapWithKeys(fn (string $block) => [$block::handle() => Form::label($block)])->all(),
+            /* The library's picker, for a type whose blocks hold an image:
+               the sidebar is drawn after the page, too late to push it. */
+            'pictures' => collect(Form::blocks($class))->contains(fn (string $block) => collect($this->mainstay->fields($block))->contains(fn (Field $field) => $field instanceof Image)),
+            'invalid' => ($fields['content'] ?? null) instanceof Content ? $this->invalid($fields['content'], $values['content'] ?? null) : [],
             /* The browser's copy of the form left unsaved is kept under this:
                the account, the screen and its locale. */
             'copy' => json_encode([Gate::user()?->getKey(), $request->getPathInfo(), $locale], JSON_UNESCAPED_SLASHES),
             'publishes' => ! $term && $gate->allows('publish', $entry instanceof Entry ? [$entry] : [$class, $class]),
             'deletes' => $live && $gate->allows('delete', [$shown]),
         ]);
+    }
+
+    /*
+     | After a save refused for a site block's field, each such block's
+     | errors by its id, read from the content as it was posted -- or, for a
+     | refused publish, as its draft saved it: its name and its messages by
+     | where they are in it, `data.headline`. A block posted without an id is
+     | the raw content's to show alone.
+     |
+     | @return array<string, array{label: string, messages: array<string, list<string>>}>
+     */
+    private function invalid(Content $content, mixed $saved): array
+    {
+        $posted = old('content') !== null ? json_decode((string) old('content'), true) : ($saved instanceof Document ? $saved->toArray() : null);
+        $errors = session('errors')?->getBag('default')->getMessages() ?? [];
+        $invalid = [];
+
+        foreach (is_array($posted['content'] ?? null) ? $posted['content'] : [] as $index => $node) {
+            $item = is_array($node) ? $node['attrs'] ?? null : null;
+            $block = $content->listed($item);
+            $messages = Form::blockErrors($content, $item, $errors, "content.content.{$index}.attrs.");
+
+            if ($block !== null && $messages !== [] && is_string($id = $item['id'] ?? null) && $id !== '') {
+                $invalid[$id] = ['label' => Form::label($block), 'messages' => $messages];
+            }
+        }
+
+        return $invalid;
     }
 
     /*

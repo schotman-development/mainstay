@@ -5,6 +5,7 @@ namespace Mainstay\Content;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Htmlable;
 use JsonSerializable;
+use Mainstay\Mainstay;
 
 /*
  | A rich text field's value: a ProseMirror document, which is a node tree and
@@ -77,7 +78,8 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
      | This content as the admin's Content tab edits it, printed for its
      | editor rather than as the site draws it: a `<script
      | type="application/json">` of the document and each site block's HTML
-     | by its id, and nothing else, which the editor reads and takes the
+     | by its id, its @field text marked, and nothing else, which the editor
+     | reads and takes the
      | element it sits in over with. Only the entry the tab edits is given
      | one, so a rich text field, and another entry's content, on the same
      | page draw as on the site.
@@ -117,7 +119,7 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             /* A `</script>` typed in a paragraph stays text inside it. */
             return '<script type="application/json" data-mainstay-content>'.json_encode([
                 'doc' => $this->tree,
-                'blocks' => (object) array_map(fn (Block $block) => $block->toHtml(), $this->blocks),
+                'blocks' => (object) app(Mainstay::class)->marked(fn () => array_map(fn (Block $block) => $block->toHtml(), $this->blocks)),
             ], JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).'</script>';
         }
 

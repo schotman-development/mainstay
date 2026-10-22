@@ -242,6 +242,36 @@ class Blocks extends Field
         return $stored ? array_intersect_key($item, array_flip(['id', 'type', 'data'])) : $item;
     }
 
+    /*
+     | A list as a block's sidebar posts it, as a write takes it: each item
+     | its id, its type and its fields, each through its own fromForm(). The
+     | empty value the list posts ahead of its items is blank, a list with
+     | none.
+     */
+    public function fromForm(mixed $posted): mixed
+    {
+        return is_array($posted) ? array_values(array_map($this->itemFromForm(...), $posted)) : parent::fromForm($posted);
+    }
+
+    /* One item as the sidebar posts it. A field it did not post is left
+       out, for its default. */
+    public function itemFromForm(mixed $item): mixed
+    {
+        if (($class = $this->block($item)) === null) {
+            return $item;
+        }
+
+        $data = is_array($item['data'] ?? null) ? $item['data'] : [];
+
+        foreach ($this->fields($class) as $name => $field) {
+            if (array_key_exists($name, $data)) {
+                $data[$name] = $field->fromForm($data[$name]);
+            }
+        }
+
+        return [...$item, 'data' => $data];
+    }
+
     /* What a read loaded goes down to the fields inside the blocks, which
        from() alone has no way to be handed. */
     public function cast(mixed $value, array $loaded = []): mixed

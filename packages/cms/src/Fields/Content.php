@@ -48,6 +48,25 @@ class Content extends RichText
         return $this->blocks->of ?? [];
     }
 
+    /** @return class-string<Block>|null the block a node's attrs name, if the type lists it */
+    public function listed(mixed $attrs): ?string
+    {
+        return $this->blocks?->block($attrs);
+    }
+
+    /* A site block as its sidebar posts it, as a write takes it. */
+    public function itemFromForm(mixed $item): mixed
+    {
+        return $this->blocks === null ? $item : $this->blocks->itemFromForm($item);
+    }
+
+    /* A site block as its fields read it, unchecked: what its sidebar shows
+       of one a check refused. */
+    public function readItem(mixed $item): ?Block
+    {
+        return $this->blocks?->readItem($item, 'content');
+    }
+
     protected function problem(array $tree): ?string
     {
         return Document::problem($tree, blocks: $this->blocks !== null);

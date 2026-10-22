@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\HtmlString;
 use InvalidArgumentException;
 use Mainstay\Auth\Accounts;
 use Mainstay\Auth\Capabilities;
@@ -24,6 +25,8 @@ use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
 use Mainstay\Fields\Terms;
+use Mainstay\Fields\Text;
+use Mainstay\Fields\Textarea;
 use Mainstay\Media\Library;
 use ReflectionAttribute;
 use ReflectionClass;
@@ -55,6 +58,10 @@ class Mainstay
 
     /** @var array{stylesheets: list<string>, class: string}|null */
     private ?array $editorStyle = null;
+
+    /* Whether blocks are being drawn for the Content tab's editor, where
+       @field marks the text it prints. */
+    private bool $marking = false;
 
     public function version(): string
     {
@@ -166,6 +173,55 @@ class Mainstay
     public function editorStyle(): ?array
     {
         return $this->editorStyle;
+    }
+
+    /*
+     | `@field($block, 'headline')`, or a nested item's, `@field($feature,
+     | 'title')`: the field's text escaped, as `{{ $block->headline }}` prints
+     | it, and for the Content tab's editor in a span marked with the item's id
+     | and the field's name, which the editor makes typeable -- showing the
+     | field's label while it is empty. A Text or a Textarea field only: any
+     | other is edited in the block's sidebar.
+     */
+    public function field(Block $item, string $name): HtmlString
+    {
+        $field = $this->fields($item::class)[$name] ?? null;
+
+        if (! $field instanceof Text && ! $field instanceof Textarea) {
+            throw new InvalidArgumentException(sprintf(
+                "@field prints a Text or a Textarea field, and %s::\$%s is %s. Print it as the view would, and it is edited in the block's sidebar.",
+                $item::class,
+                $name,
+                $field === null ? 'not a field' : (preg_match('/^[AEIOU]/', class_basename($field)) ? 'an ' : 'a ').class_basename($field).' field',
+            ));
+        }
+
+        $value = e((string) ($item->{$name} ?? ''));
+
+        if (! $this->marking) {
+            return new HtmlString($value);
+        }
+
+        return new HtmlString(sprintf(
+            '<span data-mainstay-field="%s" data-mainstay-item="%s" data-mainstay-label="%s"%s>%s</span>',
+            e($name),
+            e($item->id ?? ''),
+            e($field->label()),
+            $field instanceof Textarea ? ' data-mainstay-lines' : '',
+            $value,
+        ));
+    }
+
+    /* What `$draw` gives with every @field it prints marked for the editor. */
+    public function marked(callable $draw): mixed
+    {
+        [$was, $this->marking] = [$this->marking, true];
+
+        try {
+            return $draw();
+        } finally {
+            $this->marking = $was;
+        }
     }
 
     /**

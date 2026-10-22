@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static array capabilities()
  * @method static void editorStyles(array $stylesheets, string $class = '')
  * @method static array|null editorStyle()
+ * @method static \Illuminate\Support\HtmlString field(\Mainstay\Content\Block $item, string $name)
+ * @method static mixed marked(callable $draw)
  * @method static array fields(string $type)
  * @method static array schema(string $type, bool $internal = false)
  * @method static string|array|null route(string $type)

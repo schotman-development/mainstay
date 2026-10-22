@@ -1,4 +1,4 @@
-@props(['url', 'blocks' => []])
+@props(['url', 'block' => null, 'sidebar' => null, 'blocks' => [], 'invalid' => [], 'pictures' => false])
 
 @php
     $tool = 'rounded-control px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink aria-pressed:bg-surface aria-pressed:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent';
@@ -11,10 +11,13 @@
  | admin drives, posted to `$url` each time the tab opens after Details
  | changed. Every control is out here, around the frame: the toolbar, the
  | menu of blocks to add, and the grip a block is dragged by. The frame holds
- | the page alone, and no script runs in it. canvas.ts in packages/editor is
- | its behaviour; without it the tab holds this message.
+ | the page alone, and no script runs in it. A site block selected there is
+ | posted to `$block` and edited in the form `$sidebar` names, outside the
+ | entry's. After a save refused for a block's field, its errors are listed
+ | here, naming the block. canvas.ts in packages/editor is its behaviour;
+ | without it the tab holds this message.
 --}}
-<div data-canvas data-canvas-url="{{ $url }}" data-blocks="{{ json_encode((object) $blocks) }}" class="relative flex min-h-0 flex-1 flex-col">
+<div data-canvas data-canvas-url="{{ $url }}" data-block-url="{{ $block }}" data-sidebar="{{ $sidebar }}" data-blocks="{{ json_encode((object) $blocks) }}" data-invalid="{{ json_encode((object) $invalid) }}" class="relative flex min-h-0 flex-1 flex-col">
     <div data-canvas-toolbar role="toolbar" aria-label="Content" hidden class="flex shrink-0 flex-wrap items-center gap-0.5 border-b border-border px-2 py-1">
         <button type="button" data-command="undo" class="{{ $tool }}">Undo</button>
         <button type="button" data-command="redo" class="{{ $tool }}">Redo</button>
@@ -44,6 +47,16 @@
         <button type="button" data-command="delete" class="{{ $tool }}">Delete</button>
     </div>
 
+    @if ($invalid !== [])
+        <ul data-canvas-invalid role="alert" class="mx-3 mt-3 space-y-1 rounded-control border border-danger/40 bg-surface px-3 py-2 text-sm text-danger">
+            @foreach ($invalid as $id => $each)
+                @foreach (\Illuminate\Support\Arr::flatten($each['messages']) as $message)
+                    <li data-invalid-block="{{ $id }}">{{ $each['label'] }}: {{ $message }}</li>
+                @endforeach
+            @endforeach
+        </ul>
+    @endif
+
     <p data-canvas-message role="status" class="m-6 rounded-control border border-border bg-surface px-3 py-2 text-sm">The page is edited with JavaScript, which is off. The content is in Details, as raw data.</p>
 
     <div data-canvas-stage hidden class="relative flex min-h-0 flex-1">
@@ -71,3 +84,7 @@
 </div>
 
 <x-mainstay::link-dialog />
+
+@if ($pictures)
+    <x-mainstay::picker-dialog />
+@endif

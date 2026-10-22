@@ -18,6 +18,7 @@ use Mainstay\Mainstay as Registry;
 use Mainstay\Tests\Fixtures\Blocks\Gallery;
 use Mainstay\Tests\Fixtures\Blocks\Nested\Slide as NestedSlide;
 use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
+use Mainstay\Tests\Fixtures\Blocks\Quote;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
@@ -531,5 +532,31 @@ class RenderTest extends DatabaseTestCase
 
         /* Nobody signed in, nobody moves a page every visitor sees first. */
         $this->assertThrows(fn () => Mainstay::setFrontPage(Post::class, $id), AuthorizationException::class);
+    }
+
+    #[Test]
+    public function field_prints_a_blocks_text_escaped_and_for_the_editor_marked_as_its_items_field(): void
+    {
+        $quote = new Quote;
+        $quote->id = 'q1';
+        $quote->line = 'Fish & <chips>';
+        $quote->lines = null;
+        $view = "<h2>@field(\$quote, 'line')</h2><p>@field(\$quote, 'lines')</p>";
+
+        /* On the site, as {{ }} prints it; an empty one prints nothing. */
+        $this->assertSame('<h2>Fish &amp; &lt;chips&gt;</h2><p></p>', Blade::render($view, ['quote' => $quote]));
+
+        /* For the editor, marked with the item and the field, its label for
+           when it is empty, and whether its field keeps lines. */
+        $this->assertSame(
+            '<h2><span data-mainstay-field="line" data-mainstay-item="q1" data-mainstay-label="Line">Fish &amp; &lt;chips&gt;</span></h2>'
+            .'<p><span data-mainstay-field="lines" data-mainstay-item="q1" data-mainstay-label="Lines" data-mainstay-lines></span></p>',
+            app(Registry::class)->marked(fn () => Blade::render($view, ['quote' => $quote])),
+        );
+        $this->assertSame('<h2>Fish &amp; &lt;chips&gt;</h2><p></p>', Blade::render($view, ['quote' => $quote]), 'Marked only while drawn for the editor.');
+
+        /* Text alone: an image, or no field at all, is named. */
+        $this->assertThrows(fn () => app(Registry::class)->field($quote, 'picture'), InvalidArgumentException::class, Quote::class.'::$picture is an Image field');
+        $this->assertThrows(fn () => app(Registry::class)->field($quote, 'missing'), InvalidArgumentException::class, Quote::class.'::$missing is not a field');
     }
 }

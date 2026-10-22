@@ -8,6 +8,7 @@ use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -67,6 +68,9 @@ class MainstayServiceProvider extends ServiceProvider
         Auth::extend(Gate::VISITOR, fn ($app) => new RequestGuard(fn () => null, $app['request']));
 
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'mainstay');
+
+        /* A block view's text, typeable in the Content tab: see field(). */
+        Blade::directive('field', fn (string $expression) => "<?php echo app(\\Mainstay\\Mainstay::class)->field({$expression}); ?>");
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
         /*
