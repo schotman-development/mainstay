@@ -1,4 +1,4 @@
-import { Schema } from 'prosemirror-model'
+import { type Attrs, Schema } from 'prosemirror-model'
 
 /*
  | The closed node schema, and the one packages/cms/src/Content/Document.php
@@ -24,9 +24,11 @@ const levels = [1, 2, 3, 4, 5, 6]
 
 export const schema = new Schema({
   nodes: {
-    doc: { content: 'block+' },
+    // `flow` rather than ProseMirror's `block`, which the content schema
+    // below names its site block.
+    doc: { content: 'flow+' },
     paragraph: {
-      group: 'block',
+      group: 'flow',
       content: 'inline*',
       parseDOM: [{ tag: 'p' }],
       toDOM: () => ['p', 0],
@@ -34,7 +36,7 @@ export const schema = new Schema({
     // Every level: a page whose view leaves the title out takes its h1 from
     // the text.
     heading: {
-      group: 'block',
+      group: 'flow',
       content: 'inline*',
       defining: true,
       attrs: {
@@ -49,14 +51,14 @@ export const schema = new Schema({
       toDOM: (node) => [`h${node.attrs.level}`, 0],
     },
     blockquote: {
-      group: 'block',
-      content: 'block+',
+      group: 'flow',
+      content: 'flow+',
       defining: true,
       parseDOM: [{ tag: 'blockquote' }],
       toDOM: () => ['blockquote', 0],
     },
     code_block: {
-      group: 'block',
+      group: 'flow',
       content: 'text*',
       marks: '',
       code: true,
@@ -65,13 +67,13 @@ export const schema = new Schema({
       toDOM: () => ['pre', ['code', 0]],
     },
     bullet_list: {
-      group: 'block',
+      group: 'flow',
       content: 'list_item+',
       parseDOM: [{ tag: 'ul' }],
       toDOM: () => ['ul', 0],
     },
     ordered_list: {
-      group: 'block',
+      group: 'flow',
       content: 'list_item+',
       attrs: {
         order: {
@@ -95,13 +97,13 @@ export const schema = new Schema({
       toDOM: (node) => (node.attrs.order === 1 ? ['ol', 0] : ['ol', { start: node.attrs.order }, 0]),
     },
     list_item: {
-      content: 'paragraph block*',
+      content: 'paragraph flow*',
       defining: true,
       parseDOM: [{ tag: 'li' }],
       toDOM: () => ['li', 0],
     },
     horizontal_rule: {
-      group: 'block',
+      group: 'flow',
       parseDOM: [{ tag: 'hr' }],
       toDOM: () => ['hr'],
     },
@@ -142,4 +144,33 @@ export const schema = new Schema({
       toDOM: () => ['code', 0],
     },
   },
+})
+
+/*
+ | A page's content: the same text, and at its top level the site's blocks,
+ | which Content.php holds as `{type: 'block', attrs: {id, type, data}}`. The
+ | editor draws one as the HTML the site's view drew; copied, it is an element
+ | carrying its attributes, which is what pasting it reads.
+ */
+const block = (value: unknown): Attrs | false => {
+  try {
+    const attrs = JSON.parse(String(value)) as Attrs | null
+
+    return typeof attrs?.type === 'string' ? attrs : false
+  } catch {
+    return false
+  }
+}
+
+type Nodes = typeof schema extends Schema<infer N> ? N : never
+type Marks = typeof schema extends Schema<string, infer M> ? M : never
+
+export const contentSchema = new Schema<Nodes | 'block', Marks>({
+  nodes: schema.spec.nodes.update('doc', { content: '(flow | block)+' }).addToEnd('block', {
+    atom: true,
+    attrs: { id: { default: null }, type: { validate: 'string' }, data: { default: {} } },
+    parseDOM: [{ tag: 'div[data-mainstay-block]', getAttrs: (dom) => block(dom.getAttribute('data-mainstay-block')) }],
+    toDOM: (node) => ['div', { 'data-mainstay-block': JSON.stringify(node.attrs) }],
+  }),
+  marks: schema.spec.marks,
 })

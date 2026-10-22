@@ -1,2 +1,3 @@
+export { canvas, canvases } from './canvas'
 export { editor, editors } from './editor'
-export { linkable, schema } from './schema'
+export { contentSchema, linkable, schema } from './schema'

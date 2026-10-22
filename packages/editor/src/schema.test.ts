@@ -1,7 +1,9 @@
 import { DOMParser, Node } from 'prosemirror-model'
 import { expect, test } from 'vitest'
+import html from '../../cms/tests/Fixtures/document.html?raw'
 import document from '../../cms/tests/Fixtures/document.json'
-import { schema } from './schema'
+import { render } from './canvas'
+import { contentSchema, schema } from './schema'
 
 const load = (json: unknown) => Node.fromJSON(schema, json).check()
 
@@ -12,6 +14,17 @@ test('opens the document the PHP renderer draws', () => {
 
   expect(() => doc.check()).not.toThrow()
   expect(doc.toJSON()).toEqual(document)
+})
+
+// The HTML the PHP renderer draws from it, which the Content tab draws too,
+// both read back through the DOM: they escape differently, and mean the same.
+test('draws the fixture as the PHP renderer does', () => {
+  const read = (markup: string) => Object.assign(window.document.createElement('template'), { innerHTML: markup }).innerHTML
+  const drawn = window.document.createElement('div')
+
+  drawn.append(render(Node.fromJSON(contentSchema, document), new Map(), window.document))
+
+  expect(drawn.innerHTML).toBe(read(html.trimEnd()))
 })
 
 test('refuses what Document::problem() refuses', () => {
