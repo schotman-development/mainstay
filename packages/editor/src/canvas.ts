@@ -16,42 +16,67 @@ import { contentSchema } from './schema'
  | canvas route and writes the page it answers into the frame. The editor
  | mounts on the element the content's script sits in, and every change goes
  | into Details' raw content, the field's one input. Every control is outside
- | the frame, where canvas.blade.php draws it: the toolbar, the menu of blocks
- | to add, the grip a block is dragged by, and the sidebar a selected site
- | block's fields are in, which the server draws. A block's @field text is
- | typed in place. No script runs in the frame; this one, around it, cancels
- | its links.
+ | the frame, where canvas.blade.php draws it: the toolbar floating by the
+ | current block, which drags it too; Undo, Redo and Add block in the tabs'
+ | bar; the menu of blocks to add; and the dialog a selected site block's
+ | settings are in, which the server draws. A block's @field text is typed in
+ | place, the blocks inside one are selected on the page, and an image it
+ | prints is replaced and edited there. No script runs in the frame; this
+ | one, around it, cancels its links.
  */
 
 const { nodes } = contentSchema
 const { tools, keys } = kit(contentSchema)
 
-type Current = { node: Node; pos: number; index: number }
+/* A block, where it is, and what holds it: the document, or the site block
+   it is inside, at `depth`. */
+type Current = { node: Node; pos: number; index: number; parent: Node; depth: number }
 
 const at = (doc: Node, index: number) => doc.resolve(0).posAtIndex(index)
 
-/* The top-level block the selection starts in: the one the block commands
-   act on, outlined in the page and lined up with the grip. */
+/* The block the block commands act on, outlined in the page, the toolbar
+   floating by it: a site block selected, at any depth, or else the
+   top-level block the selection starts in. */
 function current(state: EditorState): Current {
-  const index = Math.min(state.selection.$from.index(0), state.doc.childCount - 1)
+  const { selection } = state
 
-  return { index, pos: at(state.doc, index), node: state.doc.child(index) }
+  if (selection instanceof NodeSelection && selection.node.type === nodes.block) {
+    const { $from } = selection
+
+    return { node: selection.node, pos: selection.from, index: $from.index(), parent: $from.parent, depth: $from.depth }
+  }
+
+  const index = Math.min(selection.$from.index(0), state.doc.childCount - 1)
+
+  return { index, pos: at(state.doc, index), node: state.doc.child(index), parent: state.doc, depth: 0 }
 }
+
+/* Every site block in `doc`, the ones inside another too, in its order. */
+const blocks = (doc: Node, each: (node: Node, pos: number) => void): void =>
+  doc.descendants((node, pos) => {
+    if (node.type !== nodes.block) return false
+
+    each(node, pos)
+  })
+
+/* Whether the selection is on a site block inside another, where text has
+   no place to go. */
+const nested = (state: EditorState): boolean => state.selection instanceof NodeSelection && state.selection.$from.depth > 0
 
 /* Where the selection goes in the block at `pos`: onto it when it is a site
    block or a rule, into its first text otherwise. */
 const into = (doc: Node, pos: number): Selection => (doc.nodeAt(pos)?.isAtom ? NodeSelection.create(doc, pos) : Selection.near(doc.resolve(pos + 1)))
 
-/* The block at `index` moved to before the one at `to`, in one step undo
-   takes back, the selection going with it; null where it would stay. */
-function moved(state: EditorState, index: number, to: number): Transaction | null {
+/* The block moved to before the one at `to` in what holds it, in one step
+   undo takes back, the selection going with it; null where it would stay. */
+function moved(state: EditorState, block: Current, to: number): Transaction | null {
+  const { index, node, pos: from } = block
+
   if (to === index || to === index + 1) return null
 
   const { doc, selection } = state
-  const node = doc.child(index)
-  const from = at(doc, index)
   const tr = state.tr.delete(from, from + node.nodeSize)
-  const pos = tr.mapping.map(at(doc, to))
+  const pos = tr.mapping.map(doc.resolve(from).posAtIndex(to))
   const shift = (old: number) => pos + old - from
 
   tr.insert(pos, node)
@@ -70,9 +95,9 @@ function moved(state: EditorState, index: number, to: number): Transaction | nul
 const move =
   (by: -1 | 1): Command =>
   (state, dispatch) => {
-    const { index } = current(state)
-    const to = by < 0 ? index - 1 : index + 2
-    const tr = to < 0 || to > state.doc.childCount ? null : moved(state, index, to)
+    const block = current(state)
+    const to = by < 0 ? block.index - 1 : block.index + 2
+    const tr = to < 0 || to > block.parent.childCount ? null : moved(state, block, to)
 
     if (tr) dispatch?.(tr)
 
@@ -90,16 +115,20 @@ const duplicate: Command = (state, dispatch) => {
 }
 
 /* The last block goes too, an empty paragraph in its place, as a content
-   holds one block at least. */
+   holds one block at least. The last one inside a site block leaves it
+   empty, and selected. */
 const remove: Command = (state, dispatch) => {
-  const { node, pos, index } = current(state)
+  const { node, pos, index, depth } = current(state)
+  const last = depth === 0 && state.doc.childCount === 1
 
-  if (state.doc.childCount === 1 && node.type === nodes.paragraph && node.content.size === 0) return false
+  if (last && node.type === nodes.paragraph && node.content.size === 0) return false
 
   if (dispatch) {
-    const tr = state.doc.childCount === 1 ? state.tr.replaceWith(pos, pos + node.nodeSize, nodes.paragraph.create()) : state.tr.delete(pos, pos + node.nodeSize)
+    const tr = last ? state.tr.replaceWith(pos, pos + node.nodeSize, nodes.paragraph.create()) : state.tr.delete(pos, pos + node.nodeSize)
+    const $pos = tr.doc.resolve(pos)
+    const left = $pos.parent.childCount
 
-    dispatch(tr.setSelection(into(tr.doc, at(tr.doc, Math.min(index, tr.doc.childCount - 1)))).scrollIntoView())
+    dispatch(tr.setSelection(left === 0 ? NodeSelection.create(tr.doc, $pos.before()) : into(tr.doc, $pos.posAtIndex(Math.min(index, left - 1)))).scrollIntoView())
   }
 
   return true
@@ -109,7 +138,7 @@ const kinds = ['paragraph', 'heading', 'blockquote', 'code_block', 'bullet_list'
 const wrappers = [nodes.blockquote, nodes.bullet_list, nodes.ordered_list]
 
 /* What the current block is, as Turn into names it: '' for a site block or a
-   rule, which turn into nothing. */
+   rule, which turn into nothing and have no text tools. */
 function kind(state: EditorState): string {
   const { node } = current(state)
 
@@ -168,24 +197,25 @@ const turn =
   }
 
 /* A new block of a kind the Add block menu names, or `block:{handle}`, a
-   site block of that type with no id yet. */
-function made(kind: string): Node | null {
-  if (kind.startsWith('block:')) return nodes.block.create({ type: kind.slice(6) })
+   site block of that type with no id yet -- holding one of `inner`, the
+   first kind it holds, where it holds any. */
+function made(kind: string, inner?: string): Node | null {
+  if (kind.startsWith('block:')) return nodes.block.create({ type: kind.slice(6) }, inner === undefined ? null : nodes.block.create({ type: inner }))
 
   return kinds.includes(kind) ? (nodes[kind]?.createAndFill() ?? null) : null
 }
 
-/* A block added after the current one, or in its place when that is an
-   empty paragraph -- where `/` opens the menu. */
+/* A block added after the current one, in what holds it, or in its place
+   when that is an empty paragraph -- where `/` opens the menu. */
 const insert =
-  (kind: string): Command =>
+  (kind: string, inner?: string): Command =>
   (state, dispatch) => {
-    const block = made(kind)
+    const block = made(kind, inner)
+    const { node, pos, index, parent } = current(state)
 
-    if (!block) return false
+    if (!block || !parent.canReplaceWith(index + 1, index + 1, block.type)) return false
 
     if (dispatch) {
-      const { node, pos } = current(state)
       const empty = node.type === nodes.paragraph && node.content.size === 0
       const place = empty ? pos : pos + node.nodeSize
       const tr = state.tr.replaceWith(place, empty ? pos + node.nodeSize : place, block)
@@ -196,10 +226,28 @@ const insert =
     return true
   }
 
-/* Enter on a selected site block or rule starts a paragraph after it. */
+/* A block of `kind` added last inside the site block at `pos`, which stays
+   selected. */
+const append =
+  (pos: number, kind: string, inner?: string): Command =>
+  (state, dispatch) => {
+    const holder = state.doc.nodeAt(pos)
+    const block = made(`block:${kind}`, inner)
+
+    if (!holder || !block) return false
+
+    dispatch?.(state.tr.insert(pos + holder.nodeSize - 1, block).scrollIntoView())
+
+    return true
+  }
+
+/* Enter on a selected site block or rule starts a paragraph after it; on
+   one inside another, where a paragraph has no place, it does nothing --
+   ProseMirror's own would split the block around it in two. */
 const after: Command = (state, dispatch) => {
   const { selection } = state
 
+  if (nested(state)) return true
   if (!(selection instanceof NodeSelection) || selection.$from.depth !== 0) return false
 
   const tr = state.tr.insert(selection.to, nodes.paragraph.create())
@@ -249,10 +297,11 @@ const emptied: Command = (state, dispatch) => {
 const random = () => Array.from(crypto.getRandomValues(new Uint8Array(13)), (byte) => byte.toString(16).padStart(2, '0')).join('')
 
 /*
- | Every site block its own id, as Content.php's distinct rule asks: one added
- | without, and the second of two -- a duplicate, a paste -- given one, which
- | draws the HTML the first one drew, its @field text marked as its own. The
- | block that was there keeps its own, so a paste before it does not take it.
+ | Every site block its own id, as Content.php's distinct rule asks, the ones
+ | inside another too: one added without, and the second of two -- a
+ | duplicate, a paste -- given one, which draws the HTML the first one drew,
+ | its @field text and images marked as its own. The block that was there
+ | keeps its own, so a paste before it does not take it.
  */
 function ids(html: Map<string, string>): Plugin {
   return new Plugin({
@@ -263,19 +312,19 @@ function ids(html: Map<string, string>): Plugin {
       const holders = new Map<string, number>()
       const { tr } = state
 
-      old.doc.forEach((node) => there.add(node))
-      state.doc.forEach((node, offset) => {
-        if (node.type === nodes.block && node.attrs.id && there.has(node) && !holders.has(node.attrs.id)) holders.set(node.attrs.id, offset)
+      blocks(old.doc, (node) => there.add(node))
+      blocks(state.doc, (node, pos) => {
+        if (node.attrs.id && there.has(node) && !holders.has(node.attrs.id)) holders.set(node.attrs.id, pos)
       })
-      state.doc.forEach((node, offset) => {
+      blocks(state.doc, (node, pos) => {
         const id: string | null = node.attrs.id || null
 
-        if (node.type !== nodes.block || (id !== null && (holders.get(id) ?? holders.set(id, offset).get(id)) === offset)) return
+        if (id !== null && (holders.get(id) ?? holders.set(id, pos).get(id)) === pos) return
 
         const given = random()
 
         if (id !== null && html.has(id)) html.set(given, html.get(id)!.replaceAll(`data-mainstay-item="${id}"`, `data-mainstay-item="${given}"`))
-        tr.setNodeAttribute(offset, 'id', given)
+        tr.setNodeAttribute(pos, 'id', given)
       })
 
       return tr.docChanged ? tr : null
@@ -284,36 +333,6 @@ function ids(html: Map<string, string>): Plugin {
 }
 
 type Data = Record<string, unknown>
-
-/* The data of the item `id` names in a site block's -- the block itself, or
-   an item of a list inside it, at any depth -- or undefined. */
-function itemOf(data: Data, block: string, id: string): Data | undefined {
-  if (id === block) return data
-
-  for (const list of Object.values(data)) {
-    for (const each of Array.isArray(list) ? (list as unknown[]) : []) {
-      const nested = each as { id?: unknown; data?: unknown } | null
-
-      if (nested && typeof nested.data === 'object' && nested.data !== null) {
-        const found = itemOf(nested.data as Data, String(nested.id), id)
-
-        if (found) return found
-      }
-    }
-  }
-
-  return undefined
-}
-
-/* A block's data with the field `field` of the item `id` holding `value`. */
-function edited(data: Data, block: string, id: string, field: string, value: string): Data {
-  const copy = structuredClone(data)
-  const item = itemOf(copy, block, id)
-
-  if (item) item[field] = value
-
-  return copy
-}
 
 /* Data as JSON, each object's keys in order: the server answers a block's
    data in an order of its own. */
@@ -329,17 +348,24 @@ const said = (span: HTMLElement): string => {
 }
 
 /* What the admin adds to the page: ProseMirror's own, the current block's
-   outline, a refused block's mark, the placeholder of a block that draws
-   nothing, and @field text, showing its field's label while it is empty. */
+   outline -- inside a block inside another, which the blocks beside it
+   would cover, and as on any block where it is a list item, which
+   ProseMirror's own marks as one -- a refused block's mark, the placeholder of a block that
+   draws nothing, @field text, showing its field's label while it is empty,
+   and a block's image, which is clicked to be replaced or edited. */
 const css = `${prosemirror}
 .ProseMirror { outline: none }
 .mainstay-current { outline: 1px dashed rgb(37 99 235 / 0.6); outline-offset: 4px }
 .mainstay-invalid { outline: 2px solid rgb(220 38 38); outline-offset: 4px }
 .ProseMirror-selectednode { outline: 2px solid rgb(37 99 235); outline-offset: 4px }
+[data-mainstay-holds] > :is(.mainstay-current, .mainstay-invalid, .ProseMirror-selectednode) { outline-offset: -2px }
+[data-mainstay-holds] > li.ProseMirror-selectednode { outline: 2px solid rgb(37 99 235) }
+[data-mainstay-holds] > li.ProseMirror-selectednode::after { content: none }
 [data-mainstay-placeholder] { padding: 1rem; border: 1px dashed #94a3b8; border-radius: 4px; color: #475569; font: 14px/1.4 system-ui, sans-serif; text-align: center }
 [data-mainstay-field] { outline: none; cursor: text }
 [data-mainstay-field]:empty::before { content: attr(data-mainstay-label); opacity: 0.5 }
-[data-mainstay-lines] { white-space: pre-wrap }`
+[data-mainstay-lines] { white-space: pre-wrap }
+[data-mainstay-image] { cursor: pointer }`
 
 const commands: Record<string, Command> = {
   undo,
@@ -349,6 +375,7 @@ const commands: Record<string, Command> = {
   code: tools.code!.run,
   link: tools.link!.run,
   add: () => true,
+  settings: (state) => current(state).node.type === nodes.block,
   up: move(-1),
   down: move(1),
   duplicate,
@@ -365,35 +392,52 @@ const parse = (html: string, page: Document): DocumentFragment => {
 
 /* The content as the site draws it, for a page the editor cannot mount on:
    the text by the schema, which draws the tags Document.php renders, and
-   each site block as its view drew it. */
+   each site block as its view drew it, the blocks inside it in its place
+   for them. */
 export function render(doc: Node, html: Map<string, string>, page: Document): DocumentFragment {
   const serializer = DOMSerializer.fromSchema(contentSchema)
   const fragment = page.createDocumentFragment()
+  const drawn = (node: Node): DocumentFragment => {
+    const markup = parse(html.get(node.attrs.id) ?? '', page)
+    const inner = page.createDocumentFragment()
 
-  doc.forEach((node) => fragment.append(node.type === nodes.block ? parse(html.get(node.attrs.id) ?? '', page) : serializer.serializeNode(node, { document: page })))
+    node.forEach((child) => inner.append(drawn(child)))
+    markup.querySelector('template[data-mainstay-inner]')?.replaceWith(inner)
+
+    return markup
+  }
+
+  doc.forEach((node) => fragment.append(node.type === nodes.block ? drawn(node) : serializer.serializeNode(node, { document: page })))
 
   return fragment
 }
 
-/* Where a block dragged to `y` in the frame lands: before the first block
-   whose middle is below it, or last; and the line drawn there. */
-function landing(view: EditorView, y: number): { index: number; y: number } {
-  const { doc } = view.state
-  let pos = 0
-  let bottom = 0
+type Line = { top: number; left: number; width: number; height: number }
 
-  for (let index = 0; index < doc.childCount; index++) {
-    const rect = (view.nodeDOM(pos) as Element | null)?.getBoundingClientRect()
+/*
+ | Where a block dragged to (`x`, `y`) in the frame lands among the blocks
+ | beside it, in what holds it: before the first one the point is before, or
+ | last; and the line drawn there. Blocks one under another are passed by
+ | their middle across; blocks side by side, as a grid's are, by their
+ | middle down, on their row.
+ */
+function landing(view: EditorView, block: Current, x: number, y: number): { index: number; line: Line } | null {
+  const $pos = view.state.doc.resolve(block.pos)
+  const rects = Array.from({ length: block.parent.childCount }, (_, index) => (view.nodeDOM($pos.posAtIndex(index)) as Element | null)?.getBoundingClientRect())
+  const row = rects.some((rect, index) => index > 0 && rect && rects[index - 1] && rect.top < rects[index - 1]!.bottom - 1)
+  let last: DOMRect | undefined
 
-    pos += doc.child(index).nodeSize
-
+  for (const [index, rect] of rects.entries()) {
     if (!rect) continue
-    if (y < rect.top + rect.height / 2) return { index, y: rect.top }
 
-    bottom = rect.bottom
+    const before = row ? y < rect.top || (y <= rect.bottom && x < rect.left + rect.width / 2) : y < rect.top + rect.height / 2
+
+    if (before) return { index, line: row ? { top: rect.top, left: rect.left - 2, width: 2, height: rect.height } : { top: rect.top - 1, left: rect.left, width: rect.width, height: 2 } }
+
+    last = rect
   }
 
-  return { index: doc.childCount, y: bottom }
+  return last ? { index: rects.length, line: row ? { top: last.top, left: last.right, width: 2, height: last.height } : { top: last.bottom - 1, left: last.left, width: last.width, height: 2 } } : null
 }
 
 const wired = new WeakMap<HTMLElement, () => EditorView | null>()
@@ -401,14 +445,19 @@ const wired = new WeakMap<HTMLElement, () => EditorView | null>()
 /* What the block route answers: as much of it as it could draw. */
 type Answer = { block?: { id: string; type: string; data: Data }; html?: string; form?: string | null; messages?: string[] }
 
+/* A block the content holds: its name, and the blocks it holds inside it. */
+type Kind = { label: string; inner: string[] }
+
 /*
  | Wires one `[data-canvas]`, once, handing back what gives the editor on its
  | page, while there is one: a second call, the first one's. `wire` gives the
- | admin's behaviour to what the server draws into a block's sidebar.
+ | admin's behaviour to what the server draws into a block's settings and
+ | the image dialog.
  */
 export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void = () => {}): (() => EditorView | null) | undefined {
   const form = element.closest('form')
   const textarea = form?.querySelector<HTMLTextAreaElement>('textarea[name="content"]')
+  const header = document.getElementById(element.dataset.header ?? '')
   const toolbar = element.querySelector<HTMLElement>('[data-canvas-toolbar]')
   const message = element.querySelector<HTMLElement>('[data-canvas-message]')
   const stage = element.querySelector<HTMLElement>('[data-canvas-stage]')
@@ -416,18 +465,28 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
   const grip = element.querySelector<HTMLElement>('[data-canvas-grip]')
   const line = element.querySelector<HTMLElement>('[data-canvas-line]')
   const menu = element.querySelector<HTMLElement>('[data-canvas-menu]')
-  const add = toolbar?.querySelector<HTMLButtonElement>('button[data-command="add"]')
+  const add = header?.querySelector<HTMLButtonElement>('button[data-command="add"]')
   const turner = toolbar?.querySelector<HTMLSelectElement>('select[data-command="turn"]')
+  const texts = toolbar?.querySelector<HTMLElement>('[data-canvas-text]')
+  const images = toolbar?.querySelector<HTMLElement>('[data-canvas-image]')
+  const gear = toolbar?.querySelector<HTMLElement>('button[data-command="settings"]')
   const url = element.dataset.canvasUrl
   const blocked = element.dataset.blockUrl
   const sidebar = blocked ? (document.getElementById(element.dataset.sidebar ?? '') as HTMLFormElement | null) : null
+  const settings = sidebar?.closest('dialog')
   const body = sidebar?.querySelector<HTMLElement>('[data-sidebar-body]')
   const told = sidebar?.querySelector<HTMLElement>('[data-sidebar-messages]')
+  const title = sidebar?.querySelector<HTMLElement>('[data-sidebar-title]')
+  const inside = sidebar?.querySelector<HTMLElement>('[data-sidebar-inner]')
+  const photo = element.dataset.media ? (document.getElementById('mainstay-image') as HTMLDialogElement | null) : null
+  const photoBody = photo?.querySelector<HTMLElement>('[data-image-body]')
 
   if (wired.has(element)) return wired.get(element)
-  if (!form || !textarea || !toolbar || !message || !stage || !frame || !grip || !line || !menu || !add || !turner || !url) return undefined
+  if (!form || !textarea || !header || !toolbar || !message || !stage || !frame || !grip || !line || !menu || !add || !turner || !texts || !images || !url) return undefined
 
-  const labels = JSON.parse(element.dataset.blocks ?? '{}') as Record<string, string>
+  const known = JSON.parse(element.dataset.blocks ?? '{}') as Record<string, Kind>
+  const outermost = JSON.parse(element.dataset.top ?? '[]') as string[]
+  const label = (type: string) => known[type]?.label ?? type
   /* A refused save's errors, by the block they are in: marked until it changes. */
   const invalid = JSON.parse(element.dataset.invalid ?? '{}') as Record<string, { label: string; messages: Record<string, string[]> }>
   const panel = element.closest<HTMLElement>('[role="tabpanel"]')
@@ -448,9 +507,12 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
   let written: string | null = null
   let posted: string | null = null
   let asked = 0
-  let dragging: number | null = null
+  let dragging: Current | null = null
   let slashed = false
-  /* The block the sidebar is for, the last time it was asked for, and
+  /* The toolbar keeps out of the way until the page is pointed at, and
+     while it is typed in, as Gutenberg's does. */
+  let quiet = true
+  /* The block the settings are for, the last time they were asked for, and
      the change waiting to be posted. */
   let selected: string | null = null
   let looked = 0
@@ -459,6 +521,10 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
      the one a change still to be answered was typed in. */
   let typing = 0
   let typed: string | undefined
+  /* The image pointed at last, by its block and its field, and the block
+     whose image the image dialog has open. */
+  let pictured: { item: string; field: string } | null = null
+  let editing: string | null = null
 
   const say = (text: string | null) => {
     message.textContent = text ?? ''
@@ -467,37 +533,85 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
   const snapshot = () => JSON.stringify([...new FormData(form)].map(([name, value]) => [name, typeof value === 'string' ? value : value.name]))
 
-  /* The grip beside the current block, while that is in view; left where it
-     is during a drag, which hiding the grip would end. */
+  /* The block `id` names in the editor's document, and where. */
+  const find = (id: string): { node: Node; pos: number } | null => {
+    let found: { node: Node; pos: number } | null = null
+
+    if (view) {
+      blocks(view.state.doc, (node, pos) => {
+        if (!found && node.attrs.id === id) found = { node, pos }
+      })
+    }
+
+    return found
+  }
+
+  /* What the site blocks around `pos` hold, outermost first: what the
+     block route draws one inside another in. */
+  const ancestry = (pos: number): unknown[] => {
+    const $pos = view!.state.doc.resolve(pos)
+
+    return Array.from({ length: $pos.depth }, (_, depth) => $pos.node(depth + 1).attrs)
+  }
+
+  /* The image the toolbar replaces and edits: in the selected block, the one
+     pointed at last, or its first. */
+  const image = (): { field: string; media: unknown } | null => {
+    const at = selected === null ? null : find(selected)
+    const dom = at && view ? (view.nodeDOM(at.pos) as HTMLElement | null) : null
+    const own = (dom ? [dom, ...dom.querySelectorAll<HTMLElement>('[data-mainstay-image]')] : [])
+      .filter((each) => each.matches('[data-mainstay-image]') && each.dataset.mainstayItem === selected)
+      .map((each) => each.dataset.mainstayImage ?? '')
+    const field = pictured?.item === selected && own.includes(pictured.field) ? pictured.field : own[0]
+
+    return at && field !== undefined ? { field, media: (at.node.attrs.data as Data)[field] } : null
+  }
+
+  /* The toolbar by the current block, over the frame: above it, kept at the
+     top while the block runs on under it, and gone with the block out of
+     view. Left where it is during a drag, which hiding the grip would end. */
   const place = () => {
     if (dragging !== null) return
 
-    const dom = view ? (view.nodeDOM(current(view.state).pos) as Element | null) : null
-    const top = dom?.getBoundingClientRect().top ?? -1
+    const dom = view && !quiet ? (view.nodeDOM(current(view.state).pos) as Element | null) : null
+    const rect = dom?.getBoundingClientRect()
 
-    grip.hidden = top < 0 || top > frame.clientHeight
-    grip.style.top = `${top}px`
+    toolbar.hidden = !rect || rect.bottom <= 0 || rect.top >= frame.clientHeight
+    if (!rect || toolbar.hidden) return
+
+    toolbar.style.top = `${Math.min(Math.max(0, rect.top - toolbar.offsetHeight - 6), rect.bottom - toolbar.offsetHeight)}px`
+    toolbar.style.left = `${Math.max(0, Math.min(rect.left, frame.clientWidth - toolbar.offsetWidth))}px`
+  }
+
+  /* The toolbar back once the page is pointed at again. */
+  const wake = () => {
+    if (!quiet) return
+
+    quiet = false
+    place()
   }
 
   const sync = () => {
-    toolbar.hidden = view === null
+    header.hidden = view === null || panel?.hidden === true
 
     if (!view) {
-      grip.hidden = true
+      toolbar.hidden = true
 
       return
     }
 
-    for (const button of toolbar.querySelectorAll<HTMLButtonElement>('button[data-command]')) {
+    for (const button of [...header.querySelectorAll<HTMLButtonElement>('button[data-command]'), ...toolbar.querySelectorAll<HTMLButtonElement>('button[data-command]')]) {
       const name = button.dataset.command ?? ''
       const active = tools[name]?.active
 
-      button.disabled = !commands[name]?.(view.state)
+      if (commands[name]) button.disabled = !commands[name](view.state)
       if (active) button.setAttribute('aria-pressed', String(active(view.state)))
     }
 
     turner.value = kind(view.state)
-    turner.disabled = turner.value === ''
+    turner.disabled = texts.hidden = turner.value === ''
+    images.hidden = !photo || image() === null
+    if (gear) gear.hidden = !sidebar || !commands.settings!(view.state)
     place()
   }
 
@@ -507,16 +621,34 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     place()
   }
 
-  const items = () => [...menu.querySelectorAll<HTMLButtonElement>('[data-insert]')]
+  const items = () => [...menu.querySelectorAll<HTMLButtonElement>('[data-insert]')].filter((item) => !item.hidden)
 
-  /* The Add block menu at a point on the admin's page. */
+  /* The menu's items for where the current block is: inside a site block,
+     the blocks that one holds; at the top, text and the blocks the content
+     holds there. */
+  const offer = () => {
+    const block = view ? current(view.state) : null
+    const holder: string | null = block && block.depth > 0 ? block.parent.attrs.type : null
+    const allowed = holder === null ? outermost : (known[holder]?.inner ?? [])
+
+    for (const item of menu.querySelectorAll<HTMLButtonElement>('[data-insert]')) {
+      const kind = item.dataset.insert ?? ''
+
+      item.hidden = kind.startsWith('block:') ? !allowed.includes(kind.slice(6)) : holder !== null
+    }
+
+    for (const group of menu.querySelectorAll<HTMLElement>('[data-menu-group]')) group.hidden = group.querySelector('[data-insert]:not([hidden])') === null
+  }
+
+  /* The Add block menu at a point on the admin's page, kept inside the tab. */
   const open = (top: number, left: number, slash: boolean) => {
     const box = element.getBoundingClientRect()
 
+    offer()
     slashed = slash
-    menu.style.top = `${top - box.top}px`
-    menu.style.left = `${left - box.left}px`
     menu.hidden = false
+    menu.style.top = `${top - box.top}px`
+    menu.style.left = `${Math.max(0, Math.min(left - box.left, box.width - menu.offsetWidth))}px`
     add.setAttribute('aria-expanded', 'true')
     items()[0]?.focus()
   }
@@ -551,10 +683,9 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
         const { node, pos } = current(state)
         const found = [Decoration.node(pos, pos + node.nodeSize, { class: 'mainstay-current' })]
 
-        state.doc.forEach((child, offset) => {
+        blocks(state.doc, (child, offset) => {
           const attrs: DecorationAttrs = {}
 
-          if (child.type !== nodes.block) return
           if (invalid[child.attrs.id]) attrs.class = 'mainstay-invalid'
           if (versions.has(child.attrs.id)) attrs['data-mainstay-drawn'] = String(versions.get(child.attrs.id))
           if (Object.keys(attrs).length > 0) found.push(Decoration.node(offset, offset + child.nodeSize, attrs))
@@ -562,6 +693,20 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
         return DecorationSet.create(state.doc, found)
       },
+      /* A click selects the innermost site block under it, as the one
+         around it would be selected otherwise. */
+      handleClickOn(view, _, node, pos) {
+        if (node.type !== nodes.block) return false
+
+        view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, pos)))
+
+        return true
+      },
+      /* Text typed or pasted over a site block inside another has no place
+         there: ProseMirror's own would split the block around it in two. A
+         copied block goes in. */
+      handleTextInput: (view) => nested(view.state),
+      handlePaste: (view, _, slice) => nested(view.state) && !slice.content.content.every((node) => node.type === nodes.block),
     },
   })
 
@@ -569,7 +714,9 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
    | A site block as its view drew it, an island the editor does not edit: the
    | element itself where the HTML is one, so the page's own CSS spaces it, and
    | wrapped where it is more. Drawing nothing -- or nothing yet, added since
-   | the page was drawn -- it is a placeholder naming it. Its @field text is
+   | the page was drawn -- it is a placeholder naming it. The element its
+   | @inner() marked holds the blocks inside it, each drawn as its own island,
+   | and nothing else. None of it is editable but its @field text, which is
    | typed in place, the events in it the admin's alone, and says what the
    | block's data does, whoever changed it.
    */
@@ -579,32 +726,36 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     const version = versions.get(id) ?? 0
     const drawn = parse(html.get(id) ?? '', page)
     const only = drawn.firstElementChild
-    const alone = only !== null && [...drawn.childNodes].every((child) => child === only || (child.nodeType !== 1 && (child.textContent ?? '').trim() === ''))
+    const alone = only !== null && !only.matches('template') && [...drawn.childNodes].every((child) => child === only || (child.nodeType !== 1 && (child.textContent ?? '').trim() === ''))
     let dom = only as HTMLElement | null
 
     if ((html.get(id) ?? '').trim() === '') {
-      dom = Object.assign(page.createElement('div'), { textContent: labels[node.attrs.type] ?? node.attrs.type })
+      dom = Object.assign(page.createElement('div'), { textContent: label(node.attrs.type) })
       dom.setAttribute('data-mainstay-placeholder', '')
     } else if (!alone) {
       dom = page.createElement('div')
       dom.append(drawn)
     }
 
-    const spans = [...dom!.querySelectorAll<HTMLElement>('[data-mainstay-field]')]
+    const contentDOM = dom!.querySelector('template[data-mainstay-inner]')?.parentElement ?? undefined
+    const spans = [...dom!.querySelectorAll<HTMLElement>('[data-mainstay-field]')].filter((span) => span.dataset.mainstayItem === id)
     const fill = (data: Data) => {
       for (const span of spans) {
-        const item = itemOf(data, id, span.dataset.mainstayItem ?? '')
-        const text = String(item?.[span.dataset.mainstayField ?? ''] ?? '')
+        const text = String(data[span.dataset.mainstayField ?? ''] ?? '')
 
-        if (item && said(span) !== text) span.textContent = text
+        if (said(span) !== text) span.textContent = text
       }
     }
 
+    contentDOM?.replaceChildren()
+    contentDOM?.setAttribute('data-mainstay-holds', '')
+    dom!.setAttribute('contenteditable', 'false')
     for (const span of spans) span.setAttribute('contenteditable', 'plaintext-only')
     fill(node.attrs.data)
 
     return {
       dom: dom!,
+      contentDOM,
       update: (next) => {
         if (next.type !== node.type || next.attrs.id !== id || (versions.get(id) ?? 0) !== version) return false
 
@@ -615,7 +766,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       stopEvent: (event) => (event.target as Element | null)?.closest?.('[data-mainstay-field]') != null,
       ignoreMutation: () => true,
       /* Not made draggable, as ProseMirror makes a selected node: a drag in
-         its text selects the text. The grip moves it. */
+         its text selects the text. The toolbar's grip moves it. */
       selectNode: () => dom!.classList.add('ProseMirror-selectednode'),
       deselectNode: () => dom!.classList.remove('ProseMirror-selectednode'),
     }
@@ -623,18 +774,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
   const plugins = [history(), keymap({ Enter: chainCommands(after, leave), Backspace: emptied, '/': slash }), keymap(keys), keymap(baseKeymap), ids(html), marks]
 
-  /* The block `id` names in the editor's document, and where. */
-  const find = (id: string): { node: Node; pos: number } | null => {
-    let found: { node: Node; pos: number } | null = null
-
-    view?.state.doc.forEach((node, pos) => {
-      if (node.type === nodes.block && node.attrs.id === id) found ??= { node, pos }
-    })
-
-    return found
-  }
-
-  /* A block's data as given, in one step of its own: the sidebar's, or
+  /* A block's data as given, in one step of its own: the settings', or
      `group`'s, a stretch of typing in place. */
   const store = (id: string, data: Data, group?: string) => {
     const at = find(id)
@@ -707,16 +847,57 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     }
   }
 
-  /* The sidebar's fields, as the server drew them for the block. */
+  /* The settings' fields, as the server drew them for the block. */
   const show = (markup: string) => {
     body!.innerHTML = markup
     wire(body!)
   }
 
+  /* The settings' name, and their list of the blocks inside the selected
+     one, each selected on the page from there; with `kinds`, a button
+     adding each kind it holds. */
+  const listed = (kinds = false) => {
+    const at = selected === null ? null : find(selected)
+    const holds = at ? (known[at.node.attrs.type]?.inner ?? []) : []
+    const list = inside?.querySelector<HTMLElement>('[data-sidebar-list]')
+    const adder = inside?.querySelector<HTMLElement>('[data-sidebar-add]')
+    const row = inside?.querySelector<HTMLTemplateElement>('template[data-sidebar-item]')
+    const button = inside?.querySelector<HTMLTemplateElement>('template[data-sidebar-adder]')
+
+    if (title) title.textContent = at ? label(at.node.attrs.type) : 'Block'
+    if (!inside || !list || !adder || !row || !button) return
+
+    inside.hidden = holds.length === 0
+    list.replaceChildren()
+    at?.node.forEach((child) => {
+      const item = row.content.cloneNode(true) as DocumentFragment
+      const select = item.querySelector<HTMLElement>('[data-inner-select]')!
+      const named = Object.values(child.attrs.data as Data).find((value) => typeof value === 'string' && value.trim() !== '')
+
+      select.dataset.innerSelect = child.attrs.id
+      select.textContent = named === undefined ? label(child.attrs.type) : `${label(child.attrs.type)}: ${String(named)}`
+      list.append(item)
+    })
+
+    if (!kinds) return
+
+    adder.replaceChildren(
+      ...holds.map((kind) => {
+        const each = (button.content.cloneNode(true) as DocumentFragment).firstElementChild as HTMLElement
+
+        each.dataset.innerAdd = kind
+        each.textContent = `Add ${label(kind).toLowerCase()}`
+
+        return each
+      }),
+    )
+  }
+
   /*
-   | A block as the document holds it, posted for its sidebar once it is
+   | A block as the document holds it, posted for its settings once it is
    | selected -- with a refused save's messages, while it is what was
-   | refused -- and for its HTML once an undo or a redo changed it.
+   | refused -- and for its HTML once an undo or a redo changed it, or its
+   | image did. Changed again before the answer, it is posted again.
    */
   const look = async (id: string): Promise<void> => {
     const at = find(id)
@@ -726,6 +907,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     if (!at) return
 
     data.set('block', JSON.stringify(at.node.attrs))
+    data.set('ancestors', JSON.stringify(ancestry(at.pos)))
     if (invalid[id]) data.set('errors', JSON.stringify(invalid[id].messages))
 
     const answer = await send(data)
@@ -734,17 +916,19 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     if (answer.html !== undefined && now?.node.attrs.data === at.node.attrs.data) redraw(id, answer.html)
     if (id !== selected || ask !== looked) return
 
+    /* Settings drawn from data typed over since would post it back. */
+    if (now && now.node.attrs.data !== at.node.attrs.data) return look(id)
+
     if (typeof answer.form === 'string') show(answer.form)
     tell(answer.form ? undefined : answer.messages)
   }
 
   /*
-   | The sidebar posted after one of its fields changed, `op` naming an item
-   | of a list in it to add, move or remove. Its answer is the block's data,
-   | each field through its own conversion, and its HTML, unless the block
-   | changed again since, whose change answers instead.
+   | The settings posted after one of its fields changed. Its answer is the
+   | block's data, each field through its own conversion, and its HTML,
+   | unless the block changed again since, whose change answers instead.
    */
-  const change = async (op?: HTMLElement): Promise<void> => {
+  const change = async (): Promise<void> => {
     clearTimeout(waiting)
     waiting = undefined
 
@@ -755,16 +939,11 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
     const data = new FormData(sidebar)
     const ask = (changes.get(id) ?? 0) + 1
-    /* The answer to typing is part of it; a list's control is a step of
-       its own. */
-    const group = op ? undefined : typed
+    /* The answer to typing is part of it. */
+    const group = typed
 
     typed = undefined
-
-    for (const [key, value] of Object.entries({ op: op?.dataset.blockOp, list: op?.dataset.list, index: op?.dataset.index, kind: op?.dataset.kind })) {
-      if (value !== undefined) data.set(key, value)
-    }
-
+    data.set('ancestors', JSON.stringify(ancestry(at.pos)))
     changes.set(id, ask)
 
     const answer = await send(data)
@@ -787,7 +966,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     waiting = setTimeout(() => void change(), 300)
   }
 
-  /* The sidebar opened for the block `id` names, or closed for none. A
+  /* The settings made for the block `id` names, or closed for none. A
      change still waiting is posted for the block it was made in. */
   const choose = (id: string | null) => {
     if (waiting !== undefined) void change()
@@ -795,38 +974,89 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     selected = id
     if (!sidebar || !body) return
 
-    sidebar.hidden = id === null || panel?.hidden === true
+    if (id === null) settings?.close()
     body.replaceChildren()
     tell(undefined)
+    listed(true)
     if (id !== null) void look(id)
   }
 
-  /* The site block whose element holds `inside`, and where. */
+  /* The innermost site block whose element holds `inside`, and where. */
   const holding = (inside: Element): { node: Node; pos: number } | null => {
     let found: { node: Node; pos: number } | null = null
 
-    view?.state.doc.forEach((node, pos) => {
-      if (node.type === nodes.block && (view!.nodeDOM(pos) as Element | null)?.contains(inside)) found ??= { node, pos }
-    })
+    if (view) {
+      blocks(view.state.doc, (node, pos) => {
+        if ((view!.nodeDOM(pos) as Element | null)?.contains(inside)) found = { node, pos }
+      })
+    }
 
     return found
   }
 
   /* A field of the selected block's set to `text`, typed in place or in its
-     sidebar: its data, and the other one of the two. */
-  const set = (item: string, field: string, text: string) => {
+     settings: its data, and the other one of the two. */
+  const set = (field: string, text: string) => {
     const at = selected === null ? null : find(selected)
 
     if (!at) return
 
     typed = `field-${typing}`
-    store(selected!, edited(at.node.attrs.data, selected!, item, field, text), typed)
+    store(selected!, { ...(at.node.attrs.data as Data), [field]: text }, typed)
 
-    for (const input of sidebar?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-mainstay-item], textarea[data-mainstay-item]') ?? []) {
-      if (input.dataset.mainstayItem === item && input.dataset.mainstayField === field && input.value !== text) input.value = text
+    for (const input of sidebar?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-mainstay-field], textarea[data-mainstay-field]') ?? []) {
+      if (input.dataset.mainstayItem === selected && input.dataset.mainstayField === field && input.value !== text) input.value = text
     }
 
     later()
+  }
+
+  /* The library's picker, for the image the toolbar is on: the one picked
+     goes into the block's data, in a step of its own, and the block is drawn
+     again with it. image-field.ts opens it. */
+  const pick = () => {
+    const shown = image()
+    const id = selected
+
+    if (!shown || id === null) return
+
+    const done = (media: string) => {
+      const at = find(id)
+
+      if (!at || !/^\d+$/.test(media)) return
+
+      store(id, { ...(at.node.attrs.data as Data), [shown.field]: Number(media) })
+      void look(id)
+    }
+
+    element.dispatchEvent(new CustomEvent('mainstay:pick', { bubbles: true, detail: { picker: element.dataset.picker, done } }))
+  }
+
+  /* The image's own form -- its alt text and focal point -- in the image
+     dialog, saved there, which draws its block again. */
+  const edit = async (): Promise<void> => {
+    const shown = image()
+
+    if (!shown || shown.media == null || !photo || !photoBody) return
+
+    editing = selected
+    photoBody.textContent = 'Loading the image…'
+    photo.showModal()
+
+    try {
+      const response = await fetch(`${element.dataset.media}/${String(shown.media)}?dialog=1`, { headers: { Accept: 'text/html' } })
+
+      if (!response.ok) {
+        photoBody.textContent = response.status === 403 ? 'This image is not open to you.' : 'The image could not be loaded.'
+
+        return
+      }
+
+      photoBody.innerHTML = await response.text()
+      wire(photoBody)
+    } catch {
+      photoBody.textContent = 'The image could not be reached. Try once more.'
+    }
   }
 
   /* What the selection is on, when it is a site block. */
@@ -836,13 +1066,13 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     const was = new Map<string, unknown>()
     const changed: string[] = []
 
-    this.state.doc.forEach((node) => node.type === nodes.block && was.set(node.attrs.id, node.attrs.data))
+    blocks(this.state.doc, (node) => was.set(node.attrs.id, node.attrs.data))
     state = this.state.apply(tr)
 
     /* A block changed is no longer what a refused save named; one an undo
        or a redo changed is drawn again. */
-    state.doc.forEach((node) => {
-      if (node.type !== nodes.block || !was.has(node.attrs.id) || was.get(node.attrs.id) === node.attrs.data) return
+    blocks(state.doc, (node) => {
+      if (!was.has(node.attrs.id) || was.get(node.attrs.id) === node.attrs.data) return
       if (invalid[node.attrs.id]) forgive(node.attrs.id)
       changed.push(node.attrs.id)
     })
@@ -858,12 +1088,18 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       posted = snapshot()
 
       /* A site block the page has not drawn -- added, or pasted from another
-         entry -- is drawn by drawing the page again. */
-      state.doc.forEach((node) => (missing ||= node.type === nodes.block && !html.has(node.attrs.id)))
+         entry -- is drawn by drawing the page again, once. */
+      blocks(state.doc, (node) => {
+        if (html.has(node.attrs.id)) return
+
+        missing = true
+        html.set(node.attrs.id, '')
+      })
       if (missing) void draw()
     }
 
     if (chosen(state) !== selected) choose(chosen(state))
+    else if (tr.docChanged) listed()
     sync()
   }
 
@@ -900,8 +1136,8 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     }
 
     /* Drawn now, a block the page left out draws nothing. */
-    state.doc.forEach((node) => {
-      if (node.type === nodes.block && !html.has(node.attrs.id)) html.set(node.attrs.id, '')
+    blocks(state.doc, (node) => {
+      if (!html.has(node.attrs.id)) html.set(node.attrs.id, '')
     })
 
     const parent = script.parentElement!
@@ -927,8 +1163,22 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
     page.addEventListener('click', cancel, true)
     page.addEventListener('auxclick', cancel, true)
-    page.addEventListener('pointerdown', close)
     page.addEventListener('scroll', place)
+    page.addEventListener('mousemove', wake)
+
+    /* Before ProseMirror selects what was pressed on: the image the toolbar
+       is to be on. */
+    page.addEventListener(
+      'pointerdown',
+      (event) => {
+        const image = (event.target as Element | null)?.closest?.<HTMLElement>('[data-mainstay-image]')
+
+        close()
+        pictured = image ? { item: image.dataset.mainstayItem ?? '', field: image.dataset.mainstayImage ?? '' } : null
+        wake()
+      },
+      true,
+    )
 
     /* @field text: selecting its block as it is focused, one line where its
        field holds one, and every change into the block's data. */
@@ -949,6 +1199,12 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       const span = (event.target as Element | null)?.closest?.('[data-mainstay-field]')
 
       if (span && event.key === 'Enter' && !span.hasAttribute('data-mainstay-lines')) event.preventDefault()
+
+      /* Typing hides the toolbar until the page is pointed at again. */
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey && !quiet) {
+        quiet = true
+        place()
+      }
     })
     page.addEventListener('input', (event) => {
       const span = (event.target as Element | null)?.closest?.<HTMLElement>('[data-mainstay-field]')
@@ -956,7 +1212,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       if (!span || selected === null || holding(span)?.node.attrs.id !== selected) return
       if (said(span) === '') span.replaceChildren()
 
-      set(span.dataset.mainstayItem ?? '', span.dataset.mainstayField ?? '', said(span))
+      set(span.dataset.mainstayField ?? '', said(span))
     })
 
     /* During a grip drag, the drop is the admin's alone: ProseMirror's own
@@ -966,10 +1222,12 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       (event) => {
         if (dragging === null || !view) return
 
+        const landed = landing(view, dragging, event.clientX, event.clientY)
+
         event.preventDefault()
         event.stopPropagation()
-        line.style.top = `${landing(view, event.clientY).y}px`
-        line.hidden = false
+        line.hidden = landed === null
+        if (landed) Object.assign(line.style, { top: `${landed.line.top}px`, left: `${landed.line.left}px`, width: `${landed.line.width}px`, height: `${landed.line.height}px` })
       },
       true,
     )
@@ -978,7 +1236,8 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       (event) => {
         if (dragging === null || !view) return
 
-        const tr = moved(view.state, dragging, landing(view, event.clientY).index)
+        const landed = landing(view, dragging, event.clientX, event.clientY)
+        const tr = landed ? moved(view.state, dragging, landed.index) : null
 
         event.preventDefault()
         event.stopPropagation()
@@ -1074,7 +1333,8 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
     }
   }
 
-  toolbar.addEventListener('click', (event) => {
+  /* The toolbar's buttons and the tabs' bar's alike. */
+  const run = (event: Event) => {
     const button = (event.target as Element | null)?.closest<HTMLButtonElement>('button[data-command]')
     const name = button?.dataset.command ?? ''
 
@@ -1086,9 +1346,16 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
       return menu.hidden ? open(box.bottom + 4, box.left, false) : close()
     }
 
+    if (name === 'settings') return settings?.showModal()
+    if (name === 'replace') return pick()
+    if (name === 'image') return void edit()
+
     commands[name]?.(view.state, view.dispatch, view)
     if (name !== 'link') view.focus()
-  })
+  }
+
+  header.addEventListener('click', run)
+  toolbar.addEventListener('click', run)
 
   turner.addEventListener('change', () => {
     if (!view) return
@@ -1103,11 +1370,12 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
 
   menu.addEventListener('click', (event) => {
     const item = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-insert]')
+    const kind = item?.dataset.insert ?? ''
 
     if (!item || !view) return
 
     close()
-    insert(item.dataset.insert ?? '')(view.state, view.dispatch, view)
+    insert(kind, kind.startsWith('block:') ? known[kind.slice(6)]?.inner[0] : undefined)(view.state, view.dispatch, view)
     view.focus()
   })
 
@@ -1141,7 +1409,7 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
   grip.addEventListener('dragstart', (event) => {
     if (!view) return event.preventDefault()
 
-    dragging = current(view.state).index
+    dragging = current(view.state)
     event.dataTransfer?.setData('text/plain', '')
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
   })
@@ -1150,28 +1418,72 @@ export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void =
   window.addEventListener('resize', place)
 
   /* Opening the tab draws the page when Details changed since it was last
-     drawn; the editor's own changes are not Details'. */
+     drawn; the editor's own changes are not Details'. Leaving it closes the
+     block's settings. */
   document.addEventListener('tabchange', (event) => {
     const here = (event as CustomEvent<string>).detail === panel?.id
 
-    if (sidebar) sidebar.hidden = !here || selected === null
+    header.hidden = !here || view === null
+    if (!here) settings?.close()
     if (here && snapshot() !== posted) void draw()
   })
 
-  /* The sidebar: text into the page at once, every change posted once the
-     typing pauses, and a list's controls at once. It never submits. */
+  /* The settings: text into the page at once, and every change posted once
+     the typing pauses. A block inside is selected on the page from its
+     list, which closes them, and one is added from its button. They never
+     submit. */
   sidebar?.addEventListener('submit', (event) => event.preventDefault())
   sidebar?.addEventListener('focusin', () => typing++)
   sidebar?.addEventListener('input', (event) => {
     const input = event.target as HTMLInputElement
 
-    if (input.dataset?.mainstayItem !== undefined && input.dataset.mainstayField !== undefined) set(input.dataset.mainstayItem, input.dataset.mainstayField, input.value)
+    if (input.dataset?.mainstayItem === selected && input.dataset.mainstayField !== undefined) set(input.dataset.mainstayField, input.value)
     else later()
   })
   sidebar?.addEventListener('click', (event) => {
-    const op = (event.target as Element | null)?.closest<HTMLElement>('[data-block-op]')
+    const target = event.target as Element | null
+    const inner = find(target?.closest<HTMLElement>('[data-inner-select]')?.dataset.innerSelect ?? '')
+    const kind = target?.closest<HTMLElement>('[data-inner-add]')?.dataset.innerAdd
+    const at = selected === null ? null : find(selected)
 
-    if (op) void change(op)
+    if (!view || !at) return
+
+    if (inner) {
+      settings?.close()
+      quiet = false
+      view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, inner.pos)).scrollIntoView())
+      view.focus()
+    } else if (kind !== undefined) {
+      append(at.pos, kind, known[kind]?.inner[0])(view.state, view.dispatch, view)
+    }
+  })
+
+  /* The image dialog's form, posted for JSON: once it is saved, the block
+     is drawn again with the image as it now is. */
+  photoBody?.addEventListener('submit', async (event) => {
+    const sent = (event.target as Element | null)?.closest<HTMLFormElement>('form[data-image-form]')
+    const id = editing
+
+    if (!sent) return
+
+    event.preventDefault()
+
+    const response = await fetch(sent.action, { method: 'POST', body: new FormData(sent), headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } }).catch(() => null)
+
+    if (response?.ok) {
+      photo?.close()
+      if (id !== null) void look(id)
+
+      return
+    }
+
+    const answer = (await response?.json().catch(() => null)) as { message?: string; errors?: Record<string, string[]> } | null
+    const shown = sent.querySelector<HTMLElement>('[data-image-messages]')
+
+    if (!shown) return
+
+    shown.replaceChildren(...(answer?.errors ? Object.values(answer.errors).flat() : [answer?.message ?? 'The image could not be saved.']).map((text) => Object.assign(document.createElement('p'), { textContent: text })))
+    shown.hidden = false
   })
 
   wired.set(element, () => view)

@@ -5,48 +5,71 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { canvas } from './canvas'
 
 /* The edit form as form.blade.php draws it for a type with a page: Details'
-   fields, the raw content among them, and the Content tab's markup from
-   canvas.blade.php. */
+   fields, the raw content among them, Content's controls at the end of the
+   tabs' bar, and the Content tab's markup from canvas.blade.php. */
+const kinds = {
+  callout: { label: 'Callout', inner: [] },
+  latest: { label: 'Latest articles', inner: [] },
+  hero: { label: 'Hero', inner: [] },
+  grid: { label: 'Grid', inner: ['feature'] },
+  feature: { label: 'Feature', inner: [] },
+}
+
 beforeEach(() => {
   document.body.innerHTML = `
     <form method="post" action="/admin/page/5">
       <input type="hidden" name="_token" value="token">
+      <div id="canvas-header" hidden>
+        <button type="button" data-command="undo">Undo</button>
+        <button type="button" data-command="redo">Redo</button>
+        <button type="button" data-command="add" aria-expanded="false">Add block</button>
+      </div>
       <div id="details" role="tabpanel">
         <input name="title" value="Home">
         <textarea name="content"></textarea>
       </div>
       <div id="content" role="tabpanel" hidden>
-        <div data-canvas data-canvas-url="/admin/page/5/canvas" data-blocks='{"callout":"Callout","latest":"Latest articles"}'>
-          <div data-canvas-toolbar hidden>
-            <button type="button" data-command="undo">Undo</button>
-            <button type="button" data-command="redo">Redo</button>
-            <button type="button" data-command="strong">B</button>
-            <button type="button" data-command="link">Link</button>
-            <button type="button" data-command="add" aria-expanded="false">Add block</button>
-            <select data-command="turn">
-              <option value="paragraph">Paragraph</option>
-              <option value="heading-2">Heading 2</option>
-              <option value="blockquote">Quote</option>
-              <option value="code_block">Code block</option>
-              <option value="bullet_list">Bulleted list</option>
-              <option value="ordered_list">Numbered list</option>
-              <option value="" hidden></option>
-            </select>
-            <button type="button" data-command="up">Move up</button>
-            <button type="button" data-command="down">Move down</button>
-            <button type="button" data-command="duplicate">Duplicate</button>
-            <button type="button" data-command="delete">Delete</button>
-          </div>
+        <div data-canvas data-canvas-url="/admin/page/5/canvas" data-header="canvas-header" data-blocks='${JSON.stringify(kinds)}' data-top='["callout","latest","hero","grid"]'>
           <p data-canvas-message>The page is edited with JavaScript, which is off.</p>
           <div data-canvas-stage hidden>
-            <button type="button" data-canvas-grip draggable="true" hidden>Drag</button>
             <iframe data-canvas-frame sandbox="allow-same-origin"></iframe>
             <div data-canvas-line hidden></div>
+            <div data-canvas-toolbar hidden>
+              <button type="button" data-canvas-grip draggable="true">Drag</button>
+              <button type="button" data-command="up">Move up</button>
+              <button type="button" data-command="down">Move down</button>
+              <span data-canvas-text>
+                <select data-command="turn">
+                  <option value="paragraph">Paragraph</option>
+                  <option value="heading-2">Heading 2</option>
+                  <option value="blockquote">Quote</option>
+                  <option value="code_block">Code block</option>
+                  <option value="bullet_list">Bulleted list</option>
+                  <option value="ordered_list">Numbered list</option>
+                  <option value="" hidden></option>
+                </select>
+                <button type="button" data-command="strong">B</button>
+                <button type="button" data-command="link">Link</button>
+              </span>
+              <span data-canvas-image hidden>
+                <button type="button" data-command="replace">Replace image</button>
+                <button type="button" data-command="image">Edit image</button>
+              </span>
+              <button type="button" data-command="settings">Block settings</button>
+              <button type="button" data-command="duplicate">Duplicate</button>
+              <button type="button" data-command="delete">Delete</button>
+            </div>
           </div>
           <div data-canvas-menu hidden>
-            <button type="button" data-insert="paragraph">Paragraph</button>
-            <button type="button" data-insert="heading">Heading</button>
-            <button type="button" data-insert="block:latest">Latest articles</button>
+            <div data-menu-group>
+              <button type="button" data-insert="paragraph">Paragraph</button>
+              <button type="button" data-insert="heading">Heading</button>
+            </div>
+            <div data-menu-group>
+              <button type="button" data-insert="block:latest">Latest articles</button>
+              <button type="button" data-insert="block:grid">Grid</button>
+              <button type="button" data-insert="block:feature">Feature</button>
+            </div>
           </div>
         </div>
       </div>
@@ -75,6 +98,9 @@ const posted: FormData[] = []
 /* The block route's, apart: a block selected posts there between pages. */
 const replies: Response[] = []
 const sent: FormData[] = []
+/* The library's, for an image on the page. */
+const pictures: Response[] = []
+const fetched: Array<[string, RequestInit]> = []
 
 /* fetch answering each post with the next answer given, and keeping what
    was posted. */
@@ -82,7 +108,13 @@ function serve(...given: Array<string | Response>): void {
   answers.push(...given.map((answer) => (typeof answer === 'string' ? new Response(answer, { headers: { 'Content-Type': 'text/html' } }) : answer)))
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string, init: RequestInit) => {
+    vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (url.includes('/admin/media/')) {
+        fetched.push([url, init])
+
+        return pictures.shift() ?? new Response('', { status: 500 })
+      }
+
       if (url.endsWith('/block')) {
         sent.push(init.body as FormData)
 
@@ -103,6 +135,8 @@ beforeEach(() => {
   posted.length = 0
   replies.length = 0
   sent.length = 0
+  pictures.length = 0
+  fetched.length = 0
 })
 
 const $ = <E extends Element = HTMLElement>(selector: string) => document.querySelector<E>(selector)!
@@ -189,7 +223,11 @@ test("mounts the editor on the element the content's script sits in, the rest of
   expect(inner().querySelector('main > a')!.closest('[contenteditable]')).toBeNull()
   expect(inner().body.innerHTML).toMatch(/^<div class="wrap"><main><a href="\/tags\/news">News<\/a><div class="prose ProseMirror"/)
   expect(inner().body.textContent).not.toMatch(/About|Beside|Footer/)
-  expect([message().hidden, $('[data-canvas-toolbar]').hidden, $('[data-canvas-stage]').hidden]).toEqual([true, false, false])
+  expect([message().hidden, $('#canvas-header').hidden, $('[data-canvas-stage]').hidden]).toEqual([true, false, false])
+
+  /* The toolbar keeps out of the way until the page is pointed at: by the
+     current block then, which jsdom lays nowhere. */
+  expect($('[data-canvas-toolbar]').hidden).toBe(true)
 
   /* A change goes into Details' raw content, which the dirty guard hears. */
   const heard = vi.fn()
@@ -221,7 +259,7 @@ test('draws a page that prints its content beside something else read-only, and 
   expect(view()).toBeNull()
   expect(inner().querySelector('article')!.innerHTML).toBe('<h1>Title</h1><p>Hi</p><aside>Callout</aside>')
   expect(message().textContent).toContain('shown read-only here')
-  expect($('[data-canvas-toolbar]').hidden).toBe(true)
+  expect([$('[data-canvas-toolbar]').hidden, $('#canvas-header').hidden]).toEqual([true, true])
 
   $<HTMLInputElement>('input[name="title"]').value = 'Changed'
   await show()
@@ -367,7 +405,7 @@ test('moves, duplicates, deletes and turns the current block from the toolbar', 
   /* A site block is selected, duplicated with an id of its own drawing
      what the first drew, and deleted. */
   view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 10)))
-  expect(tool('turn').disabled).toBe(true)
+  expect([tool('turn').disabled, $('[data-canvas-text]').hidden]).toEqual([true, true])
   tool('duplicate').click()
   const [, , first, copy] = saved().content!
 
@@ -401,6 +439,7 @@ test('adds a block after the current one from the menu, or in place of an empty 
   tool('add').click()
   expect([$('[data-canvas-menu]').hidden, tool('add').getAttribute('aria-expanded')]).toEqual([false, 'true'])
   expect(document.activeElement).toBe($('[data-insert="paragraph"]'))
+  expect([...document.querySelectorAll<HTMLElement>('[data-insert]')].filter((item) => !item.hidden).map((item) => item.dataset.insert)).toEqual(['paragraph', 'heading', 'block:latest', 'block:grid'])
 
   $('[data-insert="heading"]').click()
   expect(types()).toEqual(['paragraph', 'heading', 'paragraph'])
@@ -444,7 +483,7 @@ test('starts a paragraph after a site block on Enter, and removes an empty block
   view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)))
   key(view, { key: 'Enter' })
   expect(types()).toEqual(['block:callout', 'paragraph', 'paragraph'])
-  expect(view.state.selection.from).toBe(2)
+  expect(view.state.selection.from).toBe(3)
 
   key(view, { key: 'Backspace' })
   expect(types()).toEqual(['block:callout', 'paragraph'])
@@ -462,7 +501,8 @@ test('gives a pasted block an id of its own, the one it was copied from keeping 
   const view = await opened(doc(text('paragraph', 'One'), callout('c1')), { c1: '<aside>Mind the gap</aside>' })
 
   at(view, 1)
-  view.pasteHTML(`<div data-mainstay-block='${JSON.stringify({ id: 'c1', type: 'callout', data: { heading: 'Mind the gap' } })}'></div>`, new Event('paste') as ClipboardEvent)
+  /* As ProseMirror puts a selected block on the clipboard: whole. */
+  view.pasteHTML(`<div data-pm-slice="0 0 []" data-mainstay-block='${JSON.stringify({ id: 'c1', type: 'callout', data: { heading: 'Mind the gap' } })}'></div>`, new Event('paste') as ClipboardEvent)
 
   const ids = saved().content!.filter((node) => node.type === 'block').map((node) => node.attrs!.id)
 
@@ -475,7 +515,7 @@ test('moves a block dragged by its grip to where the line is drawn, in one step 
   const view = await opened(doc(text('paragraph', 'One'), text('paragraph', 'Two'), text('paragraph', 'Three')))
   const blocks = [...view.dom.children] as HTMLElement[]
 
-  blocks.forEach((block, index) => (block.getBoundingClientRect = () => ({ top: index * 40, bottom: index * 40 + 30, height: 30 }) as DOMRect))
+  blocks.forEach((block, index) => (block.getBoundingClientRect = () => ({ top: index * 40, bottom: index * 40 + 30, height: 30, left: 10, width: 300 }) as DOMRect))
 
   at(view, 2)
   $('[data-canvas-grip]').dispatchEvent(new Event('dragstart'))
@@ -489,7 +529,7 @@ test('moves a block dragged by its grip to where the line is drawn, in one step 
 
   blocks[2]!.dispatchEvent(over)
   expect(over.defaultPrevented).toBe(true)
-  expect([$('[data-canvas-line]').hidden, $('[data-canvas-line]').style.top]).toEqual([false, '80px'])
+  expect([$('[data-canvas-line]').hidden, $('[data-canvas-line]').style.cssText]).toEqual([false, 'top: 79px; left: 10px; width: 300px; height: 2px;'])
 
   blocks[2]!.dispatchEvent(new MouseEvent('drop', { bubbles: true, cancelable: true, clientY: 70 }))
   expect(saved().content!.map((node) => node.content![0]!.text)).toEqual(['Two', 'One', 'Three'])
@@ -503,7 +543,7 @@ test('moves a block dragged by its grip to where the line is drawn, in one step 
   const again = [...view.dom.children] as HTMLElement[]
   const depth = undoDepth(view.state)
 
-  again.forEach((block, index) => (block.getBoundingClientRect = () => ({ top: index * 40, bottom: index * 40 + 30, height: 30 }) as DOMRect))
+  again.forEach((block, index) => (block.getBoundingClientRect = () => ({ top: index * 40, bottom: index * 40 + 30, height: 30, left: 10, width: 300 }) as DOMRect))
   at(view, 2)
   $('[data-canvas-grip]').dispatchEvent(new Event('dragstart'))
   again[0]!.dispatchEvent(new MouseEvent('drop', { bubbles: true, cancelable: true, clientY: 30 }))
@@ -533,25 +573,42 @@ test('keeps its state across a redraw, so undo reaches past it, and opens a hand
   expect(canvas($('[data-canvas]'))!()!.state.doc.textContent).toBe('By hand')
 })
 
-/* A site block with text printed by @field, and its sidebar, as the block
+/* A site block with text printed by @field, and its settings, as the block
    route and block.blade.php draw them. */
 const hero = (id = 'h1', data: Record<string, unknown> = { headline: 'Hello', tone: 'calm' }): Doc => ({ type: 'block', attrs: { id, type: 'hero', data } })
 const drawn = (id = 'h1', headline = 'Hello', tone = 'calm') =>
   `<section class="hero ${tone}"><h1><span data-mainstay-field="headline" data-mainstay-item="${id}" data-mainstay-label="Headline">${headline}</span></h1><p><span data-mainstay-field="intro" data-mainstay-item="${id}" data-mainstay-label="Intro" data-mainstay-lines></span></p></section>`
 const fields = (id = 'h1', headline = 'Hello') =>
-  `<input type="hidden" name="id" value="${id}"><input type="hidden" name="type" value="hero"><input name="data[headline]" value="${headline}" data-mainstay-item="${id}" data-mainstay-field="headline"><select name="data[tone]"><option>calm</option><option>loud</option></select><button type="button" data-block-op="add" data-list="data[items]" data-kind="feature">Add feature</button>`
+  `<input type="hidden" name="id" value="${id}"><input type="hidden" name="type" value="hero"><input name="data[headline]" value="${headline}" data-mainstay-item="${id}" data-mainstay-field="headline"><select name="data[tone]"><option>calm</option><option>loud</option></select>`
 
-/* The sidebar beside the entry's form, as form.blade.php draws it. */
+/* jsdom opens no dialog. */
+HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+  this.open = true
+}
+HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+  this.open = false
+}
+
+/* The settings' dialog beside the entry's form, as block-sidebar.blade.php
+   draws it. */
 function sidebarred(invalid: Record<string, unknown> = {}): void {
   const element = $('[data-canvas]')
 
   element.dataset.blockUrl = '/admin/page/5/block'
   element.dataset.sidebar = 'mainstay-block'
   element.dataset.invalid = JSON.stringify(invalid)
-  document.body.insertAdjacentHTML('beforeend', '<form id="mainstay-block" data-canvas-sidebar hidden><div data-sidebar-messages hidden></div><div data-sidebar-body></div></form>')
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    `<dialog><form id="mainstay-block" data-canvas-sidebar><h2 data-sidebar-title>Block</h2><div data-sidebar-messages hidden></div><div data-sidebar-body></div>
+      <section data-sidebar-inner hidden><ul data-sidebar-list></ul><div data-sidebar-add></div>
+        <template data-sidebar-item><li><button type="button" data-inner-select></button></li></template>
+        <template data-sidebar-adder><button type="button" data-inner-add></button></template>
+      </section></form></dialog>`,
+  )
 }
 
 const sidebar = () => $<HTMLFormElement>('[data-canvas-sidebar]')
+const settings = () => sidebar().closest('dialog')!
 const field = (name: string) => inner().querySelector<HTMLElement>(`[data-mainstay-field="${name}"]`)!
 const fire = (target: EventTarget, type: string, init: KeyboardEventInit = {}) => {
   const window = inner().defaultView as Window & typeof globalThis
@@ -563,8 +620,13 @@ const fire = (target: EventTarget, type: string, init: KeyboardEventInit = {}) =
 }
 const data = (index = 1) => saved().content![index]!.attrs!.data as Record<string, unknown>
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const select = (view: EditorView, pos: number) => view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, pos)))
+const answered = async () => {
+  await settle()
+  await settle()
+}
 
-test('opens a site block\'s sidebar once it is selected, as the server draws it, and closes it for anything else', async () => {
+test("draws a selected site block's settings as the server draws them, in the dialog its toolbar opens", async () => {
   const wire = vi.fn()
 
   sidebarred()
@@ -576,28 +638,40 @@ test('opens a site block\'s sidebar once it is selected, as the server draws it,
 
   unlaid()
   await show()
-  expect(sidebar().hidden).toBe(true)
+  expect(tool('settings').hidden).toBe(true)
 
-  view()!.dispatch(view()!.state.tr.setSelection(NodeSelection.create(view()!.state.doc, 7)))
-  await settle()
-  await settle()
+  select(view()!, 7)
+  await answered()
 
-  expect(sidebar().hidden).toBe(false)
-  expect(Object.fromEntries(sent[0]!)).toEqual({ block: JSON.stringify(hero().attrs), _token: 'token' })
+  expect(Object.fromEntries(sent[0]!)).toEqual({ block: JSON.stringify(hero().attrs), ancestors: '[]', _token: 'token' })
   expect(sidebar().querySelector<HTMLInputElement>('[name="data[headline]"]')!.value).toBe('Hello')
   expect(wire).toHaveBeenCalledWith(sidebar().querySelector('[data-sidebar-body]'))
+  expect([settings().open, tool('settings').hidden, $('[data-sidebar-title]').textContent, $('[data-sidebar-inner]').hidden]).toEqual([false, false, 'Hero', true])
 
-  /* Details hides it, Content shows it again. */
+  /* Opened from the toolbar, and closed by leaving the tab. */
+  tool('settings').click()
+  expect(settings().open).toBe(true)
   document.dispatchEvent(new CustomEvent('tabchange', { detail: 'details' }))
-  expect(sidebar().hidden).toBe(true)
+  expect([settings().open, $('#canvas-header').hidden]).toEqual([false, true])
   document.dispatchEvent(new CustomEvent('tabchange', { detail: 'content' }))
-  expect(sidebar().hidden).toBe(false)
+  expect($('#canvas-header').hidden).toBe(false)
+
+  /* They never submit, and a change still waiting is posted for its block
+     once another is selected, which closes them. */
+  tool('settings').click()
+  expect(sidebar().dispatchEvent(new Event('submit', { cancelable: true }))).toBe(false)
+  replies.push(json({ block: hero('h1', { headline: 'Hello', tone: 'loud' }).attrs, html: drawn('h1', 'Hello', 'loud'), form: null }))
+  sidebar().querySelector<HTMLSelectElement>('[name="data[tone]"]')!.value = 'loud'
+  sidebar().querySelector('[name="data[tone]"]')!.dispatchEvent(new Event('input', { bubbles: true }))
 
   at(view()!, 2)
-  expect([sidebar().hidden, sidebar().querySelector('[data-sidebar-body]')!.innerHTML]).toEqual([true, ''])
+  expect([settings().open, sidebar().querySelector('[data-sidebar-body]')!.innerHTML, tool('settings').hidden]).toEqual([false, '', true])
+  expect([sent[1]!.get('id'), sent[1]!.get('data[tone]'), sent[1]!.get('ancestors')]).toEqual(['h1', 'loud', '[]'])
+  await answered()
+  expect(data().tone).toBe('loud')
 })
 
-test('types @field text in place into the block\'s data and its sidebar, and the sidebar\'s into the page', async () => {
+test("types @field text in place into the block's data and its settings, and the settings' into the page", async () => {
   sidebarred()
   textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), hero()))
   serve(page(doc(text('paragraph', 'Intro'), hero()), { h1: drawn() }))
@@ -612,11 +686,10 @@ test('types @field text in place into the block\'s data and its sidebar, and the
 
   expect([headline.getAttribute('contenteditable'), field('intro').getAttribute('contenteditable')]).toEqual(['plaintext-only', 'plaintext-only'])
 
-  /* Focused, its block is selected, and the sidebar opens. */
+  /* Focused, its block is selected, and its settings drawn. */
   fire(headline, 'focusin')
-  await settle()
-  await settle()
-  expect([view()!.state.selection instanceof NodeSelection, view()!.state.selection.from, sidebar().hidden]).toEqual([true, 7, false])
+  await answered()
+  expect([view()!.state.selection instanceof NodeSelection, view()!.state.selection.from, sidebar().querySelector('[name="data[headline]"]') !== null]).toEqual([true, 7, true])
 
   /* ProseMirror leaves the keys typed in it alone: Backspace deletes text,
      not the block. Enter adds no line to one-line text, and does to text
@@ -662,8 +735,7 @@ test('takes an answer to typing in place as part of the typing, which one undo t
   const headline = field('headline')
 
   fire(headline, 'focusin')
-  await settle()
-  await settle()
+  await answered()
 
   /* The same data in the server's order changes nothing. */
   replies.push(json({ block: hero('h1', { tone: 'calm', headline: 'Hello there' }).attrs, html: drawn('h1', 'Hello there'), form: null }))
@@ -684,7 +756,7 @@ test('takes an answer to typing in place as part of the typing, which one undo t
   expect(data()).toEqual({ headline: 'Hello', tone: 'calm' })
 })
 
-test('posts a changed sidebar, putting the block\'s data and its HTML answered in place', async () => {
+test("posts changed settings, putting the block's data and its HTML answered in place", async () => {
   sidebarred()
   textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), hero()))
   serve(page(doc(text('paragraph', 'Intro'), hero()), { h1: drawn() }))
@@ -694,9 +766,8 @@ test('posts a changed sidebar, putting the block\'s data and its HTML answered i
 
   unlaid()
   await show()
-  view()!.dispatch(view()!.state.tr.setSelection(NodeSelection.create(view()!.state.doc, 7)))
-  await settle()
-  await settle()
+  select(view()!, 7)
+  await answered()
 
   const tone = sidebar().querySelector<HTMLSelectElement>('[name="data[tone]"]')!
 
@@ -706,23 +777,15 @@ test('posts a changed sidebar, putting the block\'s data and its HTML answered i
   expect(sent).toHaveLength(1)
   await wait(350)
 
-  expect(Object.fromEntries(sent[1]!)).toEqual({ id: 'h1', type: 'hero', 'data[headline]': 'Hello', 'data[tone]': 'loud', _token: 'token' })
+  expect(Object.fromEntries(sent[1]!)).toEqual({ id: 'h1', type: 'hero', 'data[headline]': 'Hello', 'data[tone]': 'loud', ancestors: '[]', _token: 'token' })
   expect([data().tone, inner().querySelectorAll('section.hero.loud').length, inner().querySelectorAll('section.hero').length]).toEqual(['loud', 1, 1])
   expect(view()!.state.selection.from).toBe(7)
 
   /* Undone, the block is posted as the document holds it, and drawn again. */
   replies.push(json({ block: hero().attrs, html: drawn(), form: fields() }))
   undo(view()!.state, view()!.dispatch)
-  await settle()
-  await settle()
+  await answered()
   expect([JSON.parse(sent[2]!.get('block') as string).data.tone, inner().querySelectorAll('section.hero.calm').length]).toEqual(['calm', 1])
-
-  /* A list's control posts what it asks, and the sidebar is drawn again. */
-  replies.push(json({ block: hero().attrs, html: drawn(), form: `${fields()}<p data-added>Feature 1</p>` }))
-  sidebar().querySelector<HTMLButtonElement>('[data-block-op]')!.click()
-  await settle()
-  await settle()
-  expect([sent[3]!.get('op'), sent[3]!.get('list'), sent[3]!.get('kind'), sidebar().querySelectorAll('[data-added]').length]).toEqual(['add', 'data[items]', 'feature', 1])
 
   /* A change refused says why above the fields, and the next one that is
      not clears it. */
@@ -738,58 +801,275 @@ test('posts a changed sidebar, putting the block\'s data and its HTML answered i
   expect([$('[data-sidebar-messages]').hidden, data().headline, sidebar().querySelector('[id$="-error"]')]).toEqual([true, 'Hello', null])
 })
 
-test('types a nested item\'s @field into that item, its lines kept only where its field takes them', async () => {
-  const grid: Doc = { type: 'block', attrs: { id: 'g1', type: 'grid', data: { heading: 'Top', items: [{ id: 'f1', type: 'feature', data: { title: 'One', text: 'Line' } }] } } }
-  const html = '<section><h2><span data-mainstay-field="heading" data-mainstay-item="g1" data-mainstay-label="Heading">Top</span></h2><h3><span data-mainstay-field="title" data-mainstay-item="f1" data-mainstay-label="Title">One</span></h3><p><span data-mainstay-field="text" data-mainstay-item="f1" data-mainstay-label="Text" data-mainstay-lines>Line</span></p></section>'
+/* A grid holding its features inside it, each drawn by its own view: the
+   grid's marking where they go. */
+const grid = (...features: Doc[]): Doc => ({ type: 'block', attrs: { id: 'g1', type: 'grid', data: { heading: 'Top' } }, ...(features.length ? { content: features } : {}) })
+const feature = (id: string, title: string): Doc => ({ type: 'block', attrs: { id, type: 'feature', data: { title, text: 'Line' } } })
+const gridded = '<section><h2><span data-mainstay-field="heading" data-mainstay-item="g1" data-mainstay-label="Heading">Top</span></h2><ul><template data-mainstay-inner></template></ul></section>'
+const featured = (id: string, title: string) =>
+  `<li><h3><span data-mainstay-field="title" data-mainstay-item="${id}" data-mainstay-label="Title">${title}</span></h3><p><span data-mainstay-field="text" data-mainstay-item="${id}" data-mainstay-label="Text" data-mainstay-lines>Line</span></p></li>`
+const features = (index = 1) => saved().content![index]!.content?.map((node) => node.attrs!.id) ?? []
+
+test("types a block inside another's @field into its own data, posting the blocks around it", async () => {
+  const content = doc(text('paragraph', 'Intro'), grid(feature('f1', 'One'), feature('f2', 'Two')))
 
   sidebarred()
-  textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), grid))
-  serve(page(doc(text('paragraph', 'Intro'), grid), { g1: html }))
-  replies.push(json({ block: grid.attrs, html, form: '' }))
-  canvas($('[data-canvas]'))
-
-  unlaid()
-  await show()
-
-  for (const [name, typed] of [['title', 'One\nand two'], ['text', 'Line\nand more']] as const) {
-    fire(field(name), 'focusin')
-    await settle()
-    await settle()
-    field(name).textContent = typed
-    fire(field(name), 'input')
-  }
-
-  expect(data()).toEqual({ heading: 'Top', items: [{ id: 'f1', type: 'feature', data: { title: 'One and two', text: 'Line\nand more' } }] })
-
-  /* The change the typing posts, answered before the next test. */
-  await wait(350)
-})
-
-test('drops an answer for a block changed again since it was posted', async () => {
-  sidebarred()
-  textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), hero()))
-  serve(page(doc(text('paragraph', 'Intro'), hero()), { h1: drawn() }))
-  replies.push(json({ block: hero().attrs, html: drawn(), form: fields() }))
+  textarea().value = JSON.stringify(content)
+  serve(page(content, { g1: gridded, f1: featured('f1', 'One'), f2: featured('f2', 'Two') }))
+  replies.push(json({ block: feature('f1', 'One').attrs, html: featured('f1', 'One'), form: '' }))
 
   const view = canvas($('[data-canvas]'))!
 
   unlaid()
   await show()
-  view()!.dispatch(view()!.state.tr.setSelection(NodeSelection.create(view()!.state.doc, 7)))
-  await settle()
-  await settle()
+
+  /* Each drawn where the grid's view marked, an island of its own. */
+  expect([...inner().querySelectorAll('section > ul > li h3')].map((title) => title.textContent)).toEqual(['One', 'Two'])
+  expect(inner().querySelector('template')).toBeNull()
+
+  for (const [name, typed] of [['title', 'One\nand two'], ['text', 'Line\nand more']] as const) {
+    fire(field(name), 'focusin')
+    await answered()
+    field(name).textContent = typed
+    fire(field(name), 'input')
+  }
+
+  expect(view()!.state.selection.from).toBe(8)
+  expect(Object.fromEntries(sent[0]!)).toEqual({ block: JSON.stringify(feature('f1', 'One').attrs), ancestors: JSON.stringify([grid().attrs]), _token: 'token' })
+  expect(saved().content![1]!.content!.map((node) => node.attrs!.data)).toEqual([{ title: 'One and two', text: 'Line\nand more' }, { title: 'Two', text: 'Line' }])
+
+  /* Text has no place inside the grid: Enter on a feature, typing over it
+     and pasting text there add nothing. A click selects the innermost
+     block under it. */
+  select(view()!, 10)
+  key(view()!, { key: 'Enter' })
+  expect(view()!.someProp('handleTextInput', (typed) => typed(view()!, 10, 12, 'x', () => view()!.state.tr))).toBe(true)
+  view()!.pasteText('Pasted', new Event('paste') as ClipboardEvent)
+  expect([types(), features()]).toEqual([['paragraph', 'block:grid'], ['f1', 'f2']])
+
+  const clicked = (pos: number) => view()!.someProp('handleClickOn', (click) => click(view()!, pos + 1, view()!.state.doc.nodeAt(pos)!, pos, new MouseEvent('click'), true))
+
+  expect([clicked(8), view()!.state.selection.from, view()!.state.selection instanceof NodeSelection]).toEqual([true, 8, true])
+  expect(clicked(0)).toBeFalsy()
+  at(view()!, 2)
+  expect(view()!.someProp('handleTextInput', (typed) => typed(view()!, 2, 2, 'x', () => view()!.state.tr))).toBeFalsy()
+
+  /* The change the typing posts, answered before the next test. */
+  await wait(350)
+})
+
+test('lists the blocks inside a selected one in its settings, selects one from there and adds them, the menu offering what it holds', async () => {
+  const content = doc(text('paragraph', 'Intro'), grid(feature('f1', 'One'), feature('f2', 'Two')))
+
+  sidebarred()
+  textarea().value = JSON.stringify(content)
+  serve(page(content, { g1: gridded, f1: featured('f1', 'One'), f2: featured('f2', 'Two') }))
+  replies.push(json({ block: grid().attrs, html: gridded, form: '<input name="data[heading]">' }))
+
+  const view = canvas($('[data-canvas]'))!
+
+  unlaid()
+  await show()
+  select(view()!, 7)
+  await answered()
+
+  const listed = () => [...sidebar().querySelectorAll<HTMLElement>('[data-inner-select]')].map((item) => [item.dataset.innerSelect, item.textContent])
+
+  expect([$('[data-sidebar-title]').textContent, $('[data-sidebar-inner]').hidden]).toEqual(['Grid', false])
+  expect(listed()).toEqual([['f1', 'Feature: One'], ['f2', 'Feature: Two']])
+  expect([...sidebar().querySelectorAll('[data-inner-add]')].map((add) => add.textContent)).toEqual(['Add feature'])
+
+  /* Added from there, last inside it, which stays selected; the page drawn
+     again to show it. */
+  serve(page(doc()))
+  sidebar().querySelector<HTMLButtonElement>('[data-inner-add="feature"]')!.click()
+  expect([features().length, features().slice(0, 2), view()!.state.selection.from]).toEqual([3, ['f1', 'f2'], 7])
+  expect(features()[2]).toMatch(/^[0-9a-f]{26}$/)
+  expect(listed()[2]).toEqual([features()[2], 'Feature'])
+  await answered()
+  expect(inner().querySelector('section [data-mainstay-placeholder]')!.textContent).toBe('Feature')
+
+  /* Selected from the list: on the page, the settings closed for it. */
+  tool('settings').click()
+  replies.push(json({ block: feature('f2', 'Two').attrs, html: featured('f2', 'Two'), form: '' }))
+  sidebar().querySelector<HTMLElement>('[data-inner-select="f2"]')!.click()
+  expect([settings().open, view()!.state.selection.from]).toEqual([false, 10])
+  expect(JSON.parse(sent[1]!.get('ancestors') as string)).toEqual([grid().attrs])
+
+  /* Inside it, the menu offers what the grid holds, added after it there. */
+  tool('add').click()
+  expect([...document.querySelectorAll<HTMLElement>('[data-insert]')].filter((item) => !item.hidden).map((item) => item.dataset.insert)).toEqual(['block:feature'])
+  expect([...document.querySelectorAll<HTMLElement>('[data-menu-group]')].map((group) => group.hidden)).toEqual([true, false])
+  serve(page(doc()))
+  $('[data-insert="block:feature"]').click()
+  expect([features().length, features()[1], view()!.state.selection.from]).toEqual([4, 'f2', 12])
+
+  /* Moved and removed among the blocks inside it; the last one gone, the
+     grid left empty is selected. */
+  select(view()!, 10)
+  tool('up').click()
+  expect([features().slice(0, 2), tool('up').disabled]).toEqual([['f2', 'f1'], true])
+
+  for (let left = 4; left > 0; left--) tool('delete').click()
+  expect([features(), view()!.state.selection.from, view()!.state.selection instanceof NodeSelection]).toEqual([[], 7, true])
+  await answered()
+
+  /* A grid added at the top starts with one feature inside it. */
+  serve(page(doc()))
+  at(view()!, 2)
+  tool('add').click()
+  $('[data-insert="block:grid"]').click()
+  expect([types(), saved().content![1]!.content!.map((node) => node.attrs!.type)]).toEqual([['paragraph', 'block:grid', 'block:grid'], ['feature']])
+  await answered()
+})
+
+test('floats the toolbar above the current block, inside the frame, and keeps it out of the way while typing until the page is pointed at', async () => {
+  const view = await opened(doc(text('paragraph', 'One'), text('paragraph', 'Two')))
+  const toolbar = $('[data-canvas-toolbar]')
+  const [one, two] = [...view.dom.children] as HTMLElement[]
+  const typed = (init: KeyboardEventInit) => fire(view.dom, 'keydown', init)
+
+  Object.defineProperties(frame(), { clientHeight: { value: 600 }, clientWidth: { value: 800 } })
+  Object.defineProperties(toolbar, { offsetHeight: { value: 40 }, offsetWidth: { value: 300 } })
+  one!.getBoundingClientRect = () => ({ top: 100, bottom: 130, left: 20, right: 620 }) as DOMRect
+  two!.getBoundingClientRect = () => ({ top: 20, bottom: 900, left: 650, right: 780 }) as DOMRect
+
+  expect(toolbar.hidden).toBe(true)
+  fire(inner(), 'mousemove')
+  expect([toolbar.hidden, toolbar.style.top, toolbar.style.left]).toEqual([false, '54px', '20px'])
+
+  /* A block running on above the frame's top keeps it at the top, and one
+     at the frame's right edge keeps it inside. */
+  at(view, 7)
+  expect([toolbar.hidden, toolbar.style.top, toolbar.style.left]).toEqual([false, '0px', '500px'])
+
+  /* Scrolled up, it rides on the block's end as it leaves, and out of
+     view, it goes with it. */
+  two!.getBoundingClientRect = () => ({ top: -100, bottom: 20, left: 650, right: 780 }) as DOMRect
+  fire(inner(), 'scroll')
+  expect([toolbar.hidden, toolbar.style.top]).toEqual([false, '-20px'])
+  two!.getBoundingClientRect = () => ({ top: -200, bottom: -10, left: 650, right: 780 }) as DOMRect
+  fire(inner(), 'scroll')
+  expect(toolbar.hidden).toBe(true)
+  two!.getBoundingClientRect = () => ({ top: 20, bottom: 900, left: 650, right: 780 }) as DOMRect
+  fire(inner(), 'scroll')
+  expect(toolbar.hidden).toBe(false)
+
+  /* A key that types hides it; one that does not, or a shortcut, leaves it. */
+  typed({ key: 'ArrowLeft' })
+  typed({ key: 'b', ctrlKey: true })
+  expect(toolbar.hidden).toBe(false)
+  typed({ key: 'a' })
+  expect(toolbar.hidden).toBe(true)
+  at(view, 2)
+  expect(toolbar.hidden).toBe(true)
+  fire(inner(), 'mousemove')
+  expect([toolbar.hidden, toolbar.style.top]).toEqual([false, '54px'])
+})
+
+test('moves a block inside another among the blocks beside it, side by side, by its grip', async () => {
+  const view = await opened(doc(grid(feature('f1', 'One'), feature('f2', 'Two'), feature('f3', 'Three'))), { g1: gridded, f1: featured('f1', 'One'), f2: featured('f2', 'Two'), f3: featured('f3', 'Three') })
+  const items = [...inner().querySelectorAll<HTMLElement>('li')]
+
+  items.forEach((item, index) => (item.getBoundingClientRect = () => ({ top: 0, bottom: 30, height: 30, left: index * 100, right: index * 100 + 90, width: 90 }) as DOMRect))
+  select(view, 5)
+  $('[data-canvas-grip]').dispatchEvent(new Event('dragstart'))
+
+  /* Before the second, by its middle across, the line drawn down its left. */
+  items[0]!.dispatchEvent(new MouseEvent('dragover', { bubbles: true, cancelable: true, clientX: 120, clientY: 10 }))
+  expect($('[data-canvas-line]').style.cssText).toBe('top: 0px; left: 98px; width: 2px; height: 30px;')
+
+  items[0]!.dispatchEvent(new MouseEvent('drop', { bubbles: true, cancelable: true, clientX: 120, clientY: 10 }))
+  expect([features(0), view.state.selection.from]).toEqual([['f1', 'f3', 'f2'], 3])
+})
+
+test("replaces a block's image from the library's picker, and edits it in the image dialog, drawing the block again", async () => {
+  const element = $('[data-canvas]')
+  const photo = (media: number, alt = '') => `<section class="hero"><picture data-mainstay-image="image" data-mainstay-item="h1"><img src="/m/${media}.webp" alt="${alt}"></picture></section>`
+  const pictured = (media: number): Doc => ({ type: 'block', attrs: { id: 'h1', type: 'hero', data: { image: media } } })
+  const asked = vi.fn()
+
+  sidebarred()
+  element.dataset.media = '/admin/media'
+  element.dataset.picker = 'mainstay-picker'
+  document.body.insertAdjacentHTML('beforeend', '<dialog id="mainstay-image"><div data-image-body></div></dialog>')
+  document.addEventListener('mainstay:pick', asked)
+  textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), pictured(3)))
+  serve(page(doc(text('paragraph', 'Intro'), pictured(3)), { h1: photo(3) }))
+  replies.push(json({ block: pictured(3).attrs, html: photo(3), form: '' }))
+
+  const view = canvas(element)!
+
+  unlaid()
+  await show()
+  expect($('[data-canvas-image]').hidden).toBe(true)
+
+  select(view()!, 7)
+  await answered()
+  expect($('[data-canvas-image]').hidden).toBe(false)
+
+  /* Replaced: the picker asked for, what it picks put in the block's data,
+     which is posted to be drawn again. */
+  replies.push(json({ block: pictured(7).attrs, html: photo(7), form: '' }))
+  tool('replace').click()
+
+  const { picker, done } = (asked.mock.calls[0]![0] as CustomEvent<{ picker: string; done: (media: string) => void }>).detail
+
+  expect(picker).toBe('mainstay-picker')
+  done('7')
+  expect(data().image).toBe(7)
+  await answered()
+  expect([JSON.parse(sent[1]!.get('block') as string).data.image, inner().querySelector('img')!.getAttribute('src')]).toEqual([7, '/m/7.webp'])
+
+  /* Edited: its own form in the image dialog, a save refused said there,
+     and one saved closing it, the block drawn again. */
+  pictures.push(new Response('<form method="post" action="/admin/media/7" data-image-form><div data-image-messages hidden></div><input name="alt[en]" value="A harbour"></form>', { headers: { 'Content-Type': 'text/html' } }))
+  tool('image').click()
+  expect($<HTMLDialogElement>('#mainstay-image').open).toBe(true)
+  await answered()
+  expect(fetched[0]![0]).toBe('/admin/media/7?dialog=1')
+
+  pictures.push(json({ message: 'Too long.', errors: { 'alt.en': ['The alt.en field is too long.'] } }, 422))
+  $('[data-image-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await answered()
+  expect([$<HTMLDialogElement>('#mainstay-image').open, $('[data-image-messages]').hidden, $('[data-image-messages]').textContent]).toEqual([true, false, 'The alt.en field is too long.'])
+
+  pictures.push(json({ status: 'Saved.' }))
+  replies.push(json({ block: pictured(7).attrs, html: photo(7, 'A harbour'), form: '' }))
+  $('[data-image-form]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await answered()
+  await answered()
+  expect(fetched[2]![1]).toMatchObject({ method: 'POST', headers: { Accept: 'application/json' } })
+  expect([$<HTMLDialogElement>('#mainstay-image').open, (fetched[2]![1].body as FormData).get('alt[en]'), inner().querySelector('img')!.getAttribute('alt')]).toEqual([false, 'A harbour', 'A harbour'])
+  document.removeEventListener('mainstay:pick', asked)
+})
+
+test('posts the selected block again when it was typed into before its settings were answered', async () => {
+  sidebarred()
+  textarea().value = JSON.stringify(doc(text('paragraph', 'Intro'), hero()))
+  serve(page(doc(text('paragraph', 'Intro'), hero()), { h1: drawn() }))
 
   let answer: (response: Response) => void = () => {}
 
   replies.push(new Promise<Response>((resolve) => (answer = resolve)) as unknown as Response)
-  sidebar().querySelector<HTMLButtonElement>('[data-block-op]')!.click()
+
+  canvas($('[data-canvas]'))
+
+  unlaid()
+  await show()
+  fire(field('headline'), 'focusin')
   field('headline').textContent = 'Typed meanwhile'
   fire(field('headline'), 'input')
-  answer(json({ block: hero('h1', { headline: 'Hello', tone: 'calm', items: [] }).attrs, html: drawn('h1', 'Stale'), form: fields('h1', 'Stale') }))
-  await settle()
-  await settle()
+  replies.push(json({ block: hero('h1', { headline: 'Typed meanwhile', tone: 'calm' }).attrs, html: drawn('h1', 'Typed meanwhile'), form: fields('h1', 'Typed meanwhile') }))
+  answer(json({ block: hero().attrs, html: drawn('h1', 'Stale'), form: fields('h1', 'Stale') }))
+  await answered()
+  await answered()
 
+  expect(JSON.parse(sent[1]!.get('block') as string).data.headline).toBe('Typed meanwhile')
   expect([data().headline, field('headline').textContent, sidebar().querySelector<HTMLInputElement>('[name="data[headline]"]')!.value]).toEqual(['Typed meanwhile', 'Typed meanwhile', 'Typed meanwhile'])
+
+  /* The change the typing posts, answered before the next test. */
+  await wait(350)
 })
 
 test('marks a block a refused save named, until it changes, and gives a copy its own text', async () => {
