@@ -23,20 +23,7 @@ class RichTextTest extends TestCase
 
         $this->assertNull(Document::problem($document->toArray()));
         $this->assertSame(json_encode($document->toArray()), json_encode($document), 'Encoded as JSON, it is the tree.');
-        $this->assertSame(
-            '<h2>Declared in code</h2>'
-            .'<p>A type is a <strong>class</strong>, its fields are <em>properties</em> and <code>#[Text]</code> declares one.<br>'
-            .'Read <a href="/docs/fields?tab=all&amp;sort=name#text"><strong>the field</strong> reference</a>.</p>'
-            .'<h3>Escaped &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#039;kept&#039;</h3>'
-            .'<blockquote><p>Adding a field is a commit, not a click.</p></blockquote>'
-            ."<pre><code>#[Text(required: true)]\npublic string \$title;</code></pre>"
-            .'<ul><li><p>Text</p><ul><li><p>Textarea</p></li></ul></li><li><p>Rich text</p></li></ul>'
-            .'<ol start="3"><li><p>Sync</p></li></ol>'
-            .'<hr>'
-            .'<p><a href="mailto:hello@mainstay.test">Mail us</a></p>'
-            .'<p></p>',
-            $document->toHtml(),
-        );
+        $this->assertSame(rtrim(file_get_contents(__DIR__.'/Fixtures/document.html'), "\n"), $document->toHtml(), 'As the editor draws it: schema.test.ts holds it to the same file.');
     }
 
     #[Test]

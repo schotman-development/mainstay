@@ -29,6 +29,10 @@ class Gate extends AccessGate
     /* Where the admin's middleware puts the signed-in user on the request. */
     public const USER = 'mainstay.user';
 
+    /* The guard nobody is signed in to, which the Content tab draws a page
+       with, as a visitor is served it. */
+    public const VISITOR = 'mainstay-visitor';
+
     /*
      | The policy the host chose for a class -- Gate::policy() on it,
      | #[UsePolicy] on it, Gate::policy() on a class or interface it extends --

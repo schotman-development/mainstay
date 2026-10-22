@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static void destroy(string $type, int $id, bool $overrideAccess = false)
  * @method static array|null frontPage()
  * @method static void setFrontPage(?string $type, ?int $id = null, bool $overrideAccess = false)
+ * @method static \Mainstay\Content\Entry preview(string $type, ?int $entry = null, array $changes = [], ?int $draft = null, ?string $locale = null, bool $overrideAccess = false, int $depth = 1)
  * @method static \Mainstay\Database\Drafts drafts()
  * @method static \Mainstay\Database\Revisions revisions()
  * @method static \Mainstay\Auth\Accounts accounts()

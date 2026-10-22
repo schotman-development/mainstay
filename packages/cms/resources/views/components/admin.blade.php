@@ -16,7 +16,9 @@
     <title>{{ $title ? $title.' · ' : '' }}Mainstay</title>
     <link rel="stylesheet" href="{{ asset('vendor/mainstay/mainstay.css') }}?v={{ \Mainstay\Mainstay::VERSION }}">
 </head>
-<body class="h-full">
+{{-- Marked once a save has written what a form posted, so the browser
+     drops its copy of that form: see form-copy.ts. --}}
+<body class="h-full" @if (session(\Mainstay\Http\Form::SAVED)) data-saved @endif>
     <x-mainstay::shell :breadcrumb="$breadcrumb" :actions="$actions">
         <x-slot:bar>
             <x-mainstay::top-bar
@@ -26,7 +28,7 @@
                 :email="$user->email"
             >
                 <x-mainstay::dropdown-item as="a" :href="route('mainstay.account')">Account settings</x-mainstay::dropdown-item>
-                <form method="POST" action="{{ route('mainstay.logout') }}">
+                <form method="POST" action="{{ route('mainstay.logout') }}" data-sign-out>
                     @csrf
                     <x-mainstay::dropdown-item type="submit">Sign out</x-mainstay::dropdown-item>
                 </form>

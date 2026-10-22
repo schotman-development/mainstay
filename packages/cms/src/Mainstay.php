@@ -387,6 +387,13 @@ class Mainstay
         $this->store()->setFrontPage($type, ...$arguments);
     }
 
+    /* An entry as its page would read with unsaved changes over it, written
+       nowhere: what the admin's Content tab draws. */
+    public function preview(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->preview($type, ...$arguments);
+    }
+
     /* Drafts and revisions, beside the reads and writes of what is live:
        `Mainstay::drafts()->save(...)`. */
     public function drafts(): Drafts

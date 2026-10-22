@@ -34,6 +34,15 @@ use Throwable;
 final class Form
 {
     /*
+     | Flashed once a save has written what the form posted -- a draft, one
+     | that came to change nothing included, or a term -- whatever happens
+     | after: the page it lands on, whatever its address, tells the browser
+     | its copy of the form is saved and can go. A save refused, or one that
+     | never ran, flashes nothing, and the copy stays.
+     */
+    public const SAVED = 'saved';
+
+    /*
      | The fields a form draws for the signed-in user: every one, but an
      | internal field only for whoever may see it, which the layer would
      | otherwise refuse as a field it does not have.

@@ -4,6 +4,7 @@ namespace Mainstay\Tests;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
@@ -32,6 +33,7 @@ use Mainstay\Tests\Fixtures\Signed\Banner;
 use Mainstay\Tests\Fixtures\Signed\Flyer;
 use Mainstay\Tests\Fixtures\Signed\Note;
 use Mainstay\Tests\Fixtures\Signed\Topic;
+use Mainstay\Tests\Fixtures\Spread;
 use PHPUnit\Framework\Attributes\Test;
 
 /*
@@ -50,13 +52,14 @@ class AdminTest extends DatabaseTestCase
         parent::defineEnvironment($app);
 
         $app['config']->set('mainstay.locales', ['en' => '/', 'nl' => '/nl']);
+        $app['view']->addLocation(__DIR__.'/Fixtures/views');
     }
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class, Guide::class, Person::class, Story::class, Genre::class, Pictured::class, Leaflet::class);
+        $this->declare(Post::class, Note::class, Flyer::class, Topic::class, Banner::class, Guide::class, Person::class, Story::class, Genre::class, Pictured::class, Leaflet::class, Spread::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
         $this->signIn($this->user(role: 'administrator'));
     }
@@ -498,6 +501,199 @@ class AdminTest extends DatabaseTestCase
         $this->assertSame(3, substr_count($this->get(route('mainstay.entries.create', 'guide'))->getContent(), $styled), 'Its body, its aside and its notes; its content is raw.');
 
         $this->assertThrows(fn () => Mainstay::editorStyles(['site' => '/css/site.css']), InvalidArgumentException::class, "The editor's styles are a list of stylesheet addresses");
+    }
+
+    /* A document of one paragraph, and of whatever nodes it is given. */
+    private static function said(string $text, array ...$nodes): array
+    {
+        return ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]], ...$nodes]];
+    }
+
+    /*
+     | What the rest of the request sees once a page is drawn, as the
+     | innermost of the admin's middleware, inside its session's: who is
+     | signed in to Mainstay, the default guard, the container's guard's user
+     | -- resolved before the draw, as a host's code might -- and the locale.
+     */
+    private function after(): object
+    {
+        $after = new class
+        {
+            public array $seen = [];
+
+            public function handle($request, $next)
+            {
+                app('auth.driver');
+                $response = $next($request);
+                $this->seen = [\Mainstay\Auth\Gate::user()?->name, Auth::getDefaultDriver(), app('auth.driver')->user()?->name, app()->getLocale()];
+
+                return $response;
+            }
+        };
+
+        $this->app->instance('canvas.after', $after);
+        $this->app['router']->pushMiddlewareToGroup('mainstay', 'canvas.after');
+
+        return $after;
+    }
+
+    /* What a spread's content prints for the editor, decoded. */
+    private static function scripted(TestResponse $page): array
+    {
+        preg_match('#<script type="application/json" data-mainstay-content>(.*?)</script>#s', $page->getContent(), $script);
+
+        return json_decode($script[1] ?? 'null', true);
+    }
+
+    #[Test]
+    public function the_content_tab_draws_the_page_from_the_form_as_it_stands_and_writes_nothing(): void
+    {
+        $noir = Mainstay::create(Genre::class, ['title' => 'Noir', 'slug' => 'noir'], locale: 'en', overrideAccess: true);
+        $spread = Mainstay::create(Spread::class, ['title' => 'First', 'slug' => 'first', 'issuedOn' => '2026-10-07', 'memo' => 'Hidden', 'content' => self::said('Live text')], locale: 'en', overrideAccess: true);
+        $other = Mainstay::create(Spread::class, ['title' => 'Other', 'slug' => 'other', 'issuedOn' => '2026-10-08', 'memo' => 'Other memo', 'content' => self::said('Other text')], locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->save(Spread::class, ['title' => 'Other, drafted'], entry: $other->id, locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->save(Spread::class, ['title' => 'Drafted', 'aside' => self::said('Beside')], entry: $spread->id, locale: 'en', overrideAccess: true);
+
+        $canvas = route('mainstay.canvas.entry', ['spread', $spread->id]);
+        $form = $this->get(route('mainstay.entries.edit', ['spread', $spread->id]))->assertOk()
+            ->assertSee('data-tabs="entry"', escape: false)
+            ->assertSee('data-canvas-url="'.$canvas.'"', escape: false)
+            ->assertSee('data-insert="block:callout"', escape: false);
+        $this->get(route('mainstay.entries.create', 'leaflet'))->assertDontSee('data-tabs', escape: false);
+        $this->assertSame(1, substr_count($form->getContent(), 'id="mainstay-link"'), 'One link dialog for the aside and the content alike.');
+        $this->get(route('mainstay.entries.create', 'post'))->assertSee('data-canvas', escape: false)->assertSee('id="mainstay-link"', escape: false);
+
+        $content = self::said('Typed </script><script>alert(1)</script> & here', ['type' => 'block', 'attrs' => ['id' => 'b1', 'type' => 'callout', 'data' => ['heading' => 'Mind the gap']]]);
+        $stored = fn () => array_map(fn (string $table) => DB::table($table)->orderBy('id')->get()->map(fn (object $row) => (array) $row)->all(), ['spread', 'spread_locales', 'genre', 'genre_entries', 'mainstay_drafts']);
+        $before = $stored();
+        $after = $this->after();
+
+        /* The form as it stands: a title typed, a tag picked and one typed,
+           the content as the editor wrote it. The draft's aside under it,
+           and what is live under that. */
+        $page = $this->post($canvas, [...$this->drawn($form), 'title' => 'Typed', 'slug' => 'first', 'issuedOn' => '2026-10-07', 'genres' => ['', "id:{$noir->id}", 'new:Fresh'], 'content' => json_encode($content)])->assertOk();
+        $page->assertSeeInOrder(['<h1>Typed</h1>', "id {$spread->id}, http://localhost/spreads/first, issued 2026-10-07", 'no memo', 'a guest', 'to its guard too', '<li>Noir</li>', '<aside><p>Beside</p></aside>', '<section>Other: <p>Other text</p></section>'], escape: false);
+        $page->assertDontSee('Fresh')->assertDontSee('Other, drafted')->assertDontSee('Other memo');
+        $this->assertSame(['Ada 1', 'mainstay', 'Ada 1', 'en'], $after->seen, 'Signed in again once it is drawn, in the admin\'s locale.');
+
+        /* The content alone is printed for the editor: its document and each
+           block's HTML by id, a `</script>` typed in it kept inside. */
+        $this->assertStringContainsString('<main class="prose"><script type="application/json" data-mainstay-content>', $page->getContent());
+        $this->assertStringContainsString('no-store', $page->headers->get('Cache-Control'), 'Drawn from a form, never kept.');
+        $this->assertStringNotContainsString('<script>alert(1)', $page->getContent());
+        $this->assertStringContainsString('\u003C/script\u003E\u003Cscript\u003Ealert(1)\u003C/script\u003E \u0026 here', $page->getContent());
+        $scripted = self::scripted($page);
+        $content['content'][1]['attrs']['data'] += ['text' => null, 'on' => null, 'tone' => 'info'];
+        $this->assertEquals($content, $scripted['doc'], 'As it would be saved: its defaults filled in.');
+        $this->assertSame(['b1' => '<aside class="info"><h2>Mind the gap</h2></aside>'], array_map(trim(...), $scripted['blocks']));
+        $this->assertSame($before, $stored(), 'Nothing written: no tag made, no draft saved.');
+
+        /* The public page draws its content as the site does. */
+        $this->get('/spreads/first')->assertOk()->assertSee('<main class="prose"><p>Live text</p></main>', escape: false)->assertDontSee('data-mainstay-content', escape: false);
+    }
+
+    #[Test]
+    public function the_content_tab_draws_a_new_entry_and_says_why_a_page_cannot_be_drawn(): void
+    {
+        $values = ['title' => 'New', 'slug' => 'new', 'issuedOn' => '2026-10-07', 'content' => ''];
+
+        /* A new one, no id and no address, its empty content an empty
+           document; one not published yet, from its draft. */
+        $page = $this->post(route('mainstay.canvas.create', 'spread'), $values)->assertOk()->assertSee('id none, no address');
+        $this->assertSame(['doc' => ['type' => 'doc', 'content' => [['type' => 'paragraph']]], 'blocks' => []], self::scripted($page));
+        $this->post(route('mainstay.entries.store', 'spread'), $values)->assertSessionHasNoErrors();
+        $draft = Mainstay::drafts()->all(Spread::class, locale: 'en', overrideAccess: true)->sole();
+        $form = $this->get(route('mainstay.drafts.edit', ['spread', $draft->id]))->assertSee('data-canvas-url="'.route('mainstay.canvas.draft', ['spread', $draft->id]).'"', escape: false);
+        $this->post(route('mainstay.canvas.draft', ['spread', $draft->id]), [...$this->drawn($form), 'title' => 'Newer'])->assertOk()->assertSee('<h1>Newer</h1>', escape: false);
+
+        /* A date the page needs left empty, a value of the wrong kind, and a
+           view that throws, each said rather than drawn. */
+        $this->post(route('mainstay.canvas.create', 'spread'), [...$values, 'issuedOn' => ''])->assertStatus(422)->assertExactJson(['messages' => ['The page is drawn once it has Issued On.']]);
+        $this->post(route('mainstay.canvas.create', 'spread'), [...$values, 'issuedOn' => 'soon'])->assertStatus(422)->assertJsonPath('messages.0', 'The issued on field must be a valid date.');
+        $this->assertStringStartsWith('The view broke here.', $this->post(route('mainstay.canvas.create', 'spread'), [...$values, 'slug' => 'broken'])->assertStatus(500)->json('messages.0'));
+
+        /* Refused to whoever may not change it, as its save would be, and no
+           canvas for a type with no page. */
+        $live = Mainstay::create(Spread::class, ['title' => 'Theirs', 'slug' => 'theirs', 'issuedOn' => '2026-10-07'], locale: 'en', overrideAccess: true);
+        $this->signIn($this->user(['edit_spreads', 'edit_published_spreads']));
+        $this->post(route('mainstay.canvas.entry', ['spread', $live->id]), ['title' => 'Mine'])->assertForbidden()->assertJsonPath('messages.0', 'This needs edit_others_spreads.');
+        $this->signIn($this->user(role: 'administrator'));
+        $this->post(route('mainstay.canvas.create', 'leaflet'), ['title' => 'Flat'])->assertNotFound();
+        $this->post(route('mainstay.canvas.draft', ['genre', 1]), ['title' => 'Noir'])->assertNotFound()->assertJsonStructure(['messages']);
+
+        /* In the form's locale, and in the template it names; the admin's
+           own locale after. */
+        $after = $this->after();
+        $this->post(route('mainstay.canvas.create', ['post', 'locale' => 'nl']), $this->values())->assertOk()->assertSee('locale nl');
+        $this->assertSame('en', $after->seen[3]);
+        $this->post(route('mainstay.canvas.create', 'post'), $this->values(['template' => 'special']))->assertOk()->assertSee('special: Hello');
+    }
+
+    #[Test]
+    public function a_copy_restored_draws_the_form_from_it_and_saving_it_keeps_another_editors_change(): void
+    {
+        $spread = Mainstay::create(Spread::class, ['title' => 'First', 'slug' => 'first', 'issuedOn' => '2026-10-07'], locale: 'en', overrideAccess: true);
+        $edit = route('mainstay.entries.edit', ['spread', $spread->id]);
+        $form = $this->get($edit);
+        preg_match('/data-copy="([^"]*)"/', $form->getContent(), $key);
+        $this->assertSame([User::query()->where('name', 'Ada 1')->value('id'), "/admin/spread/{$spread->id}", 'en'], json_decode(html_entity_decode($key[1]), true), 'Kept under the account, the screen and its locale.');
+        preg_match('/data-copy="([^"]*)"/', $this->get($edit.'?locale=nl')->getContent(), $dutch);
+        $this->assertSame('nl', json_decode(html_entity_decode($dutch[1]), true)[2]);
+        $copy = [...$this->drawn($form), 'title' => 'From the copy', 'slug' => 'first', 'issuedOn' => '2026-10-07'];
+
+        /* Another editor changes the date after the copy was made. */
+        Mainstay::drafts()->save(Spread::class, ['issuedOn' => '2026-12-01'], entry: $spread->id, locale: 'en', overrideAccess: true);
+        $theirs = Mainstay::drafts()->of(Spread::class, $spread->id, locale: 'en', overrideAccess: true)->updatedAt;
+
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$copy, 'intent' => 'restore'])->assertRedirect($edit)->assertSessionHas('restored');
+        $this->assertEquals($theirs, Mainstay::drafts()->of(Spread::class, $spread->id, locale: 'en', overrideAccess: true)->updatedAt, 'Nothing saved.');
+
+        $restored = $this->get($edit)->assertSee('value="From the copy"', escape: false)->assertSee('data-restored', escape: false);
+        $this->assertSame($copy['_seen'], $this->drawn($restored)['_seen'], 'The fingerprints it was made with.');
+        $this->assertSame($copy['_draft_at'], $this->drawn($restored)['_draft_at']);
+
+        /* Saved, it changes only what it changed; published, it is refused,
+           as from any form opened before the other editor's save. */
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$copy, ...$this->drawn($restored)])->assertSessionHasNoErrors();
+        $drafted = Mainstay::drafts()->of(Spread::class, $spread->id, locale: 'en', overrideAccess: true)->entry;
+        $this->assertSame(['From the copy', '2026-12-01'], [$drafted->title, $drafted->issuedOn->toDateString()]);
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$copy, ...$this->drawn($restored), 'intent' => 'publish'])->assertSessionHasErrors('draft');
+    }
+
+    #[Test]
+    public function a_global_restored_from_a_copy_draws_its_own_screen(): void
+    {
+        $this->post(route('mainstay.entries.store', 'banner'), ['text' => 'From the copy', 'intent' => 'restore'])->assertRedirect(route('mainstay.entries', 'banner'));
+        $this->assertSame(0, DB::table('mainstay_drafts')->count(), 'Nothing saved.');
+        $this->get(route('mainstay.entries', 'banner'))->assertSee('value="From the copy"', escape: false);
+    }
+
+    #[Test]
+    public function a_save_marks_the_page_it_lands_on_once_it_has_written(): void
+    {
+        $values = ['title' => 'First', 'slug' => 'first', 'issuedOn' => '2026-10-07'];
+
+        /* A draft saved, the page it lands on marked. */
+        $this->post(route('mainstay.entries.store', 'spread'), $values)->assertSessionHas(Form::SAVED);
+        $draft = Mainstay::drafts()->all(Spread::class, locale: 'en', overrideAccess: true)->sole();
+        $this->assertMatchesRegularExpression('/<body class="h-full"\s+data-saved\s*>/', $this->get(route('mainstay.drafts.edit', ['spread', $draft->id]))->getContent());
+        $this->get(route('mainstay.drafts.edit', ['spread', $draft->id]))->assertDontSee('data-saved', escape: false);
+
+        /* A publish refused once the draft was saved, and a save that came to
+           change nothing, its draft deleted. */
+        $live = Mainstay::create(Spread::class, ['title' => 'Live', 'slug' => 'live', 'issuedOn' => '2026-10-07'], locale: 'en', overrideAccess: true);
+        Mainstay::create(Spread::class, ['title' => 'Taken', 'slug' => 'taken', 'issuedOn' => '2026-10-07'], locale: 'en', overrideAccess: true);
+        $form = $this->get(route('mainstay.entries.edit', ['spread', $live->id]));
+        $this->post(route('mainstay.entries.update', ['spread', $live->id]), [...$this->drawn($form), 'slug' => 'taken', 'intent' => 'publish'])->assertSessionHasErrors('slug')->assertSessionHas(Form::SAVED);
+        $form = $this->get(route('mainstay.entries.edit', ['spread', $live->id]));
+        $this->post(route('mainstay.entries.update', ['spread', $live->id]), [...$this->drawn($form), 'slug' => 'live'])->assertSessionHas('status', 'Nothing to save: this is what is live.')->assertSessionHas(Form::SAVED);
+        $this->assertNull(Mainstay::drafts()->of(Spread::class, $live->id, locale: 'en', overrideAccess: true));
+
+        /* A term written; and a save refused, which marks nothing. */
+        $this->post(route('mainstay.entries.store', 'genre'), ['title' => 'Noir', 'slug' => 'noir'])->assertSessionHas(Form::SAVED);
+        $this->flushSession();
+        $this->signIn($this->user(role: 'administrator'));
+        $this->post(route('mainstay.entries.store', 'spread'), [...$values, 'issuedOn' => 'soon'])->assertSessionHasErrors('issuedOn')->assertSessionMissing(Form::SAVED);
     }
 
     #[Test]

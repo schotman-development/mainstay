@@ -61,8 +61,34 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
        the text. */
     private const LEVELS = [1, 2, 3, 4, 5, 6];
 
+    /* Whether this is the content the admin's Content tab edits. */
+    private bool $editing = false;
+
     /** @param array<string, Block> $blocks a content's site blocks, by id */
     public function __construct(private array $tree, private array $blocks = []) {}
+
+    /* No text: a paragraph holding nothing, as the editor opens one. */
+    public static function empty(): self
+    {
+        return new self(['type' => 'doc', 'content' => [['type' => 'paragraph']]]);
+    }
+
+    /*
+     | This content as the admin's Content tab edits it, printed for its
+     | editor rather than as the site draws it: a `<script
+     | type="application/json">` of the document and each site block's HTML
+     | by its id, and nothing else, which the editor reads and takes the
+     | element it sits in over with. Only the entry the tab edits is given
+     | one, so a rich text field, and another entry's content, on the same
+     | page draw as on the site.
+     */
+    public function editing(): self
+    {
+        $document = clone $this;
+        $document->editing = true;
+
+        return $document;
+    }
 
     /*
      | The site blocks the content holds, in its order: `@foreach
@@ -87,6 +113,14 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
 
     public function toHtml(): string
     {
+        if ($this->editing) {
+            /* A `</script>` typed in a paragraph stays text inside it. */
+            return '<script type="application/json" data-mainstay-content>'.json_encode([
+                'doc' => $this->tree,
+                'blocks' => (object) array_map(fn (Block $block) => $block->toHtml(), $this->blocks),
+            ], JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).'</script>';
+        }
+
         return ($this->tree['type'] ?? null) === 'doc' ? $this->node($this->tree) : '';
     }
 

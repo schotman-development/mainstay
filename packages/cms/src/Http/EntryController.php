@@ -7,6 +7,9 @@ use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -15,15 +18,21 @@ use InvalidArgumentException;
 use Mainstay\Auth\Gate;
 use Mainstay\Auth\User;
 use Mainstay\Content\ContentType;
+use Mainstay\Content\Document;
 use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
+use Mainstay\Fields\Content;
+use Mainstay\Fields\Field;
 use Mainstay\Fields\Relation;
 use Mainstay\Fields\Terms;
 use Mainstay\Mainstay;
 use Mainstay\Navigation;
 use Mainstay\Ui\EntryList;
+use ReflectionProperty;
+use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 /*
  | The admin's screens over the query layer: a type's list and trash, an
@@ -105,6 +114,109 @@ class EntryController
     public function saveDraft(Request $request, string $type, int $draft): RedirectResponse
     {
         return $this->save($request, $this->type($type, entries: true), draft: $draft);
+    }
+
+    /*
+     | The page the Content tab draws: the public page of the entry as the
+     | form now holds it, unsaved -- Mainstay::preview() of what the form
+     | changed, over the entry's draft -- drawn with nobody signed in and its
+     | content printed for the editor. Only a type with a page has one. What
+     | cannot be drawn answers why, as messages for the tab to show: a change
+     | refused as its save would be, a field the page needs left empty, a
+     | view that throws.
+     */
+    public function canvas(Request $request, string $type): Response
+    {
+        return $this->drawCanvas($request, $type);
+    }
+
+    public function entryCanvas(Request $request, string $type, int $id): Response
+    {
+        return $this->drawCanvas($request, $type, id: $id);
+    }
+
+    public function draftCanvas(Request $request, string $type, int $draft): Response
+    {
+        return $this->drawCanvas($request, $type, draft: $draft);
+    }
+
+    private function drawCanvas(Request $request, string $type, ?int $id = null, ?int $draft = null): Response
+    {
+        $class = $this->type($type, entries: true);
+
+        if ($this->mainstay->route($class) === null) {
+            throw $this->missing();
+        }
+
+        $locale = $this->locale($request);
+        $fields = Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class]));
+
+        try {
+            $changes = Form::changes($request, $class, $fields);
+
+            /* A tag typed and not picked is left out: only a save makes
+               one. */
+            foreach ($fields as $name => $field) {
+                if ($field instanceof Terms && is_array($changes[$name] ?? null)) {
+                    $changes[$name] = array_values(array_filter($changes[$name], fn (mixed $chip) => ! is_array($chip)));
+                }
+            }
+
+            $entry = $this->mainstay->preview($class, $id, $changes, draft: $draft, locale: $locale);
+        } catch (ValidationException $exception) {
+            return response()->json(['messages' => array_values(array_unique(Arr::flatten($exception->errors())))], 422);
+        } catch (AuthorizationException|RecordNotFoundException|InvalidArgumentException $exception) {
+            return response()->json(['messages' => [$exception->getMessage()]], $exception instanceof AuthorizationException ? 403 : 404);
+        }
+
+        /* As phase 8 has it, a draft leaves empty what its property cannot
+           hold -- a required date -- and the entry it reads as lacks it. */
+        $needed = array_filter($fields, fn (Field $field) => ! $field->internal && ! (new ReflectionProperty($entry, $field->name))->isInitialized($entry));
+
+        if ($needed !== []) {
+            return response()->json(['messages' => ['The page is drawn once it has '.implode(', ', array_map(fn (Field $field) => $field->label(), $needed)).'.']], 422);
+        }
+
+        $entry->content = ($entry->content ?? Document::empty())->editing();
+
+        return $this->asVisitor($request, $locale, function () use ($entry) {
+            try {
+                return response(view($this->mainstay->template($entry), ['entry' => $entry])->render())->header('Cache-Control', 'no-store');
+            } catch (Throwable $exception) {
+                report($exception);
+
+                return response()->json(['messages' => [$exception->getMessage() ?: 'The page stopped drawing with '.class_basename($exception).'.']], 500);
+            }
+        });
+    }
+
+    /*
+     | `$draw` with nobody signed in, as the public page is drawn: Mainstay's
+     | Gate reads as a visitor's, and the default guard is one with no user,
+     | so a host view's `@auth`, `auth()` and `@can` see a guest rather than
+     | the account the admin's session made the default. The container's
+     | resolved guard is forgotten on the way in and out, so the rest of the
+     | request keeps its own. In the form's locale.
+     */
+    private function asVisitor(Request $request, string $locale, callable $draw): mixed
+    {
+        $user = $request->attributes->get(Gate::USER);
+        $guard = Auth::getDefaultDriver();
+        $language = App::getLocale();
+
+        $request->attributes->remove(Gate::USER);
+        Auth::shouldUse(Gate::VISITOR);
+        app()->forgetInstance('auth.driver');
+        App::setLocale($locale);
+
+        try {
+            return $draw();
+        } finally {
+            $request->attributes->set(Gate::USER, $user);
+            Auth::shouldUse($guard);
+            app()->forgetInstance('auth.driver');
+            App::setLocale($language);
+        }
     }
 
     /* Throws a draft away, unless someone else saved it after this form drew
@@ -359,22 +471,38 @@ class EntryController
     private function save(Request $request, string $class, ?int $id = null, ?int $draft = null): RedirectResponse
     {
         $locale = $this->locale($request);
-        $data = Form::changes($request, $class, Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class])));
         $handle = $class::handle();
+        $global = is_subclass_of($class, GlobalSet::class);
+
+        /* The browser's copy of a form left unsaved, posted back: the form
+           drawn from it as a refused save draws what was posted, saving
+           nothing, with the fingerprints and the draft's time it was made
+           with, so saving it changes only what it changed. */
+        if ($request->input('intent') === 'restore') {
+            return redirect()->to($this->localized($request, match (true) {
+                $global => route('mainstay.entries', $handle),
+                $id !== null => route('mainstay.entries.edit', [$handle, $id]),
+                $draft !== null => route('mainstay.drafts.edit', [$handle, $draft]),
+                default => route('mainstay.entries.create', $handle),
+            }))->withInput($request->except('_token', 'intent'))->with('restored', true);
+        }
+
+        $data = Form::changes($request, $class, Form::fields($class, Gate::about($class)->allows('viewInternal', [$class, $class])));
 
         if (is_subclass_of($class, Taxonomy::class)) {
             $term = DB::transaction(fn () => $id === null
                 ? $this->mainstay->create($class, Form::terms($class, $data), locale: $locale)
                 : $this->mainstay->update($class, $id, Form::terms($class, $data), locale: $locale));
+            $request->session()->flash(Form::SAVED, true);
 
             return redirect()->to($this->localized($request, route('mainstay.entries.edit', [$handle, $term->id])))->with('status', 'Saved.');
         }
 
-        $global = is_subclass_of($class, GlobalSet::class);
         $before = $this->current($request, $class, $id, $draft);
         /* Tags typed are created with the save, and gone with it if it is
            refused. */
         $saved = DB::transaction(fn () => $this->mainstay->drafts()->save($class, Form::terms($class, $data), entry: $id, draft: $draft, locale: $locale));
+        $request->session()->flash(Form::SAVED, true);
 
         $here = $this->localized($request, match (true) {
             $global => route('mainstay.entries', $handle),
@@ -626,6 +754,18 @@ class EntryController
             'owner_id' => ($entry ?? $other)?->ownerId,
             ...$this->authors($class, $entry ?? $other, $id, $current),
             'action' => $this->localized($request, $action),
+            /* Where the Content tab draws the page from, for a type with
+               one, and the blocks it adds, by handle. */
+            'canvas' => $routed ? $this->localized($request, match (true) {
+                $id !== null => route('mainstay.canvas.entry', [$class::handle(), $id]),
+                $current !== null => route('mainstay.canvas.draft', [$class::handle(), $current->id]),
+                default => route('mainstay.canvas.create', $class::handle()),
+            }) : null,
+            'blocks' => collect(($fields['content'] ?? null) instanceof Content ? $fields['content']->blocks() : [])
+                ->mapWithKeys(fn (string $block) => [$block::handle() => Str::ucfirst(str_replace('_', ' ', $block::handle()))])->all(),
+            /* The browser's copy of the form left unsaved is kept under this:
+               the account, the screen and its locale. */
+            'copy' => json_encode([Gate::user()?->getKey(), $request->getPathInfo(), $locale], JSON_UNESCAPED_SLASHES),
             'publishes' => ! $term && $gate->allows('publish', $entry instanceof Entry ? [$entry] : [$class, $class]),
             'deletes' => $live && $gate->allows('delete', [$shown]),
         ]);
