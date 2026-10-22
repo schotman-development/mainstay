@@ -21,7 +21,11 @@ picked from a media library of its own, relations as rows and tags typed -- savi
 publishing it, with the trash, the front page and each entry's history, naming who published each
 version, as screens. Phase 11 is done: accounts are invited from the admin to choose their password
 by mail, roles are a grid of the capabilities the types derive, nobody hands out what they do not
-hold, everyone has settings of their own, and an entry's author is changed in its form.
+hold, everyone has settings of their own, and an entry's author is changed in its form. Phase 12
+is done: every entry has content, text and the blocks its type names, a block holding blocks inside
+it, and a type with a page edits it on a Content tab, the page as the site draws it from the form,
+with its text and a block's text typed in place, a toolbar floating by the block, and a block's
+fields and images edited in dialogs.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
 document schema the package renders.
