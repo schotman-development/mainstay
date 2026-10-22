@@ -1385,10 +1385,10 @@ password from the mailed link and signs in.
 An entry's content, edited in the admin on the page the site draws from it. Every entry has content,
 as every WordPress post has `post_content`: a document whose top-level nodes are its blocks,
 Mainstay's text blocks and the site's own. The edit screen is two tabs. Details is phase 10's form,
-the title first. Content is the page the site's view renders from the form as it stands -- the
-layout, the header, the fields drawn around the content -- with the content edited where the view
-prints it: text typed in place, a site block drawn by its own view with its text typed in place too
-and every field of it in a sidebar. Nothing previews beside it: the Content tab is the preview.
+the title first. Content is the page's `<main>` as the site's view renders it from the form as it
+stands -- the fields drawn around the content, not the layout's header, menu and footer -- with the
+content edited where the view prints it: text typed in place, a site block drawn by its own view with
+its text typed in place too and every field of it in a sidebar. Nothing previews beside it: the Content tab is the preview.
 
 It reverses two things in `decisions.md`: "Notion-style inline block editing is off the table", with
 preview beside the editing surface, and the form-based list of blocks. It keeps what the rendering
@@ -1399,7 +1399,7 @@ public path reads a draft.
 
 It is three pull requests, each merged on its own and each leaving an admin that works: 12a content
 on every entry, drawn on the site and kept in Details as raw data; 12b the Content tab, with the text
-blocks; 12c the site's blocks in it.
+blocks; 12c the site's blocks in it, with 12d's changes, made once 12c was tried.
 
 ### 12a — Content on every entry
 
@@ -1524,7 +1524,7 @@ required -- is refused as that save would be, and writes nothing. A tag typed in
 exist yet is left out, since only a save makes one.
 
 The page is the response the public route gives that entry, `Mainstay::template($entry)` with
-`$entry`, but for four things.
+`$entry`, but for five things.
 
 - The locale is the form's.
 - Nobody is signed in while it draws. Mainstay's Gate reads as a visitor, so everything else on the
@@ -1537,6 +1537,9 @@ The page is the response the public route gives that entry, `Mainstay::template(
   and 12c's `@field` read that from the content they are given, so a rich text field and another
   entry's content on the page draw as on the site. An empty content draws for the editor as an empty
   document.
+- Only its `<main>` shows. The header, menu and footer around it are the site's layout, which phase
+  16's parts build, not this entry, so writing the page into the frame leaves them out; a page with no
+  `<main>` shows whole.
 - No script runs in it. The frame is `sandbox="allow-same-origin"`, without `allow-scripts`, so the
   site's own scripts, and any third party's they load, never run in the admin's origin with the
   editor's session, in the page written there or in one it is navigated to. The editor's script runs
@@ -1657,15 +1660,20 @@ of its items, each its fields, added, moved up and down and removed: the one pla
 list of blocks, since an item has no page of its own to be edited on. Typing in place updates the
 sidebar, and the sidebar updates the text in place.
 
-The server draws and reads the sidebar, so each field's `fromForm()` stays the one conversion.
-`/admin/article/block/form` draws it from the block's data, posted, and a change posts it to
-`/admin/article/block`, which converts it, checks it as a draft save would, and answers the block's
-data and its HTML drawn for the editor -- as the canvas draws, the Gate a visitor's -- which replaces
-the block in the frame. Both refuse a block the type does not allow, and anyone who may not update the
-type.
+The server draws and reads the sidebar, so each field's `fromForm()` stays the one conversion. Each
+edit screen posts to a block route beside its canvas -- `/admin/page/5/block`, `/admin/page/new/block`,
+`/admin/page/drafts/3/block`. Selecting a block posts it as the document holds it, and the answer is
+its sidebar. A change posts the sidebar, a list's Add, Up, Down or Remove naming what it asks, and
+the server converts it, checks it as a draft save would, and answers the block's data and its HTML
+drawn for the editor -- as the canvas draws, the Gate a visitor's -- which replaces the block in the
+frame. A change the check refuses answers why, by the field's label, with the block as converted, so
+the document holds what the sidebar shows and the save refuses it as well. An undo or a redo that
+changes a block draws it again. The route refuses a block the type does not allow, and anyone who may
+not update the type.
 
 **Errors.** A save refused for a block's field lists the error above the frame naming the block, marks
-the block, and shows the message in its sidebar, as Details lists it above the raw data.
+the block until it changes, and shows the message in its sidebar at its field -- posted with the block
+while it is unchanged, since a draft's check does not ask for what a publish requires.
 
 **The site.** Hero, FeatureGrid and the lists' headings print their text with `@field`. The phase 12
 article, waiting as a draft, is written and published, and the next, on phase 13, waits as one. The docs
@@ -1679,6 +1687,58 @@ block's error listed and marked; a Feature's `title` changed in the sidebar and 
 page's title as it was. Vitest: selecting a block opening the sidebar, typing in place and in the
 sidebar each updating the other, the block replaced by the HTML answered. The headless browser: the
 front page's hero edited in place.
+
+### 12d — Gutenberg's controls, and blocks inside blocks
+
+Changed once 12c was tried, before it was merged. It replaces 12c's sidebar and its list of a block's
+items.
+
+**The bars.** The tabs' bar sits right under the breadcrumb bar and is as tall, its labels centred in
+it. While Content is open, Undo, Redo and Add block sit at its end, as Gutenberg's header holds them.
+
+**The toolbar.** The block toolbar floats by the current block over the frame, as Gutenberg's does:
+above it, kept at the frame's top while the block runs on under it, and hidden while text is typed
+until the page is pointed at again. It holds the grip a block is dragged by -- no column beside the
+frame -- Move up and Move down, Turn into and the text tools for text, Replace image and Edit image for
+a block printing an image, Block settings, Duplicate and Delete.
+
+**Settings.** Block settings opens the block's settings in a dialog at the side of the screen: every
+field of the block, drawn, posted and answered as 12c's sidebar was. Selecting another block or leaving
+the tab closes it.
+
+**Blocks inside blocks.** A block holds blocks inside it as Gutenberg's Columns and Group do,
+`#[Blocks([Feature::class])]` on its class naming them as on an entry type's. They are its content in
+the document, `{type: 'block', attrs: {...}, content: [...]}`, checked, read and written as the top
+level's are, each by where it is -- `content.content.3.content.0.attrs.data.title` -- with one id
+across the whole document. The Blocks field goes: a property marked `#[Blocks]` is refused, naming
+the class attribute. A block's view prints the blocks inside it with `@inner($block)`, each through
+its own view, and `$block->inner()` reads them. For the editor `@inner` marks the place, and each
+block inside is drawn there as its own island: selected, typed into, moved, duplicated, deleted and
+dragged among the blocks beside it -- side by side, as a grid's are -- and added from the Add block
+menu, which inside a block offers only what that block holds. A new block that holds blocks starts
+with one of the first kind it holds. A block's settings list the blocks inside it, each selecting it
+on the page, and a button adding each kind it holds. Not done: text inside a block, and moving a block
+from one block into another.
+
+The block route takes the blocks around the one posted, `ancestors`, outermost first, and refuses a
+block the one around it does not hold.
+
+**Images.** An image a block prints with `picture()` is marked for the editor with its block and
+field. Replace image opens the library's picker, and the image picked goes into the block's data, in
+a step undo takes back, the block drawn again. Edit image opens the image's own form -- its focal
+point and its alt text in every language -- in a dialog, saved there for JSON, and the block is drawn
+again.
+
+**The site.** FeatureGrid holds its Features inside it, each drawn by `blocks/feature.blade.php`. The
+seeder writes them so, and the docs pages "Fields" and "Content" and the phase 12 article say so.
+
+**The check.** The PHP suites move to blocks inside blocks: rules and refusals by path, reading and
+writing, `@inner` on the site and for the editor, the block route with `ancestors`, a refused block
+inside another marked, a block's image marked, the image dialog's form and its JSON save. Vitest: the
+header and the floating toolbar, the settings dialog, a block inside another typed into and posted
+with what is around it, its list in the settings, adding, moving, dragging side by side and removing
+inside, the image picked and edited. The headless browser: the bars, the toolbar, the dialogs and the
+front page's features.
 
 ## Phase 13 — The API as a product
 
