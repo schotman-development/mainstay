@@ -1,10 +1,10 @@
 import { baseKeymap, chainCommands } from 'prosemirror-commands'
-import { history, redo, undo } from 'prosemirror-history'
+import { history, isHistoryTransaction, redo, undo } from 'prosemirror-history'
 import { keymap } from 'prosemirror-keymap'
 import { DOMSerializer, Node, NodeRange } from 'prosemirror-model'
 import { wrapRangeInList } from 'prosemirror-schema-list'
-import { type Command, EditorState, NodeSelection, Plugin, Selection, TextSelection, type Transaction } from 'prosemirror-state'
-import { Decoration, DecorationSet, EditorView, type NodeViewConstructor } from 'prosemirror-view'
+import { AllSelection, type Command, EditorState, NodeSelection, Plugin, Selection, TextSelection, type Transaction } from 'prosemirror-state'
+import { Decoration, DecorationSet, type DecorationAttrs, EditorView, type NodeViewConstructor } from 'prosemirror-view'
 import prosemirror from 'prosemirror-view/style/prosemirror.css?raw'
 import { kit } from './editor'
 import { contentSchema } from './schema'
@@ -17,8 +17,10 @@ import { contentSchema } from './schema'
  | mounts on the element the content's script sits in, and every change goes
  | into Details' raw content, the field's one input. Every control is outside
  | the frame, where canvas.blade.php draws it: the toolbar, the menu of blocks
- | to add, the grip a block is dragged by. No script runs in the frame; this
- | one, around it, cancels its links.
+ | to add, the grip a block is dragged by, and the sidebar a selected site
+ | block's fields are in, which the server draws. A block's @field text is
+ | typed in place. No script runs in the frame; this one, around it, cancels
+ | its links.
  */
 
 const { nodes } = contentSchema
@@ -249,8 +251,8 @@ const random = () => Array.from(crypto.getRandomValues(new Uint8Array(13)), (byt
 /*
  | Every site block its own id, as Content.php's distinct rule asks: one added
  | without, and the second of two -- a duplicate, a paste -- given one, which
- | draws the HTML the first one drew. The block that was there keeps its own,
- | so a paste before it does not take it.
+ | draws the HTML the first one drew, its @field text marked as its own. The
+ | block that was there keeps its own, so a paste before it does not take it.
  */
 function ids(html: Map<string, string>): Plugin {
   return new Plugin({
@@ -272,7 +274,7 @@ function ids(html: Map<string, string>): Plugin {
 
         const given = random()
 
-        if (id !== null && html.has(id)) html.set(given, html.get(id)!)
+        if (id !== null && html.has(id)) html.set(given, html.get(id)!.replaceAll(`data-mainstay-item="${id}"`, `data-mainstay-item="${given}"`))
         tr.setNodeAttribute(offset, 'id', given)
       })
 
@@ -281,24 +283,63 @@ function ids(html: Map<string, string>): Plugin {
   })
 }
 
-/* The current block outlined in the page. */
-const outline = new Plugin({
-  props: {
-    decorations(state) {
-      const { node, pos } = current(state)
+type Data = Record<string, unknown>
 
-      return DecorationSet.create(state.doc, [Decoration.node(pos, pos + node.nodeSize, { class: 'mainstay-current' })])
-    },
-  },
-})
+/* The data of the item `id` names in a site block's -- the block itself, or
+   an item of a list inside it, at any depth -- or undefined. */
+function itemOf(data: Data, block: string, id: string): Data | undefined {
+  if (id === block) return data
+
+  for (const list of Object.values(data)) {
+    for (const each of Array.isArray(list) ? (list as unknown[]) : []) {
+      const nested = each as { id?: unknown; data?: unknown } | null
+
+      if (nested && typeof nested.data === 'object' && nested.data !== null) {
+        const found = itemOf(nested.data as Data, String(nested.id), id)
+
+        if (found) return found
+      }
+    }
+  }
+
+  return undefined
+}
+
+/* A block's data with the field `field` of the item `id` holding `value`. */
+function edited(data: Data, block: string, id: string, field: string, value: string): Data {
+  const copy = structuredClone(data)
+  const item = itemOf(copy, block, id)
+
+  if (item) item[field] = value
+
+  return copy
+}
+
+/* Data as JSON, each object's keys in order: the server answers a block's
+   data in an order of its own. */
+const keyed = (data: unknown): string =>
+  JSON.stringify(data, (_, each: unknown) => (each && typeof each === 'object' && !Array.isArray(each) ? Object.fromEntries(Object.entries(each).sort(([a], [b]) => (a < b ? -1 : 1))) : each))
+
+/* What @field text says, its lines kept where its field takes them. */
+const said = (span: HTMLElement): string => {
+  /* jsdom has no innerText. */
+  const text = (span.innerText as string | undefined) ?? span.textContent ?? ''
+
+  return span.hasAttribute('data-mainstay-lines') ? text : text.replace(/\s*\n\s*/g, ' ')
+}
 
 /* What the admin adds to the page: ProseMirror's own, the current block's
-   outline and the placeholder of a block that draws nothing. */
+   outline, a refused block's mark, the placeholder of a block that draws
+   nothing, and @field text, showing its field's label while it is empty. */
 const css = `${prosemirror}
 .ProseMirror { outline: none }
 .mainstay-current { outline: 1px dashed rgb(37 99 235 / 0.6); outline-offset: 4px }
+.mainstay-invalid { outline: 2px solid rgb(220 38 38); outline-offset: 4px }
 .ProseMirror-selectednode { outline: 2px solid rgb(37 99 235); outline-offset: 4px }
-[data-mainstay-placeholder] { padding: 1rem; border: 1px dashed #94a3b8; border-radius: 4px; color: #475569; font: 14px/1.4 system-ui, sans-serif; text-align: center }`
+[data-mainstay-placeholder] { padding: 1rem; border: 1px dashed #94a3b8; border-radius: 4px; color: #475569; font: 14px/1.4 system-ui, sans-serif; text-align: center }
+[data-mainstay-field] { outline: none; cursor: text }
+[data-mainstay-field]:empty::before { content: attr(data-mainstay-label); opacity: 0.5 }
+[data-mainstay-lines] { white-space: pre-wrap }`
 
 const commands: Record<string, Command> = {
   undo,
@@ -320,32 +361,6 @@ const parse = (html: string, page: Document): DocumentFragment => {
   template.innerHTML = html
 
   return page.importNode(template.content, true)
-}
-
-/*
- | A site block as its view drew it, an island the editor does not edit: the
- | element itself where the HTML is one, so the page's own CSS spaces it, and
- | wrapped where it is more. Drawing nothing -- or nothing yet, added since
- | the page was drawn -- it is a placeholder naming it.
- */
-function island(html: Map<string, string>, labels: Record<string, string>): NodeViewConstructor {
-  return (node, view) => {
-    const page = view.dom.ownerDocument
-    const drawn = parse(html.get(node.attrs.id) ?? '', page)
-    const only = drawn.firstElementChild
-    const alone = only !== null && [...drawn.childNodes].every((child) => child === only || (child.nodeType !== 1 && (child.textContent ?? '').trim() === ''))
-    let dom = only as HTMLElement | null
-
-    if ((html.get(node.attrs.id) ?? '').trim() === '') {
-      dom = Object.assign(page.createElement('div'), { textContent: labels[node.attrs.type] ?? node.attrs.type })
-      dom.setAttribute('data-mainstay-placeholder', '')
-    } else if (!alone) {
-      dom = page.createElement('div')
-      dom.append(drawn)
-    }
-
-    return { dom: dom!, ignoreMutation: () => true }
-  }
 }
 
 /* The content as the site draws it, for a page the editor cannot mount on:
@@ -383,9 +398,15 @@ function landing(view: EditorView, y: number): { index: number; y: number } {
 
 const wired = new WeakMap<HTMLElement, () => EditorView | null>()
 
-/* Wires one `[data-canvas]`, once, handing back what gives the editor on
-   its page, while there is one: a second call, the first one's. */
-export function canvas(element: HTMLElement): (() => EditorView | null) | undefined {
+/* What the block route answers: as much of it as it could draw. */
+type Answer = { block?: { id: string; type: string; data: Data }; html?: string; form?: string | null; messages?: string[] }
+
+/*
+ | Wires one `[data-canvas]`, once, handing back what gives the editor on its
+ | page, while there is one: a second call, the first one's. `wire` gives the
+ | admin's behaviour to what the server draws into a block's sidebar.
+ */
+export function canvas(element: HTMLElement, wire: (root: HTMLElement) => void = () => {}): (() => EditorView | null) | undefined {
   const form = element.closest('form')
   const textarea = form?.querySelector<HTMLTextAreaElement>('textarea[name="content"]')
   const toolbar = element.querySelector<HTMLElement>('[data-canvas-toolbar]')
@@ -398,13 +419,25 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
   const add = toolbar?.querySelector<HTMLButtonElement>('button[data-command="add"]')
   const turner = toolbar?.querySelector<HTMLSelectElement>('select[data-command="turn"]')
   const url = element.dataset.canvasUrl
+  const blocked = element.dataset.blockUrl
+  const sidebar = blocked ? (document.getElementById(element.dataset.sidebar ?? '') as HTMLFormElement | null) : null
+  const body = sidebar?.querySelector<HTMLElement>('[data-sidebar-body]')
+  const told = sidebar?.querySelector<HTMLElement>('[data-sidebar-messages]')
 
   if (wired.has(element)) return wired.get(element)
   if (!form || !textarea || !toolbar || !message || !stage || !frame || !grip || !line || !menu || !add || !turner || !url) return undefined
 
   const labels = JSON.parse(element.dataset.blocks ?? '{}') as Record<string, string>
+  /* A refused save's errors, by the block they are in: marked until it changes. */
+  const invalid = JSON.parse(element.dataset.invalid ?? '{}') as Record<string, { label: string; messages: Record<string, string[]> }>
   const panel = element.closest<HTMLElement>('[role="tabpanel"]')
   const html = new Map<string, string>()
+  /* By block, how often its HTML was replaced, which redraws it, and the
+     blocks to redraw once the text typed in them loses the focus. */
+  const versions = new Map<string, number>()
+  const held = new Set<string>()
+  /* By block, the last change posted. */
+  const changes = new Map<string, number>()
   let state: EditorState | null = null
   let view: EditorView | null = null
   /* The document the editor opened and the text it opened from, which a
@@ -417,6 +450,15 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
   let asked = 0
   let dragging: number | null = null
   let slashed = false
+  /* The block the sidebar is for, the last time it was asked for, and
+     the change waiting to be posted. */
+  let selected: string | null = null
+  let looked = 0
+  let waiting: ReturnType<typeof setTimeout> | undefined
+  /* Each stretch of typing in one @field, which undo takes back whole, and
+     the one a change still to be answered was typed in. */
+  let typing = 0
+  let typed: string | undefined
 
   const say = (text: string | null) => {
     message.textContent = text ?? ''
@@ -498,11 +540,315 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
     return true
   }
 
-  const plugins = [history(), keymap({ Enter: chainCommands(after, leave), Backspace: emptied, '/': slash }), keymap(keys), keymap(baseKeymap), ids(html), outline]
+  /*
+   | The current block outlined; a block a refused save named marked until it
+   | changes; and a block whose HTML was replaced given its count, which makes
+   | ProseMirror ask its view to update, and the view draw it again.
+   */
+  const marks = new Plugin({
+    props: {
+      decorations(state) {
+        const { node, pos } = current(state)
+        const found = [Decoration.node(pos, pos + node.nodeSize, { class: 'mainstay-current' })]
+
+        state.doc.forEach((child, offset) => {
+          const attrs: DecorationAttrs = {}
+
+          if (child.type !== nodes.block) return
+          if (invalid[child.attrs.id]) attrs.class = 'mainstay-invalid'
+          if (versions.has(child.attrs.id)) attrs['data-mainstay-drawn'] = String(versions.get(child.attrs.id))
+          if (Object.keys(attrs).length > 0) found.push(Decoration.node(offset, offset + child.nodeSize, attrs))
+        })
+
+        return DecorationSet.create(state.doc, found)
+      },
+    },
+  })
+
+  /*
+   | A site block as its view drew it, an island the editor does not edit: the
+   | element itself where the HTML is one, so the page's own CSS spaces it, and
+   | wrapped where it is more. Drawing nothing -- or nothing yet, added since
+   | the page was drawn -- it is a placeholder naming it. Its @field text is
+   | typed in place, the events in it the admin's alone, and says what the
+   | block's data does, whoever changed it.
+   */
+  const island: NodeViewConstructor = (node, view) => {
+    const page = view.dom.ownerDocument
+    const id: string = node.attrs.id
+    const version = versions.get(id) ?? 0
+    const drawn = parse(html.get(id) ?? '', page)
+    const only = drawn.firstElementChild
+    const alone = only !== null && [...drawn.childNodes].every((child) => child === only || (child.nodeType !== 1 && (child.textContent ?? '').trim() === ''))
+    let dom = only as HTMLElement | null
+
+    if ((html.get(id) ?? '').trim() === '') {
+      dom = Object.assign(page.createElement('div'), { textContent: labels[node.attrs.type] ?? node.attrs.type })
+      dom.setAttribute('data-mainstay-placeholder', '')
+    } else if (!alone) {
+      dom = page.createElement('div')
+      dom.append(drawn)
+    }
+
+    const spans = [...dom!.querySelectorAll<HTMLElement>('[data-mainstay-field]')]
+    const fill = (data: Data) => {
+      for (const span of spans) {
+        const item = itemOf(data, id, span.dataset.mainstayItem ?? '')
+        const text = String(item?.[span.dataset.mainstayField ?? ''] ?? '')
+
+        if (item && said(span) !== text) span.textContent = text
+      }
+    }
+
+    for (const span of spans) span.setAttribute('contenteditable', 'plaintext-only')
+    fill(node.attrs.data)
+
+    return {
+      dom: dom!,
+      update: (next) => {
+        if (next.type !== node.type || next.attrs.id !== id || (versions.get(id) ?? 0) !== version) return false
+
+        fill(next.attrs.data)
+
+        return true
+      },
+      stopEvent: (event) => (event.target as Element | null)?.closest?.('[data-mainstay-field]') != null,
+      ignoreMutation: () => true,
+      /* Not made draggable, as ProseMirror makes a selected node: a drag in
+         its text selects the text. The grip moves it. */
+      selectNode: () => dom!.classList.add('ProseMirror-selectednode'),
+      deselectNode: () => dom!.classList.remove('ProseMirror-selectednode'),
+    }
+  }
+
+  const plugins = [history(), keymap({ Enter: chainCommands(after, leave), Backspace: emptied, '/': slash }), keymap(keys), keymap(baseKeymap), ids(html), marks]
+
+  /* The block `id` names in the editor's document, and where. */
+  const find = (id: string): { node: Node; pos: number } | null => {
+    let found: { node: Node; pos: number } | null = null
+
+    view?.state.doc.forEach((node, pos) => {
+      if (node.type === nodes.block && node.attrs.id === id) found ??= { node, pos }
+    })
+
+    return found
+  }
+
+  /* A block's data as given, in one step of its own: the sidebar's, or
+     `group`'s, a stretch of typing in place. */
+  const store = (id: string, data: Data, group?: string) => {
+    const at = find(id)
+
+    if (view && at && keyed(at.node.attrs.data) !== keyed(data)) {
+      view.dispatch(view.state.tr.setNodeAttribute(at.pos, 'data', data).setMeta('composition', group))
+    }
+  }
+
+  /* Each block whose HTML was replaced drawn again, but one whose text is
+     being typed in, which is drawn once the focus leaves it. */
+  const flush = () => {
+    /* The frame keeps its active element when the focus goes outside it. */
+    const page = frame.contentDocument
+    const active = page?.hasFocus() ? page.activeElement?.closest('[data-mainstay-field]') : null
+    let drawn = false
+
+    for (const id of held) {
+      const at = find(id)
+
+      if (!view || (active && at && (view.nodeDOM(at.pos) as Element | null)?.contains(active))) continue
+
+      held.delete(id)
+      versions.set(id, (versions.get(id) ?? 0) + 1)
+      drawn = true
+    }
+
+    if (drawn) view?.dispatch(view.state.tr)
+  }
+
+  const redraw = (id: string, markup: string) => {
+    if (html.get(id) === markup) return
+
+    html.set(id, markup)
+    held.add(id)
+    flush()
+  }
+
+  /* No longer named by a refused save: changed since. */
+  const forgive = (id: string) => {
+    const list = element.querySelector('[data-canvas-invalid]')
+
+    delete invalid[id]
+    for (const each of element.querySelectorAll(`[data-invalid-block="${id}"]`)) each.remove()
+    if (list && list.children.length === 0) list.remove()
+  }
+
+  /* What the server says of the selected block, above its fields. */
+  const tell = (messages: string[] | undefined) => {
+    if (!told) return
+
+    told.replaceChildren(...(messages ?? []).map((text) => Object.assign(document.createElement('p'), { textContent: text })))
+    told.hidden = !messages?.length
+  }
+
+  /* A block posted to the block route: answered, or why not. */
+  const send = async (data: FormData): Promise<Answer> => {
+    data.set('_token', form.querySelector<HTMLInputElement>('input[name="_token"]')?.value ?? '')
+
+    try {
+      const response = await fetch(blocked!, { method: 'POST', body: data, headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, redirect: 'manual' })
+
+      if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 419) {
+        return { messages: ['Your session has ended. Sign in again in another tab, then select the block again: what you changed is kept in this browser.'] }
+      }
+
+      return ((await response.json().catch(() => null)) as Answer | null) ?? { messages: [`The block could not be drawn: the server answered ${response.status}.`] }
+    } catch {
+      return { messages: ['The block could not be reached. Select it again to try once more.'] }
+    }
+  }
+
+  /* The sidebar's fields, as the server drew them for the block. */
+  const show = (markup: string) => {
+    body!.innerHTML = markup
+    wire(body!)
+  }
+
+  /*
+   | A block as the document holds it, posted for its sidebar once it is
+   | selected -- with a refused save's messages, while it is what was
+   | refused -- and for its HTML once an undo or a redo changed it.
+   */
+  const look = async (id: string): Promise<void> => {
+    const at = find(id)
+    const ask = id === selected ? ++looked : looked
+    const data = new FormData()
+
+    if (!at) return
+
+    data.set('block', JSON.stringify(at.node.attrs))
+    if (invalid[id]) data.set('errors', JSON.stringify(invalid[id].messages))
+
+    const answer = await send(data)
+    const now = find(id)
+
+    if (answer.html !== undefined && now?.node.attrs.data === at.node.attrs.data) redraw(id, answer.html)
+    if (id !== selected || ask !== looked) return
+
+    if (typeof answer.form === 'string') show(answer.form)
+    tell(answer.form ? undefined : answer.messages)
+  }
+
+  /*
+   | The sidebar posted after one of its fields changed, `op` naming an item
+   | of a list in it to add, move or remove. Its answer is the block's data,
+   | each field through its own conversion, and its HTML, unless the block
+   | changed again since, whose change answers instead.
+   */
+  const change = async (op?: HTMLElement): Promise<void> => {
+    clearTimeout(waiting)
+    waiting = undefined
+
+    const id = selected
+    const at = id === null ? null : find(id)
+
+    if (!sidebar || id === null || !at) return
+
+    const data = new FormData(sidebar)
+    const ask = (changes.get(id) ?? 0) + 1
+    /* The answer to typing is part of it; a list's control is a step of
+       its own. */
+    const group = op ? undefined : typed
+
+    typed = undefined
+
+    for (const [key, value] of Object.entries({ op: op?.dataset.blockOp, list: op?.dataset.list, index: op?.dataset.index, kind: op?.dataset.kind })) {
+      if (value !== undefined) data.set(key, value)
+    }
+
+    changes.set(id, ask)
+
+    const answer = await send(data)
+    const now = find(id)
+
+    if (changes.get(id) !== ask || !now || now.node.attrs.data !== at.node.attrs.data) return
+
+    if (answer.block) store(id, answer.block.data, group)
+    if (answer.html !== undefined) redraw(id, answer.html)
+    if (id !== selected) return
+
+    if (typeof answer.form === 'string') show(answer.form)
+    else if (!answer.messages) for (const each of body!.querySelectorAll('[id$="-error"]')) each.remove()
+    tell(answer.messages)
+  }
+
+  /* A change posted once the typing pauses. */
+  const later = () => {
+    clearTimeout(waiting)
+    waiting = setTimeout(() => void change(), 300)
+  }
+
+  /* The sidebar opened for the block `id` names, or closed for none. A
+     change still waiting is posted for the block it was made in. */
+  const choose = (id: string | null) => {
+    if (waiting !== undefined) void change()
+
+    selected = id
+    if (!sidebar || !body) return
+
+    sidebar.hidden = id === null || panel?.hidden === true
+    body.replaceChildren()
+    tell(undefined)
+    if (id !== null) void look(id)
+  }
+
+  /* The site block whose element holds `inside`, and where. */
+  const holding = (inside: Element): { node: Node; pos: number } | null => {
+    let found: { node: Node; pos: number } | null = null
+
+    view?.state.doc.forEach((node, pos) => {
+      if (node.type === nodes.block && (view!.nodeDOM(pos) as Element | null)?.contains(inside)) found ??= { node, pos }
+    })
+
+    return found
+  }
+
+  /* A field of the selected block's set to `text`, typed in place or in its
+     sidebar: its data, and the other one of the two. */
+  const set = (item: string, field: string, text: string) => {
+    const at = selected === null ? null : find(selected)
+
+    if (!at) return
+
+    typed = `field-${typing}`
+    store(selected!, edited(at.node.attrs.data, selected!, item, field, text), typed)
+
+    for (const input of sidebar?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[data-mainstay-item], textarea[data-mainstay-item]') ?? []) {
+      if (input.dataset.mainstayItem === item && input.dataset.mainstayField === field && input.value !== text) input.value = text
+    }
+
+    later()
+  }
+
+  /* What the selection is on, when it is a site block. */
+  const chosen = (state: EditorState): string | null => (state.selection instanceof NodeSelection && state.selection.node.type === nodes.block ? state.selection.node.attrs.id : null)
 
   function dispatchTransaction(this: EditorView, tr: Transaction): void {
+    const was = new Map<string, unknown>()
+    const changed: string[] = []
+
+    this.state.doc.forEach((node) => node.type === nodes.block && was.set(node.attrs.id, node.attrs.data))
     state = this.state.apply(tr)
+
+    /* A block changed is no longer what a refused save named; one an undo
+       or a redo changed is drawn again. */
+    state.doc.forEach((node) => {
+      if (node.type !== nodes.block || !was.has(node.attrs.id) || was.get(node.attrs.id) === node.attrs.data) return
+      if (invalid[node.attrs.id]) forgive(node.attrs.id)
+      changed.push(node.attrs.id)
+    })
+
     this.updateState(state)
+    if (isHistoryTransaction(tr)) for (const id of changed) void look(id)
 
     if (tr.docChanged) {
       let missing = false
@@ -517,6 +863,7 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
       if (missing) void draw()
     }
 
+    if (chosen(state) !== selected) choose(chosen(state))
     sync()
   }
 
@@ -544,6 +891,7 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
         state = EditorState.create({ doc, plugins })
         opened = { doc, text: textarea.value }
         written = textarea.value
+        choose(null)
       } catch (error) {
         script.remove()
 
@@ -567,7 +915,7 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
 
     say(null)
     script.remove()
-    view = new EditorView({ mount: parent as HTMLElement }, { state, nodeViews: { block: island(html, labels) }, dispatchTransaction })
+    view = new EditorView({ mount: parent as HTMLElement }, { state, nodeViews: { block: island }, dispatchTransaction })
   }
 
   /* Every listener the admin puts on the frame, again after each write,
@@ -581,6 +929,35 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
     page.addEventListener('auxclick', cancel, true)
     page.addEventListener('pointerdown', close)
     page.addEventListener('scroll', place)
+
+    /* @field text: selecting its block as it is focused, one line where its
+       field holds one, and every change into the block's data. */
+    page.addEventListener('focusin', (event) => {
+      const span = (event.target as Element | null)?.closest?.('[data-mainstay-field]')
+      const at = span ? holding(span) : null
+
+      typing++
+      if (!view || !at || (chosen(view.state) === at.node.attrs.id && selected === at.node.attrs.id)) return
+
+      /* On it already, as a page starting with a site block opens, but never
+         drawn so: off it first, for ProseMirror to draw it selected. */
+      if (chosen(view.state) === at.node.attrs.id) view.dispatch(view.state.tr.setSelection(new AllSelection(view.state.doc)))
+      view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, at.pos)))
+    })
+    page.addEventListener('focusout', () => setTimeout(flush))
+    page.addEventListener('keydown', (event) => {
+      const span = (event.target as Element | null)?.closest?.('[data-mainstay-field]')
+
+      if (span && event.key === 'Enter' && !span.hasAttribute('data-mainstay-lines')) event.preventDefault()
+    })
+    page.addEventListener('input', (event) => {
+      const span = (event.target as Element | null)?.closest?.<HTMLElement>('[data-mainstay-field]')
+
+      if (!span || selected === null || holding(span)?.node.attrs.id !== selected) return
+      if (said(span) === '') span.replaceChildren()
+
+      set(span.dataset.mainstayItem ?? '', span.dataset.mainstayField ?? '', said(span))
+    })
 
     /* During a grip drag, the drop is the admin's alone: ProseMirror's own
        handling never hears it. */
@@ -655,6 +1032,7 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
     view?.destroy()
     view = null
     posted = null
+    choose(null)
     stage.hidden = true
     say(text)
     sync()
@@ -774,7 +1152,26 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
   /* Opening the tab draws the page when Details changed since it was last
      drawn; the editor's own changes are not Details'. */
   document.addEventListener('tabchange', (event) => {
-    if ((event as CustomEvent<string>).detail === panel?.id && snapshot() !== posted) void draw()
+    const here = (event as CustomEvent<string>).detail === panel?.id
+
+    if (sidebar) sidebar.hidden = !here || selected === null
+    if (here && snapshot() !== posted) void draw()
+  })
+
+  /* The sidebar: text into the page at once, every change posted once the
+     typing pauses, and a list's controls at once. It never submits. */
+  sidebar?.addEventListener('submit', (event) => event.preventDefault())
+  sidebar?.addEventListener('focusin', () => typing++)
+  sidebar?.addEventListener('input', (event) => {
+    const input = event.target as HTMLInputElement
+
+    if (input.dataset?.mainstayItem !== undefined && input.dataset.mainstayField !== undefined) set(input.dataset.mainstayItem, input.dataset.mainstayField, input.value)
+    else later()
+  })
+  sidebar?.addEventListener('click', (event) => {
+    const op = (event.target as Element | null)?.closest<HTMLElement>('[data-block-op]')
+
+    if (op) void change(op)
   })
 
   wired.set(element, () => view)
@@ -783,7 +1180,7 @@ export function canvas(element: HTMLElement): (() => EditorView | null) | undefi
   return wired.get(element)
 }
 
-/* Every Content tab under `root` not yet wired. */
-export function canvases(root: ParentNode = document): void {
-  for (const element of root.querySelectorAll<HTMLElement>('[data-canvas]')) canvas(element)
+/* Every Content tab under `root` not yet wired, `wire` given to each. */
+export function canvases(root: ParentNode = document, wire?: (root: HTMLElement) => void): void {
+  for (const element of root.querySelectorAll<HTMLElement>('[data-canvas]')) canvas(element, wire)
 }
