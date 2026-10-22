@@ -5,6 +5,7 @@ import { type MarkType, Node, type NodeType } from 'prosemirror-model'
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirror-schema-list'
 import { type Command, EditorState } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
+import prosemirror from 'prosemirror-view/style/prosemirror.css?raw'
 import { linkable, schema } from './schema'
 
 /*
@@ -182,9 +183,7 @@ const tools: Record<string, Tool> = {
 /* The toolbar's select: what kind of text block the cursor is in. */
 const blocks: Record<string, Command> = {
   paragraph: setBlockType(nodes.paragraph),
-  'heading-2': setBlockType(nodes.heading, { level: 2 }),
-  'heading-3': setBlockType(nodes.heading, { level: 3 }),
-  'heading-4': setBlockType(nodes.heading, { level: 4 }),
+  ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((level) => [`heading-${level}`, setBlockType(nodes.heading, { level })])),
 }
 
 const block = (state: EditorState): string => {
@@ -222,6 +221,54 @@ const plugins = [
   }),
   keymap(baseKeymap),
 ]
+
+/*
+ | Where the site names its stylesheets, the text is edited as the site draws
+ | it: in a frame in place of the rendered body, holding those stylesheets and
+ | one element of the site's text class, which the editor mounts on. The frame
+ | is open to the admin, which drives the editor in it, and closed to scripts;
+ | none of the site's CSS reaches the admin around it. It is as tall as its
+ | text, measured from that element's box and margin, since a site's
+ | `min-height: 100vh` holds the document's own height at the frame's.
+ */
+function framed(body: HTMLElement, stylesheets: string[], className: string, title: string): { mount: HTMLElement; fit: () => void } {
+  const frame = Object.assign(document.createElement('iframe'), { title })
+
+  frame.setAttribute('sandbox', 'allow-same-origin')
+  frame.style.cssText = 'display: block; width: 100%; border: 0'
+  body.replaceChildren(frame)
+
+  /* Written rather than given as srcdoc, so it is there at once: an HTML
+     document, in no quirks mode. */
+  const page = frame.contentDocument!
+
+  page.open()
+  page.write('<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>')
+  page.close()
+
+  const style = (css: string) => Object.assign(page.createElement('style'), { textContent: css })
+  const links = stylesheets.map((href) => Object.assign(page.createElement('link'), { rel: 'stylesheet', href }))
+  const mount = Object.assign(page.createElement('div'), { className })
+
+  const fit = () => {
+    const inner = frame.contentWindow
+
+    if (!inner) return
+
+    const bottom = mount.getBoundingClientRect().bottom + inner.scrollY + (Number.parseFloat(inner.getComputedStyle(mount).marginBottom) || 0)
+
+    frame.style.height = `${Math.ceil(bottom)}px`
+  }
+
+  for (const link of links) link.addEventListener('load', fit)
+
+  page.head.append(style('body { margin: 0 }'), ...links, style(`${prosemirror}\n.ProseMirror { outline: none }`))
+  page.body.append(mount)
+  void page.fonts?.ready.then(fit)
+  window.addEventListener('resize', fit)
+
+  return { mount, fit }
+}
 
 /*
  | Mounts the editor on one field's `[data-rich-text]`, once: a second call
@@ -268,11 +315,13 @@ export function editor(element: HTMLElement): EditorView | undefined {
      again: the same bytes, so the form is clean and a save leaves it out. */
   const drawn = input.value
   const opened = doc
+  const { stylesheets } = element.dataset
+  const styled = stylesheets === undefined ? undefined : framed(body, JSON.parse(stylesheets) as string[], element.dataset.class ?? '', element.dataset.label ?? '')
 
-  body.replaceChildren()
+  if (!styled) body.replaceChildren()
 
   const view: EditorView = new EditorView(
-    { mount: body },
+    { mount: styled?.mount ?? body },
     {
       state: EditorState.create({ doc, plugins }),
       attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-label': element.dataset.label ?? '' },
@@ -285,6 +334,7 @@ export function editor(element: HTMLElement): EditorView | undefined {
         }
 
         sync(view.state)
+        styled?.fit()
       },
     },
   )
@@ -306,6 +356,7 @@ export function editor(element: HTMLElement): EditorView | undefined {
   })
 
   sync(view.state)
+  styled?.fit()
   toolbar.hidden = false
   views.set(element, view)
 

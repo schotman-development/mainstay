@@ -16,9 +16,12 @@ beforeEach(() => {
         <div data-rich-text-toolbar hidden>
           <select data-command="block">
             <option value="paragraph">Paragraph</option>
+            <option value="heading-1">Heading 1</option>
             <option value="heading-2">Heading 2</option>
             <option value="heading-3">Heading 3</option>
             <option value="heading-4">Heading 4</option>
+            <option value="heading-5">Heading 5</option>
+            <option value="heading-6">Heading 6</option>
           </select>
           <button type="button" data-command="strong">B</button>
           <button type="button" data-command="em">I</button>
@@ -106,6 +109,37 @@ test('mounts once', () => {
 
   expect(editor(document.querySelector<HTMLElement>('[data-rich-text]')!)).toBe(view)
   expect(document.querySelectorAll('.ProseMirror')).toHaveLength(1)
+})
+
+test("draws in a frame of the site's stylesheets where the site names them, driven from outside it", () => {
+  const element = document.querySelector<HTMLElement>('[data-rich-text]')!
+
+  element.dataset.stylesheets = JSON.stringify(['/css/site.css', '/css/fonts.css'])
+  element.dataset.class = 'prose'
+
+  const view = open(paragraph('Hello'))
+  const frame = document.querySelector<HTMLIFrameElement>('[data-rich-text-body] > iframe')!
+  const page = frame.contentDocument!
+
+  expect(frame.getAttribute('sandbox')).toBe('allow-same-origin')
+  expect(frame.title).toBe('Body')
+  expect(page.compatMode).toBe('CSS1Compat')
+  expect([...page.querySelectorAll('link[rel="stylesheet"]')].map((link) => link.getAttribute('href'))).toEqual(['/css/site.css', '/css/fonts.css'])
+  expect([...page.body.children]).toEqual([view.dom])
+  expect([...view.dom.classList]).toEqual(['prose', 'ProseMirror'])
+
+  /* The toolbar, outside the frame, acts on the text in it. */
+  select(view, 1, 6)
+  tool('strong').click()
+
+  expect(JSON.parse(input().value).content[0].content[0].marks).toEqual([{ type: 'strong' }])
+
+  /* As tall as the text and its margin below. */
+  view.dom.style.marginBottom = '16px'
+  view.dom.getBoundingClientRect = () => ({ bottom: 120 }) as DOMRect
+  view.dispatch(view.state.tr.insertText('!', 6))
+
+  expect(frame.style.height).toBe('136px')
 })
 
 test('writes a change into the input, tells the form, and an emptied one as nothing', () => {
@@ -289,7 +323,7 @@ test('every tool turns on, and off again', () => {
   tool('em').click()
   expect(focus).toHaveBeenCalled()
 
-  for (const level of [3, 4]) {
+  for (const level of [1, 6, 3, 4]) {
     block.value = `heading-${level}`
     block.dispatchEvent(new Event('change'))
     expect(view.state.doc.firstChild!.toJSON()).toMatchObject({ type: 'heading', attrs: { level } })

@@ -17,7 +17,8 @@ test('opens the document the PHP renderer draws', () => {
 test('refuses what Document::problem() refuses', () => {
   const paragraph = (text: object) => ({ type: 'doc', content: [{ type: 'paragraph', content: [text] }] })
 
-  expect(() => load({ type: 'doc', content: [{ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'x' }] }] })).toThrow(RangeError)
+  expect(() => load({ type: 'doc', content: [{ type: 'heading', attrs: { level: 7 }, content: [{ type: 'text', text: 'x' }] }] })).toThrow(RangeError)
+  expect(() => load({ type: 'doc', content: [{ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'x' }] }] })).not.toThrow()
   expect(() => load({ type: 'doc', content: [{ type: 'ordered_list', attrs: { order: 1.5 }, content: [{ type: 'list_item', content: [{ type: 'paragraph' }] }] }] })).toThrow(RangeError)
   expect(() => load({ type: 'doc', content: [{ type: 'text', text: 'x' }] })).toThrow(RangeError)
   expect(() => load({ type: 'doc', content: [{ type: 'code_block', content: [{ type: 'text', text: 'x', marks: [{ type: 'strong' }] }] }] })).toThrow(RangeError)
@@ -27,6 +28,14 @@ test('refuses what Document::problem() refuses', () => {
   expect(() => load(paragraph({ type: 'text', text: 'x', marks: [{ type: 'strong' }, { type: 'link', attrs: { href: '/x' } }] }))).not.toThrow()
   expect(() => load(paragraph({ type: 'text', text: 'x', marks: [{ type: 'link', attrs: { href: 'java\tscript:alert(1)' } }] }))).toThrow(RangeError)
   expect(() => load({ type: 'doc', content: [] })).toThrow(RangeError)
+})
+
+test('keeps a pasted heading at its level, h1 and h6 included', () => {
+  const level = (html: string) =>
+    DOMParser.fromSchema(schema).parse(new window.DOMParser().parseFromString(html, 'text/html').body).firstChild?.attrs.level
+
+  expect(level('<h1>x</h1>')).toBe(1)
+  expect(level('<h6>x</h6>')).toBe(6)
 })
 
 test('keeps the start a pasted list gives, 0 included', () => {

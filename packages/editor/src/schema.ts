@@ -20,7 +20,7 @@ export const linkable = (href: unknown): href is string =>
   !/[\x00-\x1F\x7F]/.test(href) &&
   (/^(?:https?|mailto|tel):/i.test(href) || !/^[^/?#]*:/.test(href))
 
-const levels = [2, 3, 4]
+const levels = [1, 2, 3, 4, 5, 6]
 
 export const schema = new Schema({
   nodes: {
@@ -31,7 +31,8 @@ export const schema = new Schema({
       parseDOM: [{ tag: 'p' }],
       toDOM: () => ['p', 0],
     },
-    // h1 is the page's title, which is not the body's to write.
+    // Every level: a page whose view leaves the title out takes its h1 from
+    // the text.
     heading: {
       group: 'block',
       content: 'inline*',
@@ -40,14 +41,11 @@ export const schema = new Schema({
         level: {
           default: 2,
           validate: (level: unknown) => {
-            if (!levels.includes(level as number)) throw new RangeError(`A heading's level is 2, 3 or 4, not ${level}`)
+            if (!levels.includes(level as number)) throw new RangeError(`A heading's level is 1 to 6, not ${level}`)
           },
         },
       },
-      parseDOM: [
-        { tag: 'h1', attrs: { level: 2 } },
-        ...levels.map((level) => ({ tag: `h${level}`, attrs: { level } })),
-      ],
+      parseDOM: levels.map((level) => ({ tag: `h${level}`, attrs: { level } })),
       toDOM: (node) => [`h${node.attrs.level}`, 0],
     },
     blockquote: {
