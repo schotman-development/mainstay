@@ -71,6 +71,12 @@ class DraftTest extends DatabaseTestCase
         return ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]]]];
     }
 
+    /* A content of these site blocks. */
+    private static function blocks(array ...$blocks): array
+    {
+        return ['type' => 'doc', 'content' => array_map(fn (array $block) => ['type' => 'block', 'attrs' => $block], $blocks)];
+    }
+
     /* An image row, as RelationTest writes one: the library's files are
        MediaTest's to check. */
     private function image(): int
@@ -98,7 +104,7 @@ class DraftTest extends DatabaseTestCase
 
         $entry = Mainstay::create(Bulletin::class, [
             'title' => 'Launch', 'slug' => $slug, 'body' => self::doc('Hello'), 'publishedOn' => '2026-10-07', 'kind' => 'news', 'approved' => true,
-            'blocks' => [['type' => 'shelf', 'data' => ['spines' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]]],
+            'content' => self::blocks(['type' => 'shelf', 'data' => ['spines' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]]),
             'picks' => [['type' => 'person', 'id' => $person->id], $story],
             'cover' => $this->image(), 'genres' => [$genre], 'memo' => 'Quiet',
             ...$data,
@@ -409,7 +415,7 @@ class DraftTest extends DatabaseTestCase
     {
         $draft = Mainstay::drafts()->save(Bulletin::class, [
             'title' => 'Launch', 'slug' => 'launch', 'body' => null, 'publishedOn' => null, 'kind' => null, 'approved' => false, 'picks' => [],
-            'blocks' => [['type' => 'callout', 'data' => ['heading' => '']]],
+            'content' => self::blocks(['type' => 'callout', 'data' => ['heading' => '']]),
         ], locale: 'en', overrideAccess: true);
 
         $this->assertNull($draft->entryId);
@@ -417,20 +423,20 @@ class DraftTest extends DatabaseTestCase
         $this->assertFalse(isset($draft->entry->id), 'No id until it is published.');
         $this->assertFalse(isset($draft->entry->body) || isset($draft->entry->publishedOn) || isset($draft->entry->kind), 'What is left empty and has no empty value is absent, not invented.');
         $this->assertFalse($draft->entry->approved);
-        $this->assertEqualsCanonicalizing(['publishedOn', 'kind', 'approved', 'picks', 'blocks'], $draft->fields);
-        $this->assertEqualsCanonicalizing(['title', 'slug', 'body'], $draft->locales['en']);
+        $this->assertEqualsCanonicalizing(['publishedOn', 'kind', 'approved', 'picks'], $draft->fields);
+        $this->assertEqualsCanonicalizing(['title', 'slug', 'body', 'content'], $draft->locales['en']);
 
         $this->assertCount(0, Mainstay::find(Bulletin::class, locale: 'en'));
         $this->assertSame(0, Mainstay::paginate(Bulletin::class, locale: 'en')->total());
         $this->assertNull(Mainstay::findByUri('/posts/launch', locale: 'en'));
         $this->assertSame([0, 0], [DB::table('bulletin')->count(), DB::table('uris')->count()]);
 
-        $this->assertEqualsCanonicalizing(['body', 'publishedOn', 'kind', 'approved', 'picks', 'blocks.0.data.heading'], array_keys($this->refusal(fn () => Mainstay::drafts()->publish($draft->id, overrideAccess: true))), 'Required back at every level, a block\'s own fields too.');
+        $this->assertEqualsCanonicalizing(['body', 'publishedOn', 'kind', 'approved', 'picks', 'content.content.0.attrs.data.heading'], array_keys($this->refusal(fn () => Mainstay::drafts()->publish($draft->id, overrideAccess: true))), 'Required back at every level, a block\'s own fields too.');
         $this->assertSame([0, 1], [DB::table('bulletin')->count(), DB::table('mainstay_drafts')->count()], 'Nothing written, and the draft kept.');
 
         Mainstay::drafts()->save(Bulletin::class, [
             'body' => self::doc('Hello'), 'publishedOn' => '2026-10-07', 'kind' => 'news', 'approved' => true, 'picks' => [$this->story('Told')],
-            'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Hi']]],
+            'content' => self::blocks(['type' => 'callout', 'data' => ['heading' => 'Hi']]),
         ], draft: $draft->id, locale: 'en', overrideAccess: true);
         Mainstay::drafts()->save(Bulletin::class, ['title' => 'Lancering', 'slug' => 'lancering', 'body' => self::doc('Hallo')], draft: $draft->id, locale: 'nl', overrideAccess: true);
 
@@ -450,7 +456,7 @@ class DraftTest extends DatabaseTestCase
         $this->assertSame(2, DB::table('mainstay_drafts')->whereNull('entry_id')->count());
 
         /* Only presence gives way: what keeps a value readable does not. */
-        $this->assertArrayHasKey('blocks.0.type', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['blocks' => [['data' => []]]], locale: 'en', overrideAccess: true)));
+        $this->assertArrayHasKey('content.content.0.attrs.type', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['content' => self::blocks(['data' => []])], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('picks.0.id', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['picks' => [['type' => 'person']]], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('kind', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['kind' => 'gossip'], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('picks.0', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['picks' => [['type' => 'story', 'id' => 999]]], locale: 'en', overrideAccess: true)), 'What it names has to be there.');
@@ -626,7 +632,9 @@ class DraftTest extends DatabaseTestCase
         Mainstay::update(Genre::class, $genre->id, ['title' => 'Crime'], locale: 'en', overrideAccess: true);
 
         $this->assertSame(1, DB::table('mainstay_revisions')->count(), 'Nothing for a write changing nothing, or for a term.');
-        $this->assertSame('news', json_decode(DB::table('mainstay_revisions')->value('snapshot'), true)['fields']['kind']);
+        $snapshot = json_decode(DB::table('mainstay_revisions')->value('snapshot'), true);
+        $this->assertSame('news', $snapshot['fields']['kind']);
+        $this->assertSame('shelf', $snapshot['locales']['en']['content']['content'][0]['attrs']['type'], 'The content whole, in the language it is written in.');
 
         config()->set('mainstay.revisions', 2);
         Mainstay::update(Bulletin::class, $entry->id, ['kind' => 'news'], locale: 'en', overrideAccess: true);

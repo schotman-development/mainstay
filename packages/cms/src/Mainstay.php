@@ -18,6 +18,8 @@ use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
 use Mainstay\Database\Drafts;
 use Mainstay\Database\Revisions;
+use Mainstay\Fields\Blocks;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
@@ -50,6 +52,9 @@ class Mainstay
 
     /** @var array{0: mixed, 1: array<string, array{origin: string, host: ?string, prefix: string}>}|null */
     private ?array $locales = null;
+
+    /** @var array{stylesheets: list<string>, class: string}|null */
+    private ?array $editorStyle = null;
 
     public function version(): string
     {
@@ -140,6 +145,27 @@ class Mainstay
     public function registered(): array
     {
         return $this->types;
+    }
+
+    /*
+     | The site's stylesheets and the class its text sits in, which every rich
+     | text editor in the admin draws its text with, as a WordPress theme's
+     | add_editor_style: named in the site's service provider, so a path can
+     | come from code, a hashed build file's among them.
+     */
+    public function editorStyles(array $stylesheets, string $class = ''): void
+    {
+        if (! array_is_list($stylesheets) || array_filter($stylesheets, fn (mixed $path) => ! is_string($path) || trim($path) === '') !== []) {
+            throw new InvalidArgumentException("The editor's styles are a list of stylesheet addresses: Mainstay::editorStyles(['/css/site.css'], class: 'prose').");
+        }
+
+        $this->editorStyle = ['stylesheets' => $stylesheets, 'class' => trim($class)];
+    }
+
+    /** @return array{stylesheets: list<string>, class: string}|null what editorStyles() named, or null to draw in the admin's own typography */
+    public function editorStyle(): ?array
+    {
+        return $this->editorStyle;
     }
 
     /**
@@ -679,8 +705,58 @@ class Mainstay
         }
 
         $this->terms($type, $fields);
+        $this->content($type, $reflection, $fields);
 
         return $fields;
+    }
+
+    /*
+     | An entry's blocks go in its content, the list its class names with
+     | #[Blocks([...])], which is all that attribute takes there; a Blocks
+     | field is a block's own list of items. A type with no #[Route] has no
+     | page to edit a block on, so its content holds text alone. Content is
+     | Entry's, and the edit screen is built on it, so a type redeclares it
+     | only as content.
+     */
+    private function content(string $type, ReflectionClass $reflection, array $fields): void
+    {
+        $entry = is_subclass_of($type, Entry::class);
+
+        foreach ($fields as $name => $field) {
+            $because = match (true) {
+                $field instanceof Blocks && $entry => "is a blocks field, and an entry's blocks go in its content: name them on the class, #[Blocks([...])]",
+                $field instanceof Blocks && ! is_subclass_of($type, Block::class) => 'is a blocks field, and only a block holds one, a list of its items; an entry\'s blocks go in its content',
+                $field instanceof Content && (! $entry || $name !== 'content') => 'is a content field, and content is an entry\'s own, its $content',
+                default => null,
+            };
+
+            if ($because !== null) {
+                throw new InvalidArgumentException("{$type}::\${$name} {$because}.");
+            }
+        }
+
+        if ($entry && ! ($fields['content'] ?? null) instanceof Content) {
+            throw new InvalidArgumentException("{$type}::\$content is redeclared as another kind of field. The edit screen is built on an entry's content, so redeclare it with #[Content], as one content for every language is.");
+        }
+
+        $attributes = $reflection->getAttributes(Blocks::class);
+        $page = $reflection->getAttributes(Route::class) !== [];
+
+        if ($attributes !== [] && ! $entry) {
+            throw new InvalidArgumentException("{$type} names blocks with #[Blocks], and only an entry type's content holds them.");
+        }
+
+        if ($attributes !== [] && array_diff(array_keys($attributes[0]->getArguments()), [0, 'of']) !== []) {
+            throw new InvalidArgumentException("{$type}'s #[Blocks] names the blocks its content holds and nothing more: #[Blocks([Hero::class])].");
+        }
+
+        if ($attributes !== [] && ! $page) {
+            throw new InvalidArgumentException("{$type} names blocks with #[Blocks] and has no #[Route]: with no page there is nowhere to edit a block on, so its content holds text alone.");
+        }
+
+        if ($entry) {
+            $fields['content']->holds($attributes === [] ? null : $attributes[0]->newInstance(), $page);
+        }
     }
 
     /*

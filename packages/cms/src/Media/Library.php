@@ -18,6 +18,7 @@ use InvalidArgumentException;
 use Mainstay\Auth\Gate;
 use Mainstay\Content\Media;
 use Mainstay\Fields\Blocks;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Image;
 use Mainstay\Mainstay;
 use Mainstay\Policies\MediaPolicy;
@@ -310,6 +311,8 @@ class Library
                     }
                 } elseif ($field instanceof Blocks) {
                     array_push($classes, ...$field->of);
+                } elseif ($field instanceof Content) {
+                    array_push($classes, ...$field->blocks());
                 }
             }
         }

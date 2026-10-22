@@ -3,6 +3,7 @@
 namespace Mainstay\Content;
 
 use Closure;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Text;
 use Mainstay\Mainstay;
 use ReflectionClass;
@@ -27,6 +28,18 @@ abstract class Entry extends ContentType
      */
     #[Text(required: true, localized: true)]
     public string $title;
+
+    /*
+     | What the entry says, as every WordPress post has `post_content`: one
+     | document whose top-level nodes are its blocks, Mainstay's text and the
+     | site's own, which the type names with #[Blocks] on its class. Held by
+     | every entry type and every taxonomy's terms after the title, without
+     | declaring it, as the title is; whether a view prints it is the site's.
+     | A type redeclares it only to keep one content for every language. Null
+     | when empty.
+     */
+    #[Content(localized: true)]
+    public ?Document $content;
 
     /*
      | The path the entry answers to in the locale it was read in, from the

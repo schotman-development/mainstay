@@ -25,8 +25,12 @@ use TypeError;
  | localized nor internal. A field added to a block already in use needs a
  | default, or has to be one that reads nothing as something -- nullable, or
  | a type with an empty value: the blocks stored before it do not have it.
+ |
+ | A field of a block only. On an entry type's class it names the blocks its
+ | content holds, `#[Blocks([Hero::class])]`, and is never bound: the content
+ | reads and writes its blocks one at a time through the item methods below.
  */
-#[Attribute(Attribute::TARGET_PROPERTY)]
+#[Attribute(Attribute::TARGET_PROPERTY | Attribute::TARGET_CLASS)]
 class Blocks extends Field
 {
     /* The blocks whose fields are being read, so one that holds itself is
@@ -43,12 +47,19 @@ class Blocks extends Field
        @var array<class-string<Block>, array{0: ReflectionClass, 1: array<string, ReflectionProperty>}> */
     private array $reflected = [];
 
-    /** @param list<class-string<Block>> $of */
+    /*
+     | The list first, unlike every other field type: on a class it is all
+     | the attribute takes, written without its name, and on a property
+     | `required` follows it by name, so no positional argument means
+     | something it does not say.
+     |
+     | @param list<class-string<Block>> $of
+     */
     public function __construct(
+        public readonly array $of = [],
         ?bool $required = null,
         bool $localized = false,
         ?string $label = null,
-        public readonly array $of = [],
     ) {
         if ($of === [] || ! array_is_list($of)) {
             throw new InvalidArgumentException('A blocks field lists the blocks it holds: #[Blocks(of: [Hero::class])].');
@@ -79,6 +90,13 @@ class Blocks extends Field
 
         parent::bind($property);
 
+        return $this->check();
+    }
+
+    /* Each listed block's fields, refused where a block cannot hold one:
+       asked of a field's list as it is bound, and of a content's. */
+    public function check(): static
+    {
         foreach ($this->blocks as $class) {
             foreach ($this->fields($class) as $name => $field) {
                 $because = match (true) {
@@ -136,33 +154,40 @@ class Blocks extends Field
         $rules = parent::rulesAt($attribute, $value, $draft);
 
         foreach (is_array($value) && array_is_list($value) ? $value : [] as $index => $item) {
-            $at = "{$attribute}.{$index}";
-            $class = $this->block($item);
-            $data = is_array($item) && is_array($item['data'] ?? null) ? $item['data'] : [];
-
-            $rules[$at] = ['array:id,type,data'];
-            $rules["{$at}.type"] = ['required', 'string', Rule::in(array_keys($this->blocks))];
-            /* Null or blank is no id, and to() gives the block one. */
-            $rules["{$at}.id"] = ['nullable', 'string', 'max:255'];
-
-            /* Data is checked against the block its type names, and only
-               the type is wrong when that is not one of these. */
-            if ($class === null) {
-                continue;
-            }
-
-            $fields = $this->fields($class);
-            $rules["{$at}.data"] = ['sometimes', 'array:'.implode(',', array_keys($fields))];
-
-            foreach ($fields as $name => $field) {
-                $rules = [...$rules, ...$field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null, $draft)];
-            }
+            $rules = [...$rules, ...$this->itemRules("{$attribute}.{$index}", $item, $draft)];
         }
 
         /* Last: Laravel merges a wildcard's rules into the keys already
            written, and a key written after it replaces them. Strict, or '1'
            and '01' are one id. */
         return [...$rules, "{$attribute}.*.id" => ['distinct:strict']];
+    }
+
+    /* One item's rules, the item at `$at`. */
+    public function itemRules(string $at, mixed $item, bool $draft = false): array
+    {
+        $class = $this->block($item);
+        $data = is_array($item) && is_array($item['data'] ?? null) ? $item['data'] : [];
+
+        $rules[$at] = ['array:id,type,data'];
+        $rules["{$at}.type"] = ['required', 'string', Rule::in(array_keys($this->blocks))];
+        /* Null or blank is no id, and to() gives the block one. */
+        $rules["{$at}.id"] = ['nullable', 'string', 'max:255'];
+
+        /* Data is checked against the block its type names, and only the
+           type is wrong when that is not one of these. */
+        if ($class === null) {
+            return $rules;
+        }
+
+        $fields = $this->fields($class);
+        $rules["{$at}.data"] = ['sometimes', 'array:'.implode(',', array_keys($fields))];
+
+        foreach ($fields as $name => $field) {
+            $rules = [...$rules, ...$field->rulesAt("{$at}.data.{$name}", $data[$name] ?? null, $draft)];
+        }
+
+        return $rules;
     }
 
     /*
@@ -182,33 +207,39 @@ class Blocks extends Field
         $items = [];
 
         foreach ($value as $item) {
-            if (($class = $this->block($item)) === null) {
-                if (! $stored) {
-                    $items[] = $item;
-                }
-
-                continue;
+            if (! $stored || $this->block($item) !== null) {
+                $items[] = $this->completeItem($item, $stored);
             }
-
-            if (is_array($data = $item['data'] ?? [])) {
-                $fields = $this->fields($class);
-                $data = $stored ? array_intersect_key($data, $fields) : $data;
-
-                foreach ($fields as $name => $field) {
-                    if (array_key_exists($name, $data)) {
-                        $data[$name] = $field->complete($data[$name], $stored);
-                    } elseif ($field->hasDefault) {
-                        $data[$name] = $field->complete($field->default);
-                    }
-                }
-
-                $item['data'] = $data;
-            }
-
-            $items[] = $stored ? array_intersect_key($item, array_flip(['id', 'type', 'data'])) : $item;
         }
 
         return $items;
+    }
+
+    /* One item as complete() fills it. One of a type not listed is as it
+       was given, for the rules to refuse, or for the caller to leave out of
+       what is stored. */
+    public function completeItem(mixed $item, bool $stored = false): mixed
+    {
+        if (($class = $this->block($item)) === null) {
+            return $item;
+        }
+
+        if (is_array($data = $item['data'] ?? [])) {
+            $fields = $this->fields($class);
+            $data = $stored ? array_intersect_key($data, $fields) : $data;
+
+            foreach ($fields as $name => $field) {
+                if (array_key_exists($name, $data)) {
+                    $data[$name] = $field->complete($data[$name], $stored);
+                } elseif ($field->hasDefault) {
+                    $data[$name] = $field->complete($field->default);
+                }
+            }
+
+            $item['data'] = $data;
+        }
+
+        return $stored ? array_intersect_key($item, array_flip(['id', 'type', 'data'])) : $item;
     }
 
     /* What a read loaded goes down to the fields inside the blocks, which
@@ -225,13 +256,23 @@ class Blocks extends Field
         $references = [];
 
         foreach (is_array($value) && array_is_list($value) ? $value : [] as $index => $item) {
-            if (($class = $this->block($item)) === null || ! is_array($data = $item['data'] ?? [])) {
-                continue;
-            }
+            $references += $this->itemReferences($item, "{$at}.{$index}");
+        }
 
-            foreach ($this->fields($class) as $name => $field) {
-                $references += $field->references($data[$name] ?? null, "{$at}.{$index}.data.{$name}");
-            }
+        return $references;
+    }
+
+    /* What one item points at, from `$at` down. */
+    public function itemReferences(mixed $item, string $at): array
+    {
+        if (($class = $this->block($item)) === null || ! is_array($data = $item['data'] ?? [])) {
+            return [];
+        }
+
+        $references = [];
+
+        foreach ($this->fields($class) as $name => $field) {
+            $references += $field->references($data[$name] ?? null, "{$at}.data.{$name}");
         }
 
         return $references;
@@ -260,48 +301,57 @@ class Blocks extends Field
         $blocks = [];
 
         foreach ($value as $item) {
-            if (($class = $this->block($item)) === null) {
-                continue;
-            }
-
             /* Where the read puts it, which is where a save reports it too:
                the blocks left out ahead of it do not count. */
-            $at = "the {$item['type']} at {$this->name}.".count($blocks);
-            $id = $item['id'] ?? null;
-            $id = $id === null || (is_string($id) && trim($id) === '') ? (string) Str::ulid() : $id;
-            $data = $item['data'] ?? [];
-
-            if (! is_string($id) || ! is_array($data)) {
-                throw new InvalidArgumentException(ucfirst($at).(is_string($id) ? ' has data that is not a map.' : ' has an id that is not a string.'));
+            if (($block = $this->readItem($item, "{$this->name}.".count($blocks), $loaded)) !== null) {
+                $blocks[] = $block;
             }
-
-            [$reflection, $properties] = $this->reflection($class);
-            $block = $reflection->newInstanceWithoutConstructor();
-            $block->id = $id;
-
-            foreach ($this->fields($class) as $name => $field) {
-                if (! array_key_exists($name, $data) && $field->hasDefault) {
-                    continue;
-                }
-
-                try {
-                    /* A tree where a scalar is kept -- a document left by a
-                       field that was rich text before -- is coerced to 0 or
-                       true by one type and refused by PHP for another. */
-                    if (is_array($data[$name] ?? null) && ! $field->keptAsJson()) {
-                        throw new InvalidArgumentException('a list or a map is stored for it.');
-                    }
-
-                    $properties[$name]->setValue($block, $field->cast($data[$name] ?? null, $loaded));
-                } catch (InvalidArgumentException|TypeError $exception) {
-                    throw new InvalidArgumentException("{$class}::\${$name} cannot read {$at}: {$exception->getMessage()}", previous: $exception);
-                }
-            }
-
-            $blocks[] = $block;
         }
 
         return $blocks;
+    }
+
+    /* One item as its block, read where `$at` says, or null for one of a
+       type not listed. */
+    public function readItem(mixed $item, string $at, array $loaded = []): ?Block
+    {
+        if (($class = $this->block($item)) === null) {
+            return null;
+        }
+
+        $at = "the {$item['type']} at {$at}";
+        $id = $item['id'] ?? null;
+        $id = $id === null || (is_string($id) && trim($id) === '') ? (string) Str::ulid() : $id;
+        $data = $item['data'] ?? [];
+
+        if (! is_string($id) || ! is_array($data)) {
+            throw new InvalidArgumentException(ucfirst($at).(is_string($id) ? ' has data that is not a map.' : ' has an id that is not a string.'));
+        }
+
+        [$reflection, $properties] = $this->reflection($class);
+        $block = $reflection->newInstanceWithoutConstructor();
+        $block->id = $id;
+
+        foreach ($this->fields($class) as $name => $field) {
+            if (! array_key_exists($name, $data) && $field->hasDefault) {
+                continue;
+            }
+
+            try {
+                /* A tree where a scalar is kept -- a document left by a field
+                   that was rich text before -- is coerced to 0 or true by one
+                   type and refused by PHP for another. */
+                if (is_array($data[$name] ?? null) && ! $field->keptAsJson()) {
+                    throw new InvalidArgumentException('a list or a map is stored for it.');
+                }
+
+                $properties[$name]->setValue($block, $field->cast($data[$name] ?? null, $loaded));
+            } catch (InvalidArgumentException|TypeError $exception) {
+                throw new InvalidArgumentException("{$class}::\${$name} cannot read {$at}: {$exception->getMessage()}", previous: $exception);
+            }
+        }
+
+        return $block;
     }
 
     /* The list as stored: each block's own id or a new one, its type, and
@@ -309,23 +359,23 @@ class Blocks extends Field
        default, which a save has already put there and checked. */
     protected function to(mixed $value): mixed
     {
-        $items = [];
+        return array_map($this->writeItem(...), $value);
+    }
 
-        foreach ($value as $item) {
-            $item = $item instanceof Block ? $item->toArray() : $item;
-            $data = $item['data'] ?? [];
+    /* One item as stored. */
+    public function writeItem(mixed $item): array
+    {
+        $item = $item instanceof Block ? $item->toArray() : $item;
+        $data = $item['data'] ?? [];
 
-            $items[] = [
-                'id' => blank($item['id'] ?? null) ? (string) Str::ulid() : $item['id'],
-                'type' => $item['type'],
-                'data' => array_map(
-                    fn (Field $field) => $field->serialize(array_key_exists($field->name, $data) ? $data[$field->name] : $field->default),
-                    $this->fields($this->blocks[$item['type']]),
-                ),
-            ];
-        }
-
-        return $items;
+        return [
+            'id' => blank($item['id'] ?? null) ? (string) Str::ulid() : $item['id'],
+            'type' => $item['type'],
+            'data' => array_map(
+                fn (Field $field) => $field->serialize(array_key_exists($field->name, $data) ? $data[$field->name] : $field->default),
+                $this->fields($this->blocks[$item['type']]),
+            ),
+        ];
     }
 
     protected function json(): array
@@ -343,7 +393,7 @@ class Blocks extends Field
     }
 
     /** @return class-string<Block>|null */
-    private function block(mixed $item): ?string
+    public function block(mixed $item): ?string
     {
         return is_array($item) && is_string($item['type'] ?? null) ? $this->blocks[$item['type']] ?? null : null;
     }

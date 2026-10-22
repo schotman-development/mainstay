@@ -15,11 +15,13 @@ use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
 use Mainstay\Fields\Blocks;
 use Mainstay\Mainstay as Registry;
+use Mainstay\Tests\Fixtures\Blocks\Gallery;
 use Mainstay\Tests\Fixtures\Blocks\Nested\Slide as NestedSlide;
 use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
+use Mainstay\Tests\Fixtures\Leaflet;
 use Mainstay\Tests\Fixtures\Lost;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Post;
@@ -48,7 +50,7 @@ class RenderTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class, Guide::class);
+        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class, Guide::class, Leaflet::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -440,26 +442,30 @@ class RenderTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_block_is_drawn_by_its_view(): void
+    public function a_block_is_drawn_by_its_view_where_the_content_holds_it(): void
     {
-        $id = Mainstay::create(Guide::class, ['title' => 'Drawn', 'blocks' => [
-            ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Careful']]]]]]],
-            ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]],
-        ]], locale: 'en', overrideAccess: true)->id;
+        $paragraph = fn (string $text) => ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]];
+        $id = Mainstay::create(Guide::class, ['title' => 'Drawn', 'slug' => 'drawn', 'content' => ['type' => 'doc', 'content' => [
+            ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => 'Top']]],
+            ['type' => 'block', 'attrs' => ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [$paragraph('Careful')]]]]],
+            $paragraph('Between'),
+            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]]],
+            ['type' => 'heading', 'attrs' => ['level' => 6], 'content' => [['type' => 'text', 'text' => 'Bottom']]],
+        ]]], locale: 'en', overrideAccess: true)->id;
         $guide = Mainstay::findById(Guide::class, $id, locale: 'en');
 
         $this->assertSame(
-            "<aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<figure><p>One</p><figcaption>Shots</figcaption></figure>\n",
-            Blade::render('@foreach ($blocks as $block){{ $block }}@endforeach', ['blocks' => $guide->blocks]),
+            "<h1>Top</h1><aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<p>Between</p><figure><p>One</p><figcaption>Shots</figcaption></figure>\n<h6>Bottom</h6>",
+            Blade::render('{{ $content }}', ['content' => $guide->content]),
         );
 
         /* Named and not there is an error, as an entry's view is. */
-        $this->assertThrows(fn () => $guide->blocks[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
+        $this->assertThrows(fn () => $guide->content->blocks()[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
 
         /* A second block of that handle, in another field, would draw with
            the same view. */
         $this->assertThrows(
-            fn () => (new Blocks(of: [OtherSlide::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')),
+            fn () => (new Blocks(of: [OtherSlide::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')),
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );
@@ -520,8 +526,8 @@ class RenderTest extends DatabaseTestCase
         $this->assertNull(Mainstay::frontPage());
         $this->assertSame('/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->uri);
 
-        $guide = Mainstay::create(Guide::class, ['title' => 'Guide'], locale: 'en', overrideAccess: true)->id;
-        $this->assertThrows(fn () => Mainstay::setFrontPage(Guide::class, $guide, overrideAccess: true), InvalidArgumentException::class, 'has no #[Route], so it has no path to serve at /.');
+        $leaflet = Mainstay::create(Leaflet::class, ['title' => 'Leaflet'], locale: 'en', overrideAccess: true)->id;
+        $this->assertThrows(fn () => Mainstay::setFrontPage(Leaflet::class, $leaflet, overrideAccess: true), InvalidArgumentException::class, 'has no #[Route], so it has no path to serve at /.');
 
         /* Nobody signed in, nobody moves a page every visitor sees first. */
         $this->assertThrows(fn () => Mainstay::setFrontPage(Post::class, $id), AuthorizationException::class);

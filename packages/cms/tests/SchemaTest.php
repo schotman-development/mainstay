@@ -111,7 +111,7 @@ class SchemaTest extends DatabaseTestCase
             Schema::getColumnListing('article'),
         );
         $this->assertSame(
-            ['id', 'parent_id', 'site_id', 'locale', 'summary', 'deleted_at'],
+            ['id', 'parent_id', 'site_id', 'locale', 'content', 'summary', 'deleted_at'],
             Schema::getColumnListing('article_locales'),
         );
         $this->assertFalse(collect(Schema::getColumns('article'))->firstWhere('name', 'title')['nullable']);
@@ -283,20 +283,6 @@ class SchemaTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function sync_gives_rows_an_empty_list_of_blocks_added_to_their_table(): void
-    {
-        $this->declare(Article::class);
-        $this->artisan('mainstay:sync')->assertSuccessful();
-        $this->insertArticle();
-
-        $this->declare(SlidArticle::class);
-        $this->artisan('mainstay:sync --force')->assertSuccessful();
-
-        $this->assertSame([], json_decode(DB::table('article')->value('slides'), true));
-        $this->assertSame([], app(ContentSchema::class)->diff());
-    }
-
-    #[Test]
     public function a_json_column_holding_what_its_field_cannot_read_is_drift(): void
     {
         $this->declare(ProseArticle::class);
@@ -342,34 +328,42 @@ class SchemaTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_stored_block_its_field_can_no_longer_read_is_drift(): void
+    public function a_stored_block_its_type_can_no_longer_read_is_drift(): void
     {
         $this->declare(SlidArticle::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
 
+        $slides = fn (array ...$blocks) => json_encode(['type' => 'doc', 'content' => array_map(fn (array $block) => ['type' => 'block', 'attrs' => $block], $blocks)]);
+
         /* Its title a tree, as a field that was rich text before it was text
            leaves it. */
-        $id = $this->insertArticle(['slides' => json_encode([['id' => 'a', 'type' => 'slide', 'data' => ['title' => ['type' => 'doc']]]])]);
+        $id = DB::table('article_locales')->insertGetId([
+            'parent_id' => $this->insertArticle(), 'site_id' => 1, 'locale' => 'en',
+            'content' => $slides(['id' => 'a', 'type' => 'slide', 'data' => ['title' => ['type' => 'doc']]]),
+        ]);
 
         $this->assertSame(1, Artisan::call('mainstay:schema:check'));
-        $this->assertStringContainsString("article.slides: declared json, and row {$id} holds what its field cannot read: Mainstay\\Tests\\Fixtures\\Blocks\\Slide::\$title cannot read the slide at slides.0: a list or a map is stored for it", Artisan::output());
+        $this->assertStringContainsString("article_locales.content: declared json, and row {$id} holds what its field cannot read: Mainstay\\Tests\\Fixtures\\Blocks\\Slide::\$title cannot read the slide at content.content.0: a list or a map is stored for it", Artisan::output());
         $this->artisan('mainstay:sync --force')->assertFailed();
 
         /* One a cast coerces rather than refuses -- 'heavy' in what is now a
            number reads as 0 -- is seen by the rules a save checks it by. */
-        foreach (['weight' => 'The slides.0.data.weight field must be a number', 'shown' => 'The slides.0.data.shown field must be accepted'] as $key => $refusal) {
-            DB::table('article')->update(['slides' => json_encode([['id' => 'a', 'type' => 'slide', 'data' => ['title' => 'One', $key => 'heavy']]])]);
+        foreach (['weight' => 'The content.content.0.attrs.data.weight field must be a number', 'shown' => 'The content.content.0.attrs.data.shown field must be accepted'] as $key => $refusal) {
+            DB::table('article_locales')->update(['content' => $slides(['id' => 'a', 'type' => 'slide', 'data' => ['title' => 'One', $key => 'heavy']])]);
             $this->assertSame(1, Artisan::call('mainstay:schema:check'));
-            $this->assertStringContainsString("article.slides: declared json, and row {$id} holds what its field refuses: {$refusal}", Artisan::output());
+            $this->assertStringContainsString("article_locales.content: declared json, and row {$id} holds what its field refuses: {$refusal}", Artisan::output());
         }
 
-        /* What reads and is only missing something is not drift: no blocks
-           at all where some are required, as sync fills them, a block of a
-           type the field no longer lists, and a box that must be ticked left
-           unticked. */
-        foreach (['{}', '[{"id": "g", "type": "banner", "data": {}}]', '[{"id": "a", "type": "slide", "data": {"title": "One", "shown": false}}]'] as $slides) {
-            DB::table('article')->update(['slides' => $slides]);
-            $this->assertSame([], app(ContentSchema::class)->diff(), $slides);
+        /* What reads and is only missing something is not drift: a block of
+           a type the type no longer names, alone or beside one it does, and
+           a box that must be ticked left unticked. */
+        foreach ([
+            $slides(['id' => 'g', 'type' => 'banner', 'data' => []]),
+            $slides(['id' => 'g', 'type' => 'banner', 'data' => []], ['id' => 'a', 'type' => 'slide', 'data' => ['title' => 'One']]),
+            $slides(['id' => 'a', 'type' => 'slide', 'data' => ['title' => 'One', 'shown' => false]]),
+        ] as $content) {
+            DB::table('article_locales')->update(['content' => $content]);
+            $this->assertSame([], app(ContentSchema::class)->diff(), $content);
         }
     }
 
@@ -791,6 +785,7 @@ class SchemaTest extends DatabaseTestCase
             $table->unsignedBigInteger('parent_id');
             $table->unsignedBigInteger('site_id');
             $table->string('locale');
+            $table->json('content')->nullable();
             $table->text('summary')->nullable();
             $table->softDeletes();
             $table->foreign('parent_id')->references('id')->on('article');
@@ -827,6 +822,7 @@ class SchemaTest extends DatabaseTestCase
             $table->unsignedBigInteger('parent_id');
             $table->unsignedBigInteger('site_id');
             $table->string('locale');
+            $table->json('content')->nullable();
             $table->text('summary')->nullable();
             $table->softDeletes();
             $table->foreign('parent_id')->references('id')->on('article');

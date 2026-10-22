@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static void types(array $types)
  * @method static array registered()
  * @method static array capabilities()
+ * @method static void editorStyles(array $stylesheets, string $class = '')
+ * @method static array|null editorStyle()
  * @method static array fields(string $type)
  * @method static array schema(string $type, bool $internal = false)
  * @method static string|array|null route(string $type)

@@ -88,10 +88,16 @@ class RelationTest extends DatabaseTestCase
         return $this->write(Genre::class, $title);
     }
 
-    /* A shelf of one spine per story given. */
+    /* A content of one shelf, of one spine per story given. */
     private function shelf(mixed ...$stories): array
     {
-        return [['type' => 'shelf', 'data' => ['spines' => array_map(fn (mixed $story) => ['type' => 'spine', 'data' => ['story' => $story]], $stories)]]];
+        return ['type' => 'doc', 'content' => [['type' => 'block', 'attrs' => ['type' => 'shelf', 'data' => ['spines' => array_map(fn (mixed $story) => ['type' => 'spine', 'data' => ['story' => $story]], $stories)]]]]];
+    }
+
+    /* The story the first spine of a story's stored content in `$locale` names. */
+    private function spine(int $story, string $locale): mixed
+    {
+        return json_decode(DB::table('story_locales')->where('parent_id', $story)->where('locale', $locale)->value('content'), true)['content'][0]['attrs']['data']['spines'][0]['data']['story'];
     }
 
     /* An image in the library, put there as its row alone: a read of one
@@ -153,7 +159,7 @@ class RelationTest extends DatabaseTestCase
             'related' => [$first->id],
             'pick' => $first,
             'picks' => [$bob, ['type' => 'story', 'id' => $first->id]],
-            'blocks' => $this->shelf($first->id),
+            'content' => $this->shelf($first->id),
         ]);
 
         $row = DB::table('story')->find($story->id);
@@ -163,7 +169,7 @@ class RelationTest extends DatabaseTestCase
            order of its own. */
         $this->assertEquals(['type' => 'story', 'id' => $first->id], json_decode($row->pick, true));
         $this->assertEquals([['type' => 'person', 'id' => $bob->id], ['type' => 'story', 'id' => $first->id]], json_decode($row->picks, true));
-        $this->assertSame($first->id, json_decode($row->blocks, true)[0]['data']['spines'][0]['data']['story']);
+        $this->assertSame($first->id, $this->spine($story->id, 'en'));
 
         $flat = Mainstay::findById(Story::class, $story->id, locale: 'en', depth: 0);
         $loaded = Mainstay::findById(Story::class, $story->id, locale: 'en');
@@ -176,7 +182,7 @@ class RelationTest extends DatabaseTestCase
             $this->assertInstanceOf(Story::class, $read->pick);
             $this->assertInstanceOf(Person::class, $read->picks[0]);
             $this->assertInstanceOf(Story::class, $read->picks[1]);
-            $this->assertInstanceOf(Story::class, $read->blocks[0]->spines[0]->story);
+            $this->assertInstanceOf(Story::class, $read->content->blocks()[0]->spines[0]->story);
         }
 
         $this->assertTrue($flat->author->missing);
@@ -187,7 +193,7 @@ class RelationTest extends DatabaseTestCase
         $this->assertFalse($loaded->author->missing);
         $this->assertSame('Ann', $loaded->author->title);
         $this->assertSame('/people/ann', $loaded->author->uri);
-        $this->assertSame(['First', 'First', 'Bob', 'First'], [$loaded->related[0]->title, $loaded->pick->title, $loaded->picks[0]->title, $loaded->blocks[0]->spines[0]->story->title]);
+        $this->assertSame(['First', 'First', 'Bob', 'First'], [$loaded->related[0]->title, $loaded->pick->title, $loaded->picks[0]->title, $loaded->content->blocks()[0]->spines[0]->story->title]);
         $this->assertTrue($loaded->related[0]->author->missing, 'Its own relations wait for depth 2.');
 
         $this->assertSame('Bob', $deep->related[0]->author->title);
@@ -258,8 +264,8 @@ class RelationTest extends DatabaseTestCase
             'author' => $gone,
             'related' => [$english->id, $kept->id],
             'picks' => [$gone, $kept],
-            'blocks' => $this->shelf($english->id),
         ]);
+        Mainstay::update(Story::class, $story->id, ['content' => $this->shelf($english->id)], locale: 'nl', overrideAccess: true);
         Mainstay::delete(Person::class, $gone->id, overrideAccess: true);
 
         $read = Mainstay::findById(Story::class, $story->id, locale: 'nl');
@@ -267,17 +273,17 @@ class RelationTest extends DatabaseTestCase
         $this->assertSame($gone->id, $read->author->id);
         $this->assertSame([[true, $english->id], [false, $kept->id]], array_map(fn (Story $one) => [$one->missing, $one->id], $read->related), 'Untranslated, and in its place.');
         $this->assertSame([true, false], [$read->picks[0]->missing, $read->picks[1]->missing]);
-        $this->assertTrue($read->blocks[0]->spines[0]->story->missing);
+        $this->assertTrue($read->content->blocks()[0]->spines[0]->story->missing);
 
         /* Saved beside another field, and given back as read. */
         Mainstay::update(Story::class, $story->id, ['title' => 'Holder, again'], locale: 'nl', overrideAccess: true);
-        Mainstay::update(Story::class, $story->id, ['author' => $read->author, 'related' => $read->related, 'picks' => $read->picks, 'blocks' => $read->blocks], locale: 'nl', overrideAccess: true);
+        Mainstay::update(Story::class, $story->id, ['author' => $read->author, 'related' => $read->related, 'picks' => $read->picks, 'content' => $read->content], locale: 'nl', overrideAccess: true);
 
         $row = DB::table('story')->find($story->id);
         $this->assertSame($gone->id, (int) $row->author);
         $this->assertSame([$english->id, $kept->id], json_decode($row->related, true));
         $this->assertEquals([['type' => 'person', 'id' => $gone->id], ['type' => 'story', 'id' => $kept->id]], json_decode($row->picks, true));
-        $this->assertSame($english->id, json_decode($row->blocks, true)[0]['data']['spines'][0]['data']['story']);
+        $this->assertSame($english->id, $this->spine($story->id, 'nl'));
         $this->artisan('mainstay:schema:check')->assertSuccessful();
 
         /* Moved to another field, it is a new choice, and refused. */
@@ -287,14 +293,12 @@ class RelationTest extends DatabaseTestCase
            column, a list and a block, and kept through a save of them as
            read. */
         $site = DB::table('sites')->insertGetId(['handle' => 'campaign', 'name' => 'Campaign', 'hostname' => 'campaign.test']);
-        $elsewhere = DB::table('story')->insertGetId(['site_id' => $site, 'related' => '[]', 'picks' => '[]', 'blocks' => '[]', 'created_at' => '2026-10-06 00:00:00', 'updated_at' => '2026-10-06 00:00:00']);
+        $elsewhere = DB::table('story')->insertGetId(['site_id' => $site, 'related' => '[]', 'picks' => '[]', 'created_at' => '2026-10-06 00:00:00', 'updated_at' => '2026-10-06 00:00:00']);
         DB::table('story_locales')->insert(['parent_id' => $elsewhere, 'site_id' => $site, 'locale' => 'en', 'title' => 'Elsewhere', 'slug' => 'elsewhere']);
         $ann = $this->person('Ann');
-        $away = $this->story('Away', ['author' => $ann, 'related' => [$kept->id], 'picks' => [$ann, $kept], 'blocks' => $this->shelf($kept->id)]);
-        DB::table('story')->where('id', $away->id)->update([
-            'related' => json_encode([$elsewhere, $kept->id]),
-            'blocks' => json_encode([['id' => 'a', 'type' => 'shelf', 'data' => ['spines' => [['id' => 'b', 'type' => 'spine', 'data' => ['story' => $elsewhere]]]]]]),
-        ]);
+        $away = $this->story('Away', ['author' => $ann, 'related' => [$kept->id], 'picks' => [$ann, $kept], 'content' => $this->shelf($kept->id)]);
+        DB::table('story')->where('id', $away->id)->update(['related' => json_encode([$elsewhere, $kept->id])]);
+        DB::table('story_locales')->where('parent_id', $away->id)->where('locale', 'en')->update(['content' => json_encode($this->shelf($elsewhere))]);
         $stored = DB::table('story')->find($away->id);
 
         Gate::policy(Story::class, PublisherPolicy::class);
@@ -303,11 +307,11 @@ class RelationTest extends DatabaseTestCase
         $this->assertTrue($read->author->missing, 'Of a type the reader may not read.');
         $this->assertSame([[true, $elsewhere], [false, $kept->id]], array_map(fn (Story $one) => [$one->missing, $one->id], $read->related), 'On another site, in its place.');
         $this->assertSame([true, false], [$read->picks[0]->missing, $read->picks[1]->missing]);
-        $this->assertTrue($read->blocks[0]->spines[0]->story->missing);
+        $this->assertTrue($read->content->blocks()[0]->spines[0]->story->missing);
 
-        Mainstay::update(Story::class, $away->id, ['author' => $read->author, 'related' => $read->related, 'picks' => $read->picks, 'blocks' => $read->blocks], locale: 'en');
+        Mainstay::update(Story::class, $away->id, ['author' => $read->author, 'related' => $read->related, 'picks' => $read->picks, 'content' => $read->content], locale: 'en');
         $after = DB::table('story')->find($away->id);
-        $this->assertSame([(int) $stored->author, json_decode($stored->related, true), json_decode($stored->blocks, true)[0]['data']['spines'][0]['data']['story']], [(int) $after->author, json_decode($after->related, true), json_decode($after->blocks, true)[0]['data']['spines'][0]['data']['story']]);
+        $this->assertSame([(int) $stored->author, json_decode($stored->related, true), $elsewhere], [(int) $after->author, json_decode($after->related, true), $this->spine($away->id, 'en')]);
         $this->assertEquals(json_decode($stored->picks, true), json_decode($after->picks, true));
     }
 
@@ -325,7 +329,7 @@ class RelationTest extends DatabaseTestCase
         $this->assertSame(['author' => ['The author field names person 999, which is not there to point at.']], $this->refusal(fn () => $write(['author' => 999])));
         $this->assertSame(['author' => ["The author field names person {$gone->id}, which is not there to point at."]], $this->refusal(fn () => $write(['author' => $gone->id])));
         $this->assertSame(['picks.1' => ['The picks.1 field names story 999, which is not there to point at.']], $this->refusal(fn () => $write(['picks' => [$ann, ['type' => 'story', 'id' => 999]]])));
-        $this->assertSame(['blocks.0.data.spines.0.data.story' => ['The blocks.0.data.spines.0.data.story field names story 999, which is not there to point at.']], $this->refusal(fn () => $write(['blocks' => $this->shelf(999)])));
+        $this->assertSame(['content.content.0.attrs.data.spines.0.data.story' => ['The content.content.0.attrs.data.spines.0.data.story field names story 999, which is not there to point at.']], $this->refusal(fn () => $write(['content' => $this->shelf(999)])));
         $this->assertSame(['author' => ['The author field points at person, not story.']], $this->refusal(fn () => $write(['author' => $english])));
         $this->assertArrayHasKey('picks.0.type', $this->refusal(fn () => $write(['picks' => [['type' => 'genre', 'id' => 1]]])));
         $this->assertSame(['related.1' => ['The related.1 field names an entry already in the list.']], $this->refusal(fn () => $write(['related' => [$english->id, $english]])));
