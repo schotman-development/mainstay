@@ -54,7 +54,8 @@
                 @endif
             </div>
 
-            <div class="min-h-0 flex-1">{{ $slot }}</div>
+            {{-- Positioned, so a screen can lay a panel over part of itself. --}}
+            <div class="relative min-h-0 flex-1">{{ $slot }}</div>
         </main>
     </div>
 </div>
