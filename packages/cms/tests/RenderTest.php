@@ -13,12 +13,12 @@ use Illuminate\Testing\TestResponse;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
-use Mainstay\Fields\Blocks;
 use Mainstay\Mainstay as Registry;
-use Mainstay\Tests\Fixtures\Blocks\Gallery;
+use Mainstay\Tests\Fixtures\Blocks\Figure;
 use Mainstay\Tests\Fixtures\Blocks\Nested\Slide as NestedSlide;
 use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
 use Mainstay\Tests\Fixtures\Blocks\Quote;
+use Mainstay\Tests\Fixtures\Blocks\Slide;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
@@ -30,7 +30,6 @@ use Mainstay\Tests\Fixtures\Shadowed;
 use Orchestra\Testbench\Attributes\DefineEnvironment;
 use Orchestra\Testbench\Attributes\DefineRoute;
 use PHPUnit\Framework\Attributes\Test;
-use ReflectionProperty;
 
 /*
  | The phase 4 check: an entry written through the query layer, visited at
@@ -450,31 +449,35 @@ class RenderTest extends DatabaseTestCase
             ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => 'Top']]],
             ['type' => 'block', 'attrs' => ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [$paragraph('Careful')]]]]],
             $paragraph('Between'),
-            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]]],
+            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['caption' => 'Shots']], 'content' => [['type' => 'block', 'attrs' => ['type' => 'slide', 'data' => ['title' => 'One']]]]],
             ['type' => 'heading', 'attrs' => ['level' => 6], 'content' => [['type' => 'text', 'text' => 'Bottom']]],
         ]]], locale: 'en', overrideAccess: true)->id;
         $guide = Mainstay::findById(Guide::class, $id, locale: 'en');
 
         $this->assertSame(
-            "<h1>Top</h1><aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<p>Between</p><figure><p>One</p><figcaption>Shots</figcaption></figure>\n<h6>Bottom</h6>",
+            "<h1>Top</h1><aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<p>Between</p><figure><p>One</p>\n<figcaption>Shots</figcaption></figure>\n<h6>Bottom</h6>",
             Blade::render('{{ $content }}', ['content' => $guide->content]),
         );
 
-        /* Named and not there is an error, as an entry's view is. */
-        $this->assertThrows(fn () => $guide->content->blocks()[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
+        /* The blocks inside one, read in their order, the gallery's view
+           printing them where it says. */
+        $this->assertSame(['One'], array_map(fn (Slide $slide) => $slide->title, $guide->content->blocks()[1]->inner()));
 
-        /* A second block of that handle, in another field, would draw with
+        /* Named and not there is an error, as an entry's view is. */
+        $this->assertThrows(fn () => (new Figure)->toHtml(), InvalidArgumentException::class, 'View [blocks.figure] not found.');
+
+        /* A second block of that handle, in another list, would draw with
            the same view. */
         $this->assertThrows(
-            fn () => (new Blocks(of: [OtherSlide::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')),
+            fn () => Mainstay::fields(OtherSlide::class),
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );
 
-        /* Or inside the block itself, read before it is finished. */
+        /* Or inside the block itself, the blocks it holds read as it is. */
         $this->app->instance(Registry::class, $registry = new Registry);
         $this->assertThrows(
-            fn () => $registry->fields(NestedSlide::class),
+            fn () => $registry->innerBlocks(NestedSlide::class),
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Nested\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );

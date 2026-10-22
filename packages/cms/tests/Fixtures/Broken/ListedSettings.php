@@ -6,7 +6,7 @@ use Mainstay\Content\GlobalSet;
 use Mainstay\Fields\Blocks;
 use Mainstay\Tests\Fixtures\Blocks\Slide;
 
-/* A global holding a list of blocks, which only a block holds. */
+/* A global naming blocks on a property, where only a class names them. */
 class ListedSettings extends GlobalSet
 {
     #[Blocks(of: [Slide::class])]

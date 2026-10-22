@@ -443,13 +443,13 @@ class AdminTest extends DatabaseTestCase
         $content = ['type' => 'doc', 'content' => [
             ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Before the blocks']]],
             ['type' => 'block', 'attrs' => ['type' => 'callout', 'data' => ['heading' => 'Mind the gap', 'tone' => 'warning']]],
-            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]]],
+            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => []], 'content' => [['type' => 'block', 'attrs' => ['type' => 'slide', 'data' => ['title' => 'One']]]]],
         ]];
 
         $this->post(route('mainstay.entries.store', 'guide'), ['title' => 'Blocks', 'slug' => 'blocks', 'content' => json_encode($content), 'intent' => 'publish'])->assertSessionHasNoErrors();
         $guide = Mainstay::find(Guide::class, locale: 'en', overrideAccess: true)->sole();
         [$callout, $gallery] = $guide->content->blocks();
-        $this->assertSame(['Mind the gap', 'warning', 'One'], [$callout->heading, $callout->tone, $gallery->slides[0]->title]);
+        $this->assertSame(['Mind the gap', 'warning', 'One'], [$callout->heading, $callout->tone, $gallery->inner()[0]->title]);
 
         /* Pretty-printed in a textarea, which posts it back with its lines
            ending in CRLF: unchanged all the same. */
@@ -469,15 +469,15 @@ class AdminTest extends DatabaseTestCase
 
         /* A slide with no title is a draft's to hold and a publish's to
            refuse, listed above the textarea by where it is. */
-        $content['content'][2]['attrs']['data']['slides'][0]['data']['title'] = '';
+        $content['content'][2]['content'][0]['attrs']['data']['title'] = '';
         $this->from($edit)->post(route('mainstay.entries.update', ['guide', $guide->id]), ['content' => json_encode($content), 'intent' => 'publish'])
-            ->assertSessionHasErrors('content.content.2.attrs.data.slides.0.data.title');
-        $drafted = Mainstay::drafts()->of(Guide::class, $guide->id, locale: 'en', overrideAccess: true)->entry->content->blocks()[1];
-        $this->assertSame('', $drafted->slides[0]->title);
+            ->assertSessionHasErrors('content.content.2.content.0.attrs.data.title');
+        $drafted = Mainstay::drafts()->of(Guide::class, $guide->id, locale: 'en', overrideAccess: true)->entry->content->blocks()[1]->inner()[0];
+        $this->assertSame('', $drafted->title);
         $listed = $this->get($edit)->getContent();
-        $this->assertMatchesRegularExpression('#The content\.content\.2\.attrs\.data\.slides\.0\.data\.title field is required\.</p>\s*</div>\s*<textarea#', $listed);
+        $this->assertMatchesRegularExpression('#The content\.content\.2\.content\.0\.attrs\.data\.title field is required\.</p>\s*</div>\s*<textarea#', $listed);
         $this->assertSame(1, substr_count($listed, 'data.title field is required.'), 'Under its field, and not again above the form.');
-        $this->assertStringContainsString('<li data-invalid-block="'.$drafted->id.'">Gallery: The Title field is required.</li>', $listed, 'Above the page, naming its block, as the draft saved it.');
+        $this->assertStringContainsString('<li data-invalid-block="'.$drafted->id.'">Slide: The Title field is required.</li>', $listed, 'Above the page, naming its block, inside another too, as the draft saved it.');
     }
 
     #[Test]
@@ -671,98 +671,111 @@ class AdminTest extends DatabaseTestCase
         $this->get(route('mainstay.entries', 'banner'))->assertSee('value="From the copy"', escape: false);
     }
 
-    /* A spread whose content holds a gallery of one slide, and the address
-       its edit screen posts the gallery to. */
+    /* A spread whose content holds a gallery holding one slide, and the
+       address its edit screen posts a block to. */
     private function galleried(): array
     {
-        $gallery = ['id' => 'g1', 'type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'One', 'weight' => 2, 'shown' => true]]]]];
-        $spread = Mainstay::create(Spread::class, ['title' => 'First', 'slug' => 'first', 'issuedOn' => '2026-10-07', 'content' => self::said('Text', ['type' => 'block', 'attrs' => $gallery])], locale: 'en', overrideAccess: true);
+        $gallery = ['id' => 'g1', 'type' => 'gallery', 'data' => ['caption' => 'Shots']];
+        $slide = ['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'One', 'weight' => 2, 'shown' => true]];
+        $spread = Mainstay::create(Spread::class, ['title' => 'First', 'slug' => 'first', 'issuedOn' => '2026-10-07', 'content' => self::said('Text', self::holding($gallery, $slide))], locale: 'en', overrideAccess: true);
 
-        return [$spread, $gallery, route('mainstay.block.entry', ['spread', $spread->id])];
+        return [$spread, $gallery, $slide, route('mainstay.block.entry', ['spread', $spread->id])];
+    }
+
+    /* A site block node holding these blocks inside it. */
+    private static function holding(array $block, array ...$inner): array
+    {
+        return ['type' => 'block', 'attrs' => $block, 'content' => array_map(fn (array $each) => ['type' => 'block', 'attrs' => $each], $inner)];
     }
 
     #[Test]
-    public function a_site_block_is_drawn_with_its_sidebar_changed_there_and_refused_as_its_save_would_be(): void
+    public function a_site_block_is_drawn_with_its_settings_changed_there_and_refused_as_its_save_would_be(): void
     {
-        [$spread, $gallery, $block] = $this->galleried();
+        [$spread, $gallery, $slide, $block] = $this->galleried();
+        $inside = ['ancestors' => json_encode([$gallery])];
 
-        /* The edit screen: the block route, the sidebar a form beside the
-           entry's rather than in it, and the picker the figure needs. */
+        /* The edit screen: the block route, the settings a form beside the
+           entry's rather than in it, every block the content holds with the
+           blocks it holds inside it, and the dialogs an image in a block
+           needs. */
         $html = $this->get(route('mainstay.entries.edit', ['spread', $spread->id]))->assertOk()->assertSee('data-block-url="'.$block.'"', escape: false)->getContent();
         $this->assertStringContainsString('</form>', Str::between($html, 'id="entry-form"', 'id="mainstay-block"'));
         $this->assertSame(1, substr_count($html, 'id="mainstay-picker"'), 'The picker an image in a block needs, once.');
+        $this->assertSame(1, substr_count($html, 'id="mainstay-image"'), 'And the dialog it is edited in.');
+        preg_match('/data-blocks="([^"]*)"/', $html, $blocks);
+        preg_match('/data-top="([^"]*)"/', $html, $top);
+        $blocks = json_decode(html_entity_decode($blocks[1]), true);
+        $this->assertSame([['label' => 'Gallery', 'inner' => ['slide']], ['label' => 'Slide', 'inner' => []]], [$blocks['gallery'], $blocks['slide']]);
+        $this->assertSame(['callout', 'gallery', 'figure', 'shelf'], json_decode(html_entity_decode($top[1]), true));
         $draft = Mainstay::drafts()->save(Spread::class, ['title' => 'Drafted', 'slug' => 'drafted', 'issuedOn' => '2026-10-07'], locale: 'en', overrideAccess: true);
         $this->get(route('mainstay.drafts.edit', ['spread', $draft->id]))->assertSee('data-block-url="'.route('mainstay.block.draft', ['spread', $draft->id]).'"', escape: false);
         $this->post(route('mainstay.block.draft', ['spread', $draft->id]), ['block' => json_encode($gallery)])->assertOk();
         Mainstay::drafts()->discard($draft->id, overrideAccess: true);
         $this->get(route('mainstay.entries.create', 'spread'))->assertSee('data-block-url="'.route('mainstay.block.create', 'spread').'"', escape: false);
 
-        /* Selected: drawn as the canvas draws it, and its sidebar, every
-           field by the component Details draws its kind with, the text
-           marked as on the page, a list's items with their controls. */
+        /* Selected: drawn as the canvas draws it -- a block holding others
+           marking where they go, each drawn on its own -- and its settings,
+           every field by the component Details draws its kind with, the text
+           marked as on the page. */
         $selected = $this->post($block, ['block' => json_encode($gallery)])->assertOk();
-        $this->assertStringContainsString('<p><span data-mainstay-field="title" data-mainstay-item="s1" data-mainstay-label="Title">One</span></p>', $selected->json('html'));
+        $this->assertStringContainsString('<figure><template data-mainstay-inner></template><figcaption><span data-mainstay-field="caption" data-mainstay-item="g1" data-mainstay-label="Caption">Shots</span></figcaption>', $selected->json('html'));
         $this->assertStringNotContainsString('signed in', $selected->json('html'), 'Drawn as a visitor sees it.');
         $this->assertEquals($gallery, $selected->json('block'));
-        $sidebar = $selected->json('form');
-        foreach (['name="id" value="g1"', 'name="type" value="gallery"', 'name="data[caption]"', 'value="Shots"', 'data-mainstay-item="g1"', 'name="data[slides][0][id]" value="s1"', 'name="data[slides][0][data][title]"', 'value="One"', 'data-mainstay-item="s1"', 'data-mainstay-field="title"', 'name="data[slides][0][data][weight]"', 'data-block-op="remove"', 'data-block-op="add" data-list="data[slides]" data-kind="slide"'] as $drawn) {
-            $this->assertStringContainsString($drawn, $sidebar);
+        foreach (['name="id" value="g1"', 'name="type" value="gallery"', 'name="data[caption]"', 'value="Shots"', 'data-mainstay-item="g1"'] as $drawn) {
+            $this->assertStringContainsString($drawn, $selected->json('form'));
+        }
+
+        $this->assertStringNotContainsString('slide', $selected->json('form'), 'The blocks inside it are no field of it.');
+
+        $inner = $this->post($block, ['block' => json_encode($slide), ...$inside])->assertOk();
+        $this->assertSame('<p><span data-mainstay-field="title" data-mainstay-item="s1" data-mainstay-label="Title">One</span></p>', trim($inner->json('html')));
+        $this->assertEquals($slide, $inner->json('block'));
+        foreach (['name="id" value="s1"', 'name="data[title]"', 'value="One"', 'data-mainstay-item="s1"', 'data-mainstay-field="title"', 'name="data[weight]"'] as $drawn) {
+            $this->assertStringContainsString($drawn, $inner->json('form'));
         }
 
         /* Changed there: each field through its own conversion, the block
-           drawn again from it, and the sidebar left as it is typed in. */
-        $posted = ['id' => 'g1', 'type' => 'gallery', 'data' => ['caption' => 'Pictures', 'slides' => [['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Uno', 'weight' => '2.5', 'shown' => '1']]]]];
+           drawn again from it, and the settings left as they are typed in.
+           A block given a blank id is given one. */
+        $posted = ['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Uno', 'weight' => '2.5', 'shown' => '1'], ...$inside];
         $changed = $this->post($block, $posted)->assertOk();
-        $this->assertEquals(['id' => 'g1', 'type' => 'gallery', 'data' => ['caption' => 'Pictures', 'slides' => [['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Uno', 'weight' => 2.5, 'shown' => true]]]]], $changed->json('block'));
+        $this->assertEquals(['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Uno', 'weight' => 2.5, 'shown' => true]], $changed->json('block'));
         $this->assertStringContainsString('data-mainstay-item="s1" data-mainstay-label="Title">Uno</span>', $changed->json('html'));
         $this->assertNull($changed->json('form'));
+        $this->assertMatchesRegularExpression('/^[0-9A-Z]{26}$/', $this->post($block, [...$posted, 'id' => ''])->assertOk()->json('block.id'));
 
-        /* An item added to a list, its own id given at once; moved up, and
-           removed; and the sidebar drawn again each time. */
-        $added = $this->post($block, [...$posted, 'op' => 'add', 'list' => 'data[slides]', 'kind' => 'slide'])->assertOk();
-        $new = $added->json('block.data.slides.1.id');
-        $this->assertSame(['s1', 'slide'], [$added->json('block.data.slides.0.id'), $added->json('block.data.slides.1.type')]);
-        $this->assertMatchesRegularExpression('/^[0-9A-Z]{26}$/', $new);
-        $this->assertStringContainsString('name="data[slides][1][id]" value="'.$new.'"', $added->json('form'));
-        $two = [...$posted, 'data' => ['caption' => 'Pictures', 'slides' => [...$posted['data']['slides'], ['id' => 's2', 'type' => 'slide', 'data' => ['title' => 'Dos', 'shown' => '1']]]]];
-        $this->assertSame(['s2', 's1'], array_column($this->post($block, [...$two, 'op' => 'up', 'list' => 'data[slides]', 'index' => '1'])->assertOk()->json('block.data.slides'), 'id'));
-        $this->assertSame(['s2'], array_column($this->post($block, [...$two, 'op' => 'remove', 'list' => 'data[slides]', 'index' => '0'])->assertOk()->json('block.data.slides'), 'id'));
-        $this->assertSame(['s1', 's2'], array_column($this->post($block, [...$two, 'op' => 'remove', 'list' => 'data[slides]', 'index' => '-1'])->assertOk()->json('block.data.slides'), 'id'), 'No item there, none removed.');
-        $this->post($block, [...$posted, 'op' => 'add', 'list' => 'data[slides]', 'kind' => ['slide']])->assertStatus(422);
-
-        /* Its last item removed, a list posts only its marker, drawn ahead of
-           its items; an item with a blank id is given one. */
-        $this->assertStringContainsString('<input type="hidden" name="data[slides]" value="">', $selected->json('form'));
-        $this->assertSame([], $this->post($block, [...$posted, 'data' => ['caption' => 'Pictures', 'slides' => '']])->assertOk()->json('block.data.slides'));
-        $this->assertMatchesRegularExpression('/^[0-9A-Z]{26}$/', $this->post($block, [...$posted, 'data' => ['caption' => 'Pictures', 'slides' => [['id' => '', 'type' => 'slide', 'data' => ['title' => 'Uno', 'shown' => '1']]]]])->assertOk()->json('block.data.slides.0.id'));
+        /* Only where the block around it holds it. */
+        $this->post($block, ['block' => json_encode($slide)])->assertStatus(422)->assertExactJson(['messages' => ['The content holds no block of the type "slide" here.']]);
+        $this->post($block, [...$posted, 'ancestors' => json_encode([['type' => 'callout', 'data' => []]])])->assertStatus(422);
+        $this->post($block, [...$posted, 'ancestors' => ['gallery']])->assertStatus(422);
 
         /* A value its field refuses: said by the field's label, the block as
-           converted, and once a list changed, the sidebar with the message
+           converted, and once it is selected, its settings with the message
            at the field and the value refused left out. */
-        $wrong = [...$posted, 'data' => ['caption' => 'Pictures', 'slides' => [['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Uno', 'weight' => 'heavy', 'shown' => '1']]]]];
+        $wrong = [...$posted, 'data' => ['title' => 'Uno', 'weight' => 'heavy', 'shown' => '1']];
         $refused = $this->post($block, $wrong)->assertStatus(422);
         $this->assertSame(['The Weight field must be a number.'], $refused->json('messages'));
-        $this->assertSame('heavy', $refused->json('block.data.slides.0.data.weight'));
+        $this->assertSame('heavy', $refused->json('block.data.weight'));
         $this->assertNull($refused->json('form'));
-        $form = $this->post($block, [...$wrong, 'op' => 'add', 'list' => 'data[slides]', 'kind' => 'slide'])->assertStatus(422)->json('form');
-        $this->assertMatchesRegularExpression('#name="data\[slides\]\[0\]\[data\]\[weight\]"(?:(?!value=)[^>])*>.*?The Weight field must be a number\.#s', $form);
+        $form = $this->post($block, ['block' => json_encode([...$slide, 'data' => [...$slide['data'], 'weight' => 'heavy']]), ...$inside])->assertStatus(422)->json('form');
+        $this->assertMatchesRegularExpression('#name="data\[weight\]"(?:(?!value=)[^>])*>.*?The Weight field must be a number\.#s', $form);
 
         /* A refused save's messages, posted with it while it is unchanged,
            shown at their fields. */
-        $this->assertStringContainsString('The Title field is required.', $this->post($block, ['block' => json_encode($gallery), 'errors' => json_encode(['data.slides.0.data.title' => ['The Title field is required.'], 'data.caption' => 'not a list'])])->assertOk()->json('form'));
+        $this->assertStringContainsString('The Title field is required.', $this->post($block, ['block' => json_encode($slide), ...$inside, 'errors' => json_encode(['data.title' => ['The Title field is required.'], 'data.caption' => 'not a list'])])->assertOk()->json('form'));
 
         /* A relation in a block searches by the block's handle, among the
            blocks the type's content can hold. */
         $open = Mainstay::create(Story::class, ['title' => 'Open', 'slug' => 'open'], locale: 'en', overrideAccess: true);
-        $shelf = ['id' => 'h1', 'type' => 'shelf', 'data' => ['spines' => [['id' => 'p1', 'type' => 'spine', 'data' => ['story' => $open->id]]]]];
-        $this->assertStringContainsString('data-search="'.route('mainstay.relations', ['spread', 'spine.story', 'locale' => 'en']).'"', $this->post($block, ['block' => json_encode($shelf)])->assertOk()->json('form'));
+        $spine = ['id' => 'p1', 'type' => 'spine', 'data' => ['story' => $open->id]];
+        $this->assertStringContainsString('data-search="'.route('mainstay.relations', ['spread', 'spine.story', 'locale' => 'en']).'"', $this->post($block, ['block' => json_encode($spine), 'ancestors' => json_encode([['id' => 'h1', 'type' => 'shelf', 'data' => []]])])->assertOk()->json('form'));
         $this->get(route('mainstay.relations', ['spread', 'spine.story', 'q' => 'Op']))->assertOk()->assertSee('data-title="Open"', escape: false);
         $this->get(route('mainstay.relations', ['spread', 'spine.title', 'q' => 'Op']))->assertNotFound();
         $this->get(route('mainstay.relations', ['post', 'spine.story', 'q' => 'Op']))->assertNotFound();
 
         /* Refused: a block the content does not hold, as the document holds
-           it or as the sidebar posts it; and to whoever may not change it. */
-        $this->post($block, ['block' => json_encode(['id' => 'x', 'type' => 'loud', 'data' => []])])->assertStatus(422)->assertExactJson(['messages' => ['The content holds no block of the type "loud".']]);
+           it or as the settings post it; and to whoever may not change it. */
+        $this->post($block, ['block' => json_encode(['id' => 'x', 'type' => 'loud', 'data' => []])])->assertStatus(422)->assertExactJson(['messages' => ['The content holds no block of the type "loud" here.']]);
         $this->post($block, ['id' => 'x', 'type' => 'loud'])->assertStatus(422);
         $this->post(route('mainstay.block.create', 'leaflet'), ['block' => json_encode($gallery)])->assertNotFound();
         $this->signIn($this->user(['edit_spreads', 'edit_published_spreads']));
@@ -773,49 +786,49 @@ class AdminTest extends DatabaseTestCase
     #[Test]
     public function a_save_refused_for_a_blocks_field_is_listed_above_the_page_naming_the_block_and_marks_it(): void
     {
-        [$spread, $gallery, $block] = $this->galleried();
+        [$spread, $gallery, $slide, $block] = $this->galleried();
         $edit = route('mainstay.entries.edit', ['spread', $spread->id]);
-        $gallery['data']['slides'][0]['data']['weight'] = 'heavy';
+        $slide['data']['weight'] = 'heavy';
 
-        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($this->get($edit)), 'content' => json_encode(self::said('Text', ['type' => 'block', 'attrs' => $gallery]))])
-            ->assertSessionHasErrors('content.content.1.attrs.data.slides.0.data.weight');
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($this->get($edit)), 'content' => json_encode(self::said('Text', self::holding($gallery, $slide)))])
+            ->assertSessionHasErrors('content.content.1.content.0.attrs.data.weight');
 
-        $page = $this->get($edit)->assertOk()->assertSee('<li data-invalid-block="g1">Gallery: The Weight field must be a number.</li>', escape: false);
+        $page = $this->get($edit)->assertOk()->assertSee('<li data-invalid-block="s1">Slide: The Weight field must be a number.</li>', escape: false);
         preg_match('/data-invalid="([^"]*)"/', $page->getContent(), $invalid);
-        $this->assertSame(['g1' => ['label' => 'Gallery', 'messages' => ['data.slides.0.data.weight' => ['The Weight field must be a number.']]]], json_decode(html_entity_decode($invalid[1]), true));
+        $this->assertSame(['s1' => ['label' => 'Slide', 'messages' => ['data.weight' => ['The Weight field must be a number.']]]], json_decode(html_entity_decode($invalid[1]), true));
         $this->get($edit)->assertDontSee('data-canvas-invalid', escape: false);
 
         /* A publish refused for what only a publish asks: the draft is saved,
-           the block marked from it, the page still drawn, and its sidebar
+           the block marked from it, the page still drawn, and its settings
            told when the block is posted with its errors. */
-        $gallery['data']['slides'][0]['data'] = ['title' => '', 'weight' => 2, 'shown' => true];
-        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($this->get($edit)), 'intent' => 'publish', 'content' => json_encode(self::said('Text', ['type' => 'block', 'attrs' => $gallery]))])
-            ->assertSessionHasErrors('content.content.1.attrs.data.slides.0.data.title');
+        $slide['data'] = ['title' => '', 'weight' => 2, 'shown' => true];
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($this->get($edit)), 'intent' => 'publish', 'content' => json_encode(self::said('Text', self::holding($gallery, $slide)))])
+            ->assertSessionHasErrors('content.content.1.content.0.attrs.data.title');
 
-        $page = $this->get($edit)->assertOk()->assertSee('<li data-invalid-block="g1">Gallery: The Title field is required.</li>', escape: false);
+        $page = $this->get($edit)->assertOk()->assertSee('<li data-invalid-block="s1">Slide: The Title field is required.</li>', escape: false);
         preg_match('/data-invalid="([^"]*)"/', $page->getContent(), $invalid);
-        $messages = json_decode(html_entity_decode($invalid[1]), true)['g1']['messages'];
-        $this->assertSame(['data.slides.0.data.title' => ['The Title field is required.']], $messages);
+        $messages = json_decode(html_entity_decode($invalid[1]), true)['s1']['messages'];
+        $this->assertSame(['data.title' => ['The Title field is required.']], $messages);
         $this->post(route('mainstay.canvas.entry', ['spread', $spread->id]), $this->drawn($page))->assertOk();
-        $form = $this->post($block, ['block' => json_encode($gallery), 'errors' => json_encode($messages)])->assertOk()->json('form');
+        $form = $this->post($block, ['block' => json_encode($slide), 'ancestors' => json_encode([$gallery]), 'errors' => json_encode($messages)])->assertOk()->json('form');
         $this->assertStringContainsString('The Title field is required.', $form);
     }
 
     #[Test]
-    public function a_slides_title_changed_in_the_sidebar_is_saved_with_the_pages_title_unchanged(): void
+    public function a_slides_title_changed_in_its_settings_is_saved_with_the_pages_title_unchanged(): void
     {
-        [$spread, , $block] = $this->galleried();
+        [$spread, $gallery, , $block] = $this->galleried();
         $edit = route('mainstay.entries.edit', ['spread', $spread->id]);
         $form = $this->get($edit);
 
-        /* The sidebar's slide title is no input of the entry's form. */
-        $this->assertStringNotContainsString('[data][title]', Str::between($form->getContent(), 'id="entry-form"', '</form>'));
+        /* The settings' slide title is no input of the entry's form. */
+        $this->assertStringNotContainsString('data[title]', Str::between($form->getContent(), 'id="entry-form"', '</form>'));
 
-        $changed = $this->post($block, ['id' => 'g1', 'type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Renamed', 'weight' => '2', 'shown' => '1']]]]])->assertOk();
-        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($form), 'content' => json_encode(self::said('Text', ['type' => 'block', 'attrs' => $changed->json('block')]))])->assertSessionHasNoErrors();
+        $changed = $this->post($block, ['id' => 's1', 'type' => 'slide', 'data' => ['title' => 'Renamed', 'weight' => '2', 'shown' => '1'], 'ancestors' => json_encode([$gallery])])->assertOk();
+        $this->post(route('mainstay.entries.update', ['spread', $spread->id]), [...$this->drawn($form), 'content' => json_encode(self::said('Text', self::holding($gallery, $changed->json('block'))))])->assertSessionHasNoErrors();
 
         $drafted = Mainstay::drafts()->of(Spread::class, $spread->id, locale: 'en', overrideAccess: true)->entry;
-        $this->assertSame(['First', 'Renamed', 'Shots'], [$drafted->title, $drafted->content->blocks()[0]->slides[0]->title, $drafted->content->blocks()[0]->caption]);
+        $this->assertSame(['First', 'Renamed', 'Shots'], [$drafted->title, $drafted->content->blocks()[0]->inner()[0]->title, $drafted->content->blocks()[0]->caption]);
     }
 
     #[Test]
@@ -885,6 +898,16 @@ class AdminTest extends DatabaseTestCase
         $this->post(route('mainstay.media.update', $harbour->id), ['focal' => ['20', '80'], 'alt' => ['en' => 'A harbour at night', 'nl' => 'Een haven in de schemering']])->assertSessionHasNoErrors();
         $this->assertSame([20, 80], Mainstay::media()->find($harbour->id)->focal);
         $this->assertSame(['A harbour at night', 'Een haven in de schemering'], $alt($harbour->id));
+
+        /* The same form alone, for the Content tab's image dialog, saved for
+           JSON; refused as JSON too. */
+        $dialog = $this->get(route('mainstay.media.edit', [$harbour->id, 'dialog' => 1]))->assertOk()->getContent();
+        $this->assertStringContainsString('data-image-form', $dialog);
+        $this->assertStringContainsString('name="alt[en]"', $dialog);
+        $this->assertStringNotContainsString('aria-label="Sections"', $dialog, 'Without the admin around it.');
+        $this->postJson(route('mainstay.media.update', $harbour->id), ['focal' => ['30', '70'], 'alt' => ['en' => 'A harbour', 'nl' => 'Een haven']])->assertExactJson(['status' => 'Saved.']);
+        $this->assertSame([[30, 70], ['A harbour', 'Een haven']], [Mainstay::media()->find($harbour->id)->focal, $alt($harbour->id)]);
+        $this->postJson(route('mainstay.media.update', $harbour->id), ['alt' => ['en' => str_repeat('a', 1001)]])->assertStatus(422)->assertJsonStructure(['errors']);
 
         /* The trash: out of the grid, shown as missing on the entry and kept
            there, back again; and gone for good. */

@@ -73,10 +73,16 @@ class DraftTest extends DatabaseTestCase
         return ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]]]];
     }
 
-    /* A content of these site blocks. */
+    /* A content of these site blocks: each its attrs, and the blocks inside
+       it under `inner`. */
     private static function blocks(array ...$blocks): array
     {
-        return ['type' => 'doc', 'content' => array_map(fn (array $block) => ['type' => 'block', 'attrs' => $block], $blocks)];
+        return ['type' => 'doc', 'content' => array_map(self::node(...), $blocks)];
+    }
+
+    private static function node(array $block): array
+    {
+        return ['type' => 'block', 'attrs' => array_diff_key($block, ['inner' => 0]), ...isset($block['inner']) ? ['content' => array_map(self::node(...), $block['inner'])] : []];
     }
 
     /* An image row, as RelationTest writes one: the library's files are
@@ -106,7 +112,7 @@ class DraftTest extends DatabaseTestCase
 
         $entry = Mainstay::create(Bulletin::class, [
             'title' => 'Launch', 'slug' => $slug, 'body' => self::doc('Hello'), 'publishedOn' => '2026-10-07', 'kind' => 'news', 'approved' => true,
-            'content' => self::blocks(['type' => 'shelf', 'data' => ['spines' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]]),
+            'content' => self::blocks(['type' => 'shelf', 'inner' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]),
             'picks' => [['type' => 'person', 'id' => $person->id], $story],
             'cover' => $this->image(), 'genres' => [$genre], 'memo' => 'Quiet',
             ...$data,

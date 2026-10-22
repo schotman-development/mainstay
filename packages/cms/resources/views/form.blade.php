@@ -75,7 +75,8 @@
         @endforeach
 
         <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div class="mx-auto w-full max-w-3xl shrink-0 space-y-2 px-6 {{ $canvas ? 'pt-4' : 'pt-8' }}">
+            {{-- Over the tabs, and taking no room there while it says nothing. --}}
+            <div class="mx-auto w-full max-w-3xl shrink-0 space-y-2 px-6 {{ $canvas ? 'has-[>:not([hidden])]:py-3' : 'pt-8' }}">
                 <div data-copy-offer hidden role="status" class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-control border border-border bg-surface px-3 py-2 text-sm">
                     <span class="mr-auto">You have unsaved changes from <time data-copy-time></time>.</span>
                     <x-mainstay::button type="button" data-copy-restore>Restore</x-mainstay::button>
@@ -92,9 +93,19 @@
             {{-- A type with a page edits it on Content, the page the site
                  draws from the form; Details is every field, the content's
                  raw data among them, and opens first -- and again after a
-                 save a field refused. --}}
+                 save a field refused. Content's own controls, for the whole
+                 document, sit at the end of the tabs' bar while it is open. --}}
             @if ($canvas)
-                <x-mainstay::tabs name="entry" label="Edit" :tabs="['details' => 'Details', 'content' => 'Content']" :data-tabs-open="$errors->isNotEmpty() ? 'details' : null" class="mt-2" />
+                <div class="relative shrink-0">
+                    <x-mainstay::tabs name="entry" label="Edit" :tabs="['details' => 'Details', 'content' => 'Content']" :data-tabs-open="$errors->isNotEmpty() ? 'details' : null" />
+                    <div id="canvas-header" role="toolbar" aria-label="Content" hidden class="absolute inset-y-0 right-4 flex items-center gap-0.5">
+                        @php($tool = 'rounded-control px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent')
+                        <button type="button" data-command="undo" class="{{ $tool }}">Undo</button>
+                        <button type="button" data-command="redo" class="{{ $tool }}">Redo</button>
+                        <span aria-hidden="true" class="mx-1 h-5 w-px bg-border"></span>
+                        <button type="button" data-command="add" aria-haspopup="true" aria-expanded="false" aria-controls="canvas-menu" class="{{ $tool }}">Add block</button>
+                    </div>
+                </div>
             @endif
 
             <x-mainstay::tab-panel id="details" class="min-h-0 flex-1 overflow-y-auto">
@@ -117,7 +128,7 @@
 
             @if ($canvas)
                 <x-mainstay::tab-panel id="content" class="flex min-h-0 flex-1 flex-col">
-                    <x-mainstay::canvas :url="$canvas" :block="$block" sidebar="mainstay-block" :blocks="$blocks" :invalid="$invalid" :pictures="$pictures" />
+                    <x-mainstay::canvas :url="$canvas" :block="$block" sidebar="mainstay-block" header="canvas-header" :blocks="$blocks" :top="$top" :invalid="$invalid" :pictures="$pictures" />
                 </x-mainstay::tab-panel>
             @endif
         </div>
@@ -181,7 +192,7 @@
         </aside>
     </form>
 
-    {{-- Beside the entry's form, over its rail: see block-sidebar. --}}
+    {{-- Outside the entry's form: see block-sidebar. --}}
     @if ($canvas)
         <x-mainstay::block-sidebar id="mainstay-block" />
     @endif

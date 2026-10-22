@@ -69,8 +69,10 @@ class MainstayServiceProvider extends ServiceProvider
 
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'mainstay');
 
-        /* A block view's text, typeable in the Content tab: see field(). */
+        /* A block view's text, typeable in the Content tab, and the blocks
+           inside it: see field() and inner(). */
         Blade::directive('field', fn (string $expression) => "<?php echo app(\\Mainstay\\Mainstay::class)->field({$expression}); ?>");
+        Blade::directive('inner', fn (string $expression) => "<?php echo app(\\Mainstay\\Mainstay::class)->inner({$expression}); ?>");
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
         /*

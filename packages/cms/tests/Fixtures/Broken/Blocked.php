@@ -6,7 +6,7 @@ use Mainstay\Content\Entry;
 use Mainstay\Fields\Blocks;
 use Mainstay\Tests\Fixtures\Blocks\Slide;
 
-/* A list of blocks beside its content, where an entry's blocks go. */
+/* Blocks named on a property, where only a class names them. */
 class Blocked extends Entry
 {
     #[Blocks(of: [Slide::class])]

@@ -25,8 +25,9 @@ use Mainstay\Mainstay;
  | unknown mark leaves its text unmarked.
  |
  | An entry's content holds one node more, `block`, a site block at the top
- | level, which the read hands in as its Block and the renderer draws through
- | the block's view. A rich text field holds none.
+ | level, holding the blocks inside it, which the read hands in as its Block
+ | and the renderer draws through the block's view. A rich text field holds
+ | none.
  */
 final class Document implements Arrayable, Htmlable, JsonSerializable
 {
@@ -46,8 +47,9 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
         'ordered_list' => ['group' => 'block', 'content' => 'list_item', 'least' => 1, 'attrs' => ['order']],
         'list_item' => ['content' => 'block', 'least' => 1, 'first' => 'paragraph'],
         'horizontal_rule' => ['group' => 'block'],
-        /* In no group: only a content's doc holds one, at its top level. */
-        'block' => [],
+        /* In no group: only a content's doc holds one, at its top level, and
+           a block the blocks inside it. */
+        'block' => ['content' => 'block'],
         'hard_break' => ['group' => 'inline'],
         'text' => ['group' => 'inline'],
     ];
@@ -65,7 +67,7 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
     /* Whether this is the content the admin's Content tab edits. */
     private bool $editing = false;
 
-    /** @param array<string, Block> $blocks a content's site blocks, by id */
+    /** @param array<string, Block> $blocks a content's site blocks, by id, the ones inside another among them */
     public function __construct(private array $tree, private array $blocks = []) {}
 
     /* No text: a paragraph holding nothing, as the editor opens one. */
@@ -78,11 +80,11 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
      | This content as the admin's Content tab edits it, printed for its
      | editor rather than as the site draws it: a `<script
      | type="application/json">` of the document and each site block's HTML
-     | by its id, its @field text marked, and nothing else, which the editor
-     | reads and takes the
-     | element it sits in over with. Only the entry the tab edits is given
-     | one, so a rich text field, and another entry's content, on the same
-     | page draw as on the site.
+     | by its id -- the ones inside another too, each on its own -- its
+     | @field text marked, and nothing else, which the editor reads and takes
+     | the element it sits in over with. Only the entry the tab edits is
+     | given one, so a rich text field, and another entry's content, on the
+     | same page draw as on the site.
      */
     public function editing(): self
     {
@@ -93,14 +95,23 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
     }
 
     /*
-     | The site blocks the content holds, in its order: `@foreach
-     | ($entry->content?->blocks() ?? [] as $block)`.
+     | The site blocks at the content's top level, in its order: `@foreach
+     | ($entry->content?->blocks() ?? [] as $block)`. Each holds the blocks
+     | inside it, `$block->inner()`.
      |
      | @return list<Block>
      */
     public function blocks(): array
     {
-        return array_values($this->blocks);
+        $blocks = [];
+
+        foreach (is_array($this->tree['content'] ?? null) ? $this->tree['content'] : [] as $node) {
+            if (is_array($node) && ($node['type'] ?? null) === 'block' && isset($this->blocks[$id = $node['attrs']['id'] ?? null])) {
+                $blocks[] = $this->blocks[$id];
+            }
+        }
+
+        return $blocks;
     }
 
     public function toArray(): array
@@ -219,9 +230,13 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             $place = $at === 'the root' ? "content.{$index}" : "{$at}.content.{$index}";
             $name = is_array($child) && is_string($child['type'] ?? null) ? $child['type'] : null;
 
-            $held = $name === 'block'
-                ? $blocks && $type === 'doc'
-                : $name === null || ! isset(self::NODES[$name]) || $name === $spec['content'] || (self::NODES[$name]['group'] ?? null) === $spec['content'];
+            /* A block holds blocks alone, `block` there naming the node
+               rather than the group. */
+            $held = match (true) {
+                $name === 'block' => $blocks && in_array($type, ['doc', 'block'], true),
+                $type === 'block' => $name === null || ! isset(self::NODES[$name]),
+                default => $name === null || ! isset(self::NODES[$name]) || $name === $spec['content'] || (self::NODES[$name]['group'] ?? null) === $spec['content'],
+            };
 
             if (! $held) {
                 return "puts the {$name} at {$place} in a {$type}, which cannot hold one";

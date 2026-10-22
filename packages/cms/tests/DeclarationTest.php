@@ -26,6 +26,7 @@ use Mainstay\Tests\Fixtures\Article;
 use Mainstay\Tests\Fixtures\Blanks;
 use Mainstay\Tests\Fixtures\Blocks\Concealed;
 use Mainstay\Tests\Fixtures\Blocks\Dated;
+use Mainstay\Tests\Fixtures\Blocks\Figure;
 use Mainstay\Tests\Fixtures\Blocks\Gallery;
 use Mainstay\Tests\Fixtures\Blocks\Identified;
 use Mainstay\Tests\Fixtures\Blocks\Looped;
@@ -133,60 +134,44 @@ class DeclarationTest extends TestCase
     }
 
     #[Test]
-    public function a_list_of_blocks_is_described_block_by_block(): void
+    public function the_blocks_inside_a_block_are_named_on_its_class_and_held_in_the_content(): void
     {
         $schema = $this->mainstay->schema(Guide::class)['properties'];
-        $strip = $this->mainstay->schema(Strip::class)['properties']['figures'];
-        $slides = $this->mainstay->schema(Gallery::class)['properties']['slides']['items']['oneOf'];
 
         $this->assertSame(['type' => ['object', 'null'], 'properties' => ['type' => ['const' => 'doc'], 'content' => ['type' => 'array']], 'required' => ['type', 'content']], $schema['body']);
-        $this->assertSame($schema['body'], $schema['content'], 'A content is described as the document it is.');
-        $this->assertSame('array', $strip['type'], 'A list of blocks holds an empty list rather than null.');
-        $this->assertSame(['figure'], array_map(fn (array $block) => $block['properties']['type']['const'], $strip['items']['oneOf']));
-        $this->assertSame(['id', 'type', 'data'], $slides[0]['required']);
-        $this->assertSame(['title', 'weight', 'shown'], array_keys($slides[0]['properties']['data']['properties']), 'A repeater is described as the list it is.');
-    }
-
-    #[Test]
-    public function a_list_of_blocks_is_required_only_when_it_says_so(): void
-    {
-        $strip = $this->mainstay->fields(Strip::class);
-        $gallery = $this->mainstay->fields(Gallery::class);
-
-        $this->assertFalse($strip['figures']->isRequired(), 'public array holds an empty list, which required refuses.');
-        $this->assertSame(['nullable', 'array', 'list'], $strip['figures']->rulesAt('figures')['figures']);
-        $this->assertSame(['required', 'array', 'list'], $gallery['slides']->rulesAt('slides')['slides']);
-        $this->assertSame(['required', 'string', 'max:255'], $gallery['slides']->rulesAt('slides', [['type' => 'slide', 'data' => []]])['slides.0.data.title'], 'Each item is checked where it is, by its own block\'s rules.');
+        $this->assertSame($schema['body'], $schema['content'], 'A content is described as the document it is, the blocks inside one among its nodes.');
+        $this->assertSame(['caption'], array_keys($this->mainstay->schema(Gallery::class)['properties']), 'The blocks inside a block are no field of it.');
+        $this->assertSame([Figure::class], $this->mainstay->innerBlocks(Strip::class)->of);
+        $this->assertSame([Looped::class], $this->mainstay->innerBlocks(Looped::class)->of, 'A block holds its own kind as deep as it is written.');
+        $this->assertNull($this->mainstay->innerBlocks(Slide::class), 'A block naming none holds none.');
     }
 
     #[Test]
     public function a_block_field_left_out_is_checked_with_its_default(): void
     {
-        $blocks = (new Blocks(of: [Loud::class]))->bind(new ReflectionProperty(Gallery::class, 'slides'));
-        $value = $blocks->complete([['type' => 'loud', 'data' => []]]);
-        $validator = (new Factory(new Translator(new ArrayLoader, 'en')))->make(['slides' => $value], $blocks->rulesAt('slides', $value));
+        $blocks = new Blocks([Loud::class]);
+        $value = $blocks->completeItem(['type' => 'loud', 'data' => []]);
+        $validator = (new Factory(new Translator(new ArrayLoader, 'en')))->make(['item' => $value], $blocks->itemRules('item', $value));
 
-        $this->assertSame('loud', $value[0]['data']['tone']);
-        $this->assertSame(['slides.0.data.tone'], $validator->errors()->keys(), 'A default is checked as a value written is, not written unchecked.');
+        $this->assertSame('loud', $value['data']['tone']);
+        $this->assertSame(['item.data.tone'], $validator->errors()->keys(), 'A default is checked as a value written is, not written unchecked.');
     }
 
     #[Test]
-    public function a_blocks_field_refuses_what_it_cannot_hold(): void
+    public function a_list_of_blocks_refuses_what_it_cannot_hold(): void
     {
         foreach ([
-            [fn () => new Blocks, 'A blocks field lists the blocks it holds: #[Blocks(of: [Hero::class])].'],
-            [fn () => new Blocks(of: [Fixtures\Post::class]), 'Mainstay\Tests\Fixtures\Post is not a block. A block is a class extending Mainstay\Content\Block.'],
-            [fn () => new Blocks(of: [Slide::class, OtherSlide::class]), 'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide.'],
-            [fn () => $this->mainstay->fields(Looped::class), 'Mainstay\Tests\Fixtures\Blocks\Looped holds itself through its blocks, so there is no end to reading it.'],
-            [fn () => (new Blocks(of: [Translated::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')), 'Mainstay\Tests\Fixtures\Blocks\Translated::$title is localized, and a block is translated with the field that holds it.'],
-            [fn () => (new Blocks(of: [Concealed::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')), 'Mainstay\Tests\Fixtures\Blocks\Concealed::$note is internal, and a block is read whole.'],
-            [fn () => (new Blocks(of: [Identified::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')), 'Mainstay\Tests\Fixtures\Blocks\Identified::$id is called id, which every block keeps for itself.'],
-            [fn () => (new Blocks(of: [Dated::class]))->bind(new ReflectionProperty(Gallery::class, 'slides')), 'Mainstay\Tests\Fixtures\Blocks\Dated::$on has no default and no value to read a block stored without it as. Give it a default, or declare it nullable; required: true still asks every write for it.'],
+            [fn () => new Blocks, '#[Blocks] lists the blocks a content or a block holds: #[Blocks([Hero::class])].'],
+            [fn () => new Blocks([Fixtures\Post::class]), 'Mainstay\Tests\Fixtures\Post is not a block. A block is a class extending Mainstay\Content\Block.'],
+            [fn () => new Blocks([Slide::class, OtherSlide::class]), 'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide.'],
+            [fn () => (new Blocks([Translated::class]))->check($this->mainstay), 'Mainstay\Tests\Fixtures\Blocks\Translated::$title is localized, and a block is translated with the content that holds it.'],
+            [fn () => (new Blocks([Concealed::class]))->check($this->mainstay), 'Mainstay\Tests\Fixtures\Blocks\Concealed::$note is internal, and a block is read whole.'],
+            [fn () => (new Blocks([Identified::class]))->check($this->mainstay), 'Mainstay\Tests\Fixtures\Blocks\Identified::$id is called id, which every block keeps for itself.'],
+            [fn () => (new Blocks([Dated::class]))->check($this->mainstay), 'Mainstay\Tests\Fixtures\Blocks\Dated::$on has no default and no value to read a block stored without it as. Give it a default, or declare it nullable; required: true still asks every write for it.'],
             [function () {
                 $this->mainstay->fields(Slide::class);
                 $this->mainstay->fields(OtherSlide::class);
             }, 'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide, and a block\'s handle names the view that draws it. Give one of them a handle() of its own.'],
-            [fn () => (new Blocks(of: [Slide::class]))->bind(new ReflectionProperty(Guide::class, 'title')), 'Mainstay\Tests\Fixtures\Guide::$title is typed string, and a blocks field stores a list of blocks.'],
         ] as [$declare, $message]) {
             try {
                 $declare();
@@ -210,12 +195,14 @@ class DeclarationTest extends TestCase
         $this->assertArrayNotHasKey('content', $this->mainstay->fields(Slide::class));
 
         /* A block in a content is checked by its own block's rules where it
-           is, and only where the type names blocks. */
+           is, inside another too, and only where the type names blocks. */
         $guide = $this->mainstay->fields(Guide::class)['content'];
-        $tree = ['type' => 'doc', 'content' => [['type' => 'paragraph'], ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => []]]]]]]];
+        $tree = ['type' => 'doc', 'content' => [['type' => 'paragraph'], ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => []], 'content' => [['type' => 'block', 'attrs' => ['type' => 'slide', 'data' => []]]]]]];
+        $rules = $guide->rulesAt('content', $tree);
 
-        $this->assertSame(['required', 'string', 'max:255'], $guide->rulesAt('content', $tree)['content.content.1.attrs.data.slides.0.data.title']);
-        $this->assertSame(['distinct:strict'], array_slice($guide->rulesAt('content', $tree), -1, preserve_keys: true)['content.content.*.attrs.id'] ?? null);
+        $this->assertSame(['required', 'string', 'max:255'], $rules['content.content.1.content.0.attrs.data.title']);
+        $this->assertSame(['distinct:strict'], $rules['content.content.1.content.*.attrs.id'] ?? null, 'Ids are told apart among the blocks beside each other.');
+        $this->assertSame(['distinct:strict'], array_slice($rules, -1, preserve_keys: true)['content.content.*.attrs.id'] ?? null);
         $this->assertArrayNotHasKey('content.content.1.attrs.type', $content->rulesAt('content', $tree));
     }
 
@@ -225,11 +212,11 @@ class DeclarationTest extends TestCase
         foreach ([
             Fixtures\Broken\Recontented::class => 'Mainstay\Tests\Fixtures\Broken\Recontented::$content is redeclared as another kind of field. The edit screen is built on an entry\'s content, so redeclare it with #[Content], as one content for every language is.',
             Fixtures\Broken\Contented::class => 'Mainstay\Tests\Fixtures\Broken\Contented::$content is a content field, and content is an entry\'s own, its $content.',
-            Fixtures\Broken\Blocked::class => 'Mainstay\Tests\Fixtures\Broken\Blocked::$slides is a blocks field, and an entry\'s blocks go in its content: name them on the class, #[Blocks([...])].',
-            Fixtures\Broken\ListedSettings::class => 'Mainstay\Tests\Fixtures\Broken\ListedSettings::$slides is a blocks field, and only a block holds one, a list of its items; an entry\'s blocks go in its content.',
-            Fixtures\Broken\BlockedSettings::class => 'Mainstay\Tests\Fixtures\Broken\BlockedSettings names blocks with #[Blocks], and only an entry type\'s content holds them.',
+            Fixtures\Broken\Blocked::class => 'Mainstay\Tests\Fixtures\Broken\Blocked::$slides is marked #[Blocks], which names the blocks a class holds: put it on the class, and a block prints the blocks it holds with @inner($block).',
+            Fixtures\Broken\ListedSettings::class => 'Mainstay\Tests\Fixtures\Broken\ListedSettings::$slides is marked #[Blocks], which names the blocks a class holds: put it on the class, and a block prints the blocks it holds with @inner($block).',
+            Fixtures\Broken\BlockedSettings::class => 'Mainstay\Tests\Fixtures\Broken\BlockedSettings names blocks with #[Blocks], and only an entry type\'s content and a block hold them.',
             Fixtures\Broken\Pageless::class => 'Mainstay\Tests\Fixtures\Broken\Pageless names blocks with #[Blocks] and has no #[Route]: with no page there is nowhere to edit a block on, so its content holds text alone.',
-            Fixtures\Broken\Insisted::class => 'Mainstay\Tests\Fixtures\Broken\Insisted\'s #[Blocks] names the blocks its content holds and nothing more: #[Blocks([Hero::class])].',
+            Fixtures\Broken\Insisted::class => 'Mainstay\Tests\Fixtures\Broken\Insisted\'s #[Blocks] names the blocks it holds and nothing more: #[Blocks([Hero::class])].',
         ] as $type => $message) {
             try {
                 $this->mainstay->fields($type);

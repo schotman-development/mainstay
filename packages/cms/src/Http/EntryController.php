@@ -24,6 +24,7 @@ use Mainstay\Content\Draft;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
 use Mainstay\Content\Taxonomy;
+use Mainstay\Fields\Blocks;
 use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Image;
@@ -224,19 +225,19 @@ class EntryController
 
     /*
      | A site block of the content, for the Content tab: posted as the
-     | document holds it, `block`, once it is selected, or as its sidebar
-     | posts it after a field changed -- `id`, `type` and `data`, each field
-     | through its fromForm() -- with `op` adding, moving or removing an item
-     | of a list inside it. Checked as the canvas checks the content, by
-     | Mainstay::preview() as a draft save would, nothing written. Answered
-     | with the block as the document is to hold it, its HTML drawn for the
-     | editor as the canvas draws it, and, when it is selected or a list
-     | changed, its sidebar: every field, drawn by the component Details
-     | draws its kind with, showing the `errors` posted with it -- a refused
-     | save's, by where they are in it. A check that refuses it answers why,
-     | with the block as converted and its sidebar showing each message at
-     | its field, what was refused left empty, so it can be put right there;
-     | anything else refused answers why alone.
+     | document holds it, `block`, once it is selected, or as its settings
+     | post it after a field changed -- `id`, `type` and `data`, each field
+     | through its fromForm() -- with `ancestors`, the attrs of the blocks it
+     | sits inside, outermost first, for one inside another. Checked as the
+     | canvas checks the content, by Mainstay::preview() as a draft save
+     | would, nothing written. Answered with the block as the document is to
+     | hold it, its HTML drawn for the editor as the canvas draws it, and,
+     | when it is selected, its settings: every field, drawn by the component
+     | Details draws its kind with, showing the `errors` posted with it -- a
+     | refused save's, by where they are in it. A check that refuses it
+     | answers why, with the block as converted and its settings showing each
+     | message at its field, what was refused left empty, so it can be put
+     | right there; anything else refused answers why alone.
      */
     public function block(Request $request, string $type): JsonResponse
     {
@@ -263,26 +264,39 @@ class EntryController
         }
 
         $locale = $this->locale($request);
-        $drawn = is_string($request->input('block')) || $request->filled('op');
-        $item = is_string($request->input('block'))
-            ? json_decode($request->input('block'), true)
-            : $content->itemFromForm($this->operated($request, ['id' => $request->input('id'), 'type' => $request->input('type'), 'data' => (array) $request->input('data', [])]));
+        $drawn = is_string($request->input('block'));
+        $ancestors = is_string($request->input('ancestors')) ? json_decode($request->input('ancestors'), true) : [];
+        $ancestors = is_array($ancestors) && array_is_list($ancestors) ? $ancestors : [];
+        $list = $content->listing();
 
-        if ($content->listed($item) === null) {
-            return response()->json(['messages' => ['The content holds no block of the type '.json_encode(is_array($item) ? $item['type'] ?? null : null).'.']], 422);
+        foreach ($ancestors as $ancestor) {
+            $list = ($held = $list?->block($ancestor)) === null ? null : $this->mainstay->innerBlocks($held);
+        }
+
+        $item = $drawn ? json_decode($request->input('block'), true) : ['id' => $request->input('id'), 'type' => $request->input('type'), 'data' => (array) $request->input('data', [])];
+
+        if (($block = $list?->block($item)) === null) {
+            return response()->json(['messages' => ['The content holds no block of the type '.json_encode(is_array($item) ? $item['type'] ?? null : null).' here.']], 422);
+        }
+
+        $item = $drawn ? $item : $list->itemFromForm($item);
+        $node = ['type' => 'block', 'attrs' => $item];
+
+        foreach (array_reverse($ancestors) as $ancestor) {
+            $node = ['type' => 'block', 'attrs' => $ancestor, 'content' => [$node]];
         }
 
         try {
-            $entry = $this->mainstay->preview($class, $id, ['content' => ['type' => 'doc', 'content' => [['type' => 'block', 'attrs' => $item]]]], draft: $draft, locale: $locale);
+            $entry = $this->mainstay->preview($class, $id, ['content' => ['type' => 'doc', 'content' => [$node]]], draft: $draft, locale: $locale);
         } catch (ValidationException $exception) {
-            $prefix = 'content.content.0.attrs.';
-            $errors = Form::blockErrors($content, $item, $exception->errors(), $prefix);
+            $prefix = 'content.content.0.'.str_repeat('content.0.', count($ancestors)).'attrs.';
+            $errors = Form::blockErrors($block, $exception->errors(), $prefix);
 
             $shown = $item;
             Arr::forget($shown, array_keys($errors));
 
             try {
-                $read = $drawn ? $content->readItem($shown) : null;
+                $read = $drawn ? $list->readItem($shown, 'content') : null;
             } catch (InvalidArgumentException|TypeError) {
                 $read = null;
             }
@@ -296,10 +310,15 @@ class EntryController
             return response()->json(['messages' => [$exception->getMessage()]], $exception instanceof AuthorizationException ? 403 : 404);
         }
 
-        $block = $entry->content->blocks()[0];
+        $read = $entry->content->blocks()[0];
+        $attrs = $entry->content->toArray()['content'][0];
+
+        foreach ($ancestors as $ancestor) {
+            [$read, $attrs] = [$read->inner()[0], $attrs['content'][0]];
+        }
 
         try {
-            $html = $this->asVisitor($request, $locale, fn () => $this->mainstay->marked(fn () => $block->toHtml()));
+            $html = $this->asVisitor($request, $locale, fn () => $this->mainstay->marked(fn () => $read->toHtml()));
         } catch (Throwable $exception) {
             report($exception);
 
@@ -310,41 +329,10 @@ class EntryController
         $errors = array_map(fn (array $messages) => array_values(array_filter($messages, is_string(...))), array_filter(is_array($errors) ? $errors : [], is_array(...)));
 
         return response()->json([
-            'block' => $entry->content->toArray()['content'][0]['attrs'],
+            'block' => $attrs['attrs'],
             'html' => $html,
-            'form' => $drawn ? view('mainstay::block', ['block' => $block, 'messages' => $errors])->render() : null,
+            'form' => $drawn ? view('mainstay::block', ['block' => $read, 'messages' => $errors])->render() : null,
         ]);
-    }
-
-    /*
-     | The posted block with `op` done to the list `list` names -- `data[items]`,
-     | or one inside an item of it: an item of the type `kind` added at its
-     | end, or the one at `index` moved up, moved down or removed.
-     */
-    private function operated(Request $request, array $item): array
-    {
-        $list = $request->input('list');
-
-        if (! in_array($op = $request->input('op'), ['add', 'up', 'down', 'remove'], true) || ! is_string($list) || ! str_starts_with($list, 'data[')) {
-            return $item;
-        }
-
-        $path = str_replace(['][', '[', ']'], ['.', '.', ''], $list);
-        $items = array_values(array_filter((array) Arr::get($item, $path), 'is_array'));
-        $index = (int) $request->input('index');
-        $to = $op === 'up' ? $index - 1 : $index + 1;
-
-        if ($op === 'add') {
-            $items[] = ['id' => (string) Str::ulid(), 'type' => is_string($kind = $request->input('kind')) ? $kind : '', 'data' => []];
-        } elseif ($op === 'remove' && isset($items[$index])) {
-            array_splice($items, $index, 1);
-        } elseif ($op !== 'remove' && isset($items[$index], $items[$to])) {
-            [$items[$index], $items[$to]] = [$items[$to], $items[$index]];
-        }
-
-        Arr::set($item, $path, $items);
-
-        return $item;
     }
 
     /* Throws a draft away, unless someone else saved it after this form drew
@@ -899,10 +887,16 @@ class EntryController
                 $current !== null => route('mainstay.block.draft', [$class::handle(), $current->id]),
                 default => route('mainstay.block.create', $class::handle()),
             }) : null,
-            'blocks' => collect(($fields['content'] ?? null) instanceof Content ? $fields['content']->blocks() : [])
-                ->mapWithKeys(fn (string $block) => [$block::handle() => Form::label($block)])->all(),
-            /* The library's picker, for a type whose blocks hold an image:
-               the sidebar is drawn after the page, too late to push it. */
+            /* Every block the content holds, by handle, with the blocks it
+               holds inside it; and the ones at its top level. */
+            'blocks' => collect(Form::blocks($class))->map(fn (string $block) => [
+                'label' => Form::label($block),
+                'inner' => array_map(fn (string $inner) => $inner::handle(), $this->mainstay->innerBlocks($block)->of ?? []),
+            ])->all(),
+            'top' => array_map(fn (string $block) => $block::handle(), ($fields['content'] ?? null) instanceof Content ? $fields['content']->blocks() : []),
+            /* The library's picker and image dialog, for a type whose blocks
+               hold an image: a block's settings are drawn after the page, too
+               late to push them. */
             'pictures' => collect(Form::blocks($class))->contains(fn (string $block) => collect($this->mainstay->fields($block))->contains(fn (Field $field) => $field instanceof Image)),
             'invalid' => ($fields['content'] ?? null) instanceof Content ? $this->invalid($fields['content'], $values['content'] ?? null) : [],
             /* The browser's copy of the form left unsaved is kept under this:
@@ -916,9 +910,10 @@ class EntryController
     /*
      | After a save refused for a site block's field, each such block's
      | errors by its id, read from the content as it was posted -- or, for a
-     | refused publish, as its draft saved it: its name and its messages by
-     | where they are in it, `data.headline`. A block posted without an id is
-     | the raw content's to show alone.
+     | refused publish, as its draft saved it -- the blocks inside another
+     | too: its name and its messages by where they are in it,
+     | `data.headline`. A block posted without an id is the raw content's to
+     | show alone.
      |
      | @return array<string, array{label: string, messages: array<string, list<string>>}>
      */
@@ -928,15 +923,25 @@ class EntryController
         $errors = session('errors')?->getBag('default')->getMessages() ?? [];
         $invalid = [];
 
-        foreach (is_array($posted['content'] ?? null) ? $posted['content'] : [] as $index => $node) {
-            $item = is_array($node) ? $node['attrs'] ?? null : null;
-            $block = $content->listed($item);
-            $messages = Form::blockErrors($content, $item, $errors, "content.content.{$index}.attrs.");
+        $walk = function (mixed $nodes, ?Blocks $list, string $at) use (&$walk, &$invalid, $errors) {
+            foreach (is_array($nodes) ? $nodes : [] as $index => $node) {
+                $item = is_array($node) ? $node['attrs'] ?? null : null;
 
-            if ($block !== null && $messages !== [] && is_string($id = $item['id'] ?? null) && $id !== '') {
-                $invalid[$id] = ['label' => Form::label($block), 'messages' => $messages];
+                if (($block = $list?->block($item)) === null) {
+                    continue;
+                }
+
+                $messages = Form::blockErrors($block, $errors, "{$at}.{$index}.attrs.");
+
+                if ($messages !== [] && is_string($id = $item['id'] ?? null) && $id !== '') {
+                    $invalid[$id] = ['label' => Form::label($block), 'messages' => $messages];
+                }
+
+                $walk($node['content'] ?? null, $this->mainstay->innerBlocks($block), "{$at}.{$index}.content");
             }
-        }
+        };
+
+        $walk($posted['content'] ?? null, $content->listing(), 'content.content');
 
         return $invalid;
     }

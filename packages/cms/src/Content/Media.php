@@ -5,6 +5,7 @@ namespace Mainstay\Content;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use InvalidArgumentException;
+use Mainstay\Mainstay;
 use Mainstay\Media\Size;
 
 /*
@@ -20,6 +21,10 @@ use Mainstay\Media\Size;
 final class Media
 {
     public readonly bool $missing;
+
+    /* The block and the field it was read from, which the Content tab's
+       editor marks it with. */
+    private ?array $at = null;
 
     /**
      * @param  array{0: int, 1: int}|null  $focal  percentages across and down
@@ -48,6 +53,15 @@ final class Media
         return new self($this->id, $this->alt, $this->hash, $this->type, $this->name, $this->focal, $this->originalWidth, $this->originalHeight, $sizes, $this->ownerId);
     }
 
+    /* This image as a block's field holds it. */
+    public function at(string $block, string $field): self
+    {
+        $copy = clone $this;
+        $copy->at = [$block, $field];
+
+        return $copy;
+    }
+
     /* The copy's address, WebP unless AVIF is asked for. Null for an image
        that is missing. */
     public function url(string $size, string $format = 'webp'): ?string
@@ -74,7 +88,9 @@ final class Media
     /*
      | The copy as a `<picture>`: the AVIF as a source, the WebP as the
      | `<img>`, with alt and real dimensions on it. Lazy unless the attributes
-     | say otherwise, and nothing at all for an image that is missing.
+     | say otherwise, and nothing at all for an image that is missing. A
+     | block's, drawn for the Content tab's editor, is marked with the block's
+     | id and the field's name, so it is picked and edited on the page.
      */
     public function picture(string $size, array $attributes = []): HtmlString
     {
@@ -95,7 +111,8 @@ final class Media
         ];
 
         return new HtmlString(sprintf(
-            '<picture><source type="image/avif" srcset="%s"><img %s></picture>',
+            '<picture%s><source type="image/avif" srcset="%s"><img %s></picture>',
+            $this->at !== null && app(Mainstay::class)->marking() ? sprintf(' data-mainstay-image="%s" data-mainstay-item="%s"', e($this->at[1]), e($this->at[0])) : '',
             e($this->url($size, 'avif')),
             implode(' ', array_map(fn (string $name, mixed $value) => $name.'="'.e((string) $value).'"', array_keys($attributes), $attributes)),
         ));

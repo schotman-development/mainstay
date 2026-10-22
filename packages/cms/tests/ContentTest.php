@@ -1294,7 +1294,7 @@ class ContentTest extends DatabaseTestCase
            makes infinite. */
         $this->assertSame(
             ['content' => ['The content field holds something JSON cannot: Inf and NaN cannot be JSON encoded.']],
-            $this->refusal(fn () => Mainstay::create(Guide::class, ['title' => 'Huge', 'slug' => 'huge', 'content' => $this->content([['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'Heavy', 'weight' => '1e999']]]]]])], locale: 'en', overrideAccess: true)),
+            $this->refusal(fn () => Mainstay::create(Guide::class, ['title' => 'Huge', 'slug' => 'huge', 'content' => ['type' => 'doc', 'content' => [$this->holding(['type' => 'gallery', 'data' => []], ['type' => 'slide', 'data' => ['title' => 'Heavy', 'weight' => '1e999']])]]], locale: 'en', overrideAccess: true)),
         );
         $this->assertSame(0, DB::table('guide')->count());
     }
@@ -1370,10 +1370,7 @@ class ContentTest extends DatabaseTestCase
         $id = Mainstay::create(Guide::class, ['title' => 'Blocks', 'slug' => 'blocks', 'content' => ['type' => 'doc', 'content' => [
             $this->block(['type' => 'callout', 'data' => ['heading' => 'Note', 'text' => $careful, 'on' => '2026-09-30']]),
             ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Between']]],
-            $this->block(['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [
-                ['type' => 'slide', 'data' => ['title' => 'One']],
-                ['type' => 'slide', 'data' => ['title' => 'Two']],
-            ]]]),
+            $this->holding(['type' => 'gallery', 'data' => ['caption' => 'Shots']], ['type' => 'slide', 'data' => ['title' => 'One']], ['type' => 'slide', 'data' => ['title' => 'Two']]),
         ]]], locale: 'en', overrideAccess: true)->id;
         Mainstay::update(Guide::class, $id, ['title' => 'Blokken', 'content' => $this->content([
             ['id' => 'kept', 'type' => 'callout', 'data' => ['heading' => 'Let op', 'tone' => 'warning']],
@@ -1381,7 +1378,7 @@ class ContentTest extends DatabaseTestCase
 
         $read = Mainstay::findById(Guide::class, $id, locale: 'en');
         [$callout, $gallery] = $read->content->blocks();
-        $ids = fn (Guide $guide) => [$guide->content->blocks()[0]->id, $guide->content->blocks()[1]->id, ...array_map(fn (Slide $slide) => $slide->id, $guide->content->blocks()[1]->slides)];
+        $ids = fn (Guide $guide) => [$guide->content->blocks()[0]->id, $guide->content->blocks()[1]->id, ...array_map(fn (Slide $slide) => $slide->id, $guide->content->blocks()[1]->inner())];
 
         $this->assertInstanceOf(Callout::class, $callout);
         $this->assertSame('Note', $callout->heading);
@@ -1391,8 +1388,10 @@ class ContentTest extends DatabaseTestCase
         $this->assertSame('<p>Careful</p>', $callout->text->toHtml());
         $this->assertStringContainsString('"text":{"type":"doc"', json_encode($read->content), 'A document inside a block encodes as the tree it is.');
         $this->assertInstanceOf(Gallery::class, $gallery);
-        $this->assertSame(['One', 'Two'], array_map(fn (Slide $slide) => $slide->title, $gallery->slides));
-        $this->assertCount(4, array_unique($ids($read)), 'Every block, the repeater\'s included, is given an id of its own.');
+        $this->assertSame(['One', 'Two'], array_map(fn (Slide $slide) => $slide->title, $gallery->inner()), 'The blocks inside one are its inner blocks, in their order.');
+        $this->assertSame([], $callout->inner());
+        $this->assertCount(4, array_unique($ids($read)), 'Every block, the ones inside another included, is given an id of its own.');
+        $this->assertSame(array_slice($ids($read), 2), array_column(array_column($read->content->toArray()['content'][2]['content'], 'attrs'), 'id'), 'The document holds them inside the block, by the ids read.');
         $this->assertSame(['block', 'paragraph', 'block'], array_column($read->content->toArray()['content'], 'type'), 'Text and blocks keep their order.');
         $this->assertSame($callout->id, $read->content->toArray()['content'][0]['attrs']['id'], 'A block in the document and the block read are one.');
 
@@ -1415,23 +1414,31 @@ class ContentTest extends DatabaseTestCase
     {
         foreach ([
             [[
-                ['type' => 'callout', 'data' => ['heading' => 'Fine']],
-                ['type' => 'gallery', 'data' => ['slides' => [['type' => 'slide', 'data' => ['title' => 'Fine']], ['type' => 'slide', 'data' => []]]]],
-                ['type' => 'banner', 'data' => []],
-                ['type' => 'callout', 'data' => ['heading' => 'Late', 'on' => 'not a date']],
-                ['type' => 'callout', 'data' => ['heading' => 'Red', 'colour' => 'red']],
-                ['type' => 'callout', 'data' => ['heading' => 'Tagged'], 'tags' => ['new']],
-            ], ['content.content.1.attrs.data.slides.1.data.title', 'content.content.2.attrs.type', 'content.content.3.attrs.data.on', 'content.content.4.attrs.data', 'content.content.5.attrs']],
+                $this->block(['type' => 'callout', 'data' => ['heading' => 'Fine']]),
+                $this->holding(['type' => 'gallery', 'data' => []], ['type' => 'slide', 'data' => ['title' => 'Fine']], ['type' => 'slide', 'data' => []]),
+                $this->block(['type' => 'banner', 'data' => []]),
+                $this->block(['type' => 'callout', 'data' => ['heading' => 'Late', 'on' => 'not a date']]),
+                $this->block(['type' => 'callout', 'data' => ['heading' => 'Red', 'colour' => 'red']]),
+                $this->block(['type' => 'callout', 'data' => ['heading' => 'Tagged'], 'tags' => ['new']]),
+            ], ['content.content.1.content.1.attrs.data.title', 'content.content.2.attrs.type', 'content.content.3.attrs.data.on', 'content.content.4.attrs.data', 'content.content.5.attrs']],
             [[
-                ['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'One']],
+                $this->block(['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'One']]),
             ], ['content.content.0.attrs.type']],
             [[
-                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'One']],
-                ['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'Two']],
+                $this->block(['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'One']]),
+                $this->block(['id' => 'twice', 'type' => 'callout', 'data' => ['heading' => 'Two']]),
             ], ['content.content.0.attrs.id', 'content.content.1.attrs.id']],
+            /* Inside a block, the blocks it names, each by its own rules and
+               with an id of its own there; and none inside one naming none. */
+            [[
+                $this->holding(['type' => 'gallery', 'data' => []], ['type' => 'callout', 'data' => ['heading' => 'Stray']]),
+                $this->holding(['type' => 'gallery', 'data' => []], ['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'One']], ['id' => 'twice', 'type' => 'slide', 'data' => ['title' => 'Two']]),
+                $this->holding(['type' => 'callout', 'data' => ['heading' => 'Holding']], ['type' => 'slide', 'data' => ['title' => 'Inside']]),
+                ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => []], 'content' => [['type' => 'paragraph']]],
+            ], ['content.content.0.content.0.attrs.type', 'content.content.1.content.0.attrs.id', 'content.content.1.content.1.attrs.id', 'content.content.2.content', 'content']],
         ] as [$blocks, $keys]) {
             try {
-                Mainstay::create(Guide::class, ['title' => 'Refused', 'slug' => 'refused', 'content' => $this->content($blocks)], locale: 'en', overrideAccess: true);
+                Mainstay::create(Guide::class, ['title' => 'Refused', 'slug' => 'refused', 'content' => ['type' => 'doc', 'content' => $blocks]], locale: 'en', overrideAccess: true);
                 $this->fail('Blocks their rules refuse were written.');
             } catch (ValidationException $exception) {
                 $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
@@ -1449,27 +1456,24 @@ class ContentTest extends DatabaseTestCase
         $slide = new Slide;
         $slide->title = 'Built';
         $gallery = new Gallery;
-        $gallery->slides = [$slide];
         $stray = new Callout;
-        $stray->heading = 'In the wrong list';
-        $unfinished = new Gallery;
-        $unfinished->slides = [new Slide];
+        $stray->heading = 'In the wrong block';
 
         foreach ([
-            [[$gallery, ['type' => 'gallery', 'data' => ['slides' => [$stray]]]], ['content.content.1.attrs.data.slides.0.type']],
-            [[$unfinished], ['content.content.0.attrs.data.slides.0.data.title']],
+            [[$this->holding($gallery, $slide), $this->holding($gallery, $stray)], ['content.content.1.content.0.attrs.type']],
+            [[$this->holding($gallery, new Slide)], ['content.content.0.content.0.attrs.data.title']],
         ] as [$blocks, $keys]) {
             try {
-                Mainstay::create(Guide::class, ['title' => 'By hand', 'slug' => 'by-hand', 'content' => $this->content($blocks)], locale: 'en', overrideAccess: true);
+                Mainstay::create(Guide::class, ['title' => 'By hand', 'slug' => 'by-hand', 'content' => ['type' => 'doc', 'content' => $blocks]], locale: 'en', overrideAccess: true);
                 $this->fail('Blocks their rules refuse were written.');
             } catch (ValidationException $exception) {
                 $this->assertEqualsCanonicalizing($keys, array_keys($exception->errors()));
             }
         }
 
-        $id = Mainstay::create(Guide::class, ['title' => 'By hand', 'slug' => 'by-hand', 'content' => $this->content([$gallery])], locale: 'en', overrideAccess: true)->id;
+        $id = Mainstay::create(Guide::class, ['title' => 'By hand', 'slug' => 'by-hand', 'content' => ['type' => 'doc', 'content' => [$this->holding($gallery, $slide)]]], locale: 'en', overrideAccess: true)->id;
 
-        $this->assertSame('Built', Mainstay::findById(Guide::class, $id, locale: 'en')->content->blocks()[0]->slides[0]->title);
+        $this->assertSame('Built', Mainstay::findById(Guide::class, $id, locale: 'en')->content->blocks()[0]->inner()[0]->title);
     }
 
     #[Test]
@@ -1575,6 +1579,12 @@ class ContentTest extends DatabaseTestCase
     private function block(mixed $item): array
     {
         return ['type' => 'block', 'attrs' => $item];
+    }
+
+    /* A site block holding these blocks inside it. */
+    private function holding(mixed $item, mixed ...$inner): array
+    {
+        return [...$this->block($item), 'content' => array_map($this->block(...), $inner)];
     }
 
     /* A content of these site blocks, in order. */

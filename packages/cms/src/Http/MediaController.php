@@ -4,6 +4,7 @@ namespace Mainstay\Http;
 
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -18,7 +19,9 @@ use Mainstay\Mainstay;
  |
  | The grid is also the image field's picker: `?pick` draws it without the
  | shell, for the dialog an image field opens, and an upload from there
- | answers with the grid again rather than a page.
+ | answers with the grid again rather than a page. An image's page is the
+ | Content tab's image dialog too: `?dialog` draws its form alone, which
+ | posts for JSON.
  */
 class MediaController
 {
@@ -60,24 +63,26 @@ class MediaController
             : redirect()->route('mainstay.media.edit', $media->id)->with('status', 'Uploaded.');
     }
 
-    public function edit(int $id): View
+    public function edit(Request $request, int $id): View
     {
         $locales = array_keys($this->mainstay->locales());
         $media = $this->mainstay->media()->find($id) ?? throw $this->missing();
 
-        return view('mainstay::media.edit', [
+        return view($request->has('dialog') ? 'mainstay::media.dialog' : 'mainstay::media.edit', [
             'media' => $media,
             'alt' => array_combine($locales, array_map(fn (string $locale) => $this->mainstay->media()->find($id, $locale)?->alt, $locales)),
         ]);
     }
 
-    public function update(Request $request, int $id): RedirectResponse
+    public function update(Request $request, int $id): RedirectResponse|JsonResponse
     {
         $focal = $request->input('focal');
 
         $this->found(fn () => $this->mainstay->media()->update($id, alt: $this->alt($request), focal: is_array($focal) ? array_values($focal) : null));
 
-        return redirect()->route('mainstay.media.edit', $id)->with('status', 'Saved.');
+        return $request->expectsJson()
+            ? response()->json(['status' => 'Saved.'])
+            : redirect()->route('mainstay.media.edit', $id)->with('status', 'Saved.');
     }
 
     public function trash(int $id): RedirectResponse

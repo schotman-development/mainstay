@@ -134,10 +134,10 @@ class MediaTest extends DatabaseTestCase
         return Mainstay::create(Pictured::class, ['title' => 'Pictured', 'slug' => 'pictured-'.(++$this->made), ...$data], locale: 'en', overrideAccess: true);
     }
 
-    /* A content of one strip of figures, each holding an image of `$images`. */
+    /* A content of one strip, holding a figure for each image of `$images`. */
     private function figures(mixed ...$images): array
     {
-        return ['type' => 'doc', 'content' => [['type' => 'block', 'attrs' => ['type' => 'strip', 'data' => ['figures' => array_map(fn (mixed $image) => ['type' => 'figure', 'data' => ['image' => $image]], $images)]]]]];
+        return ['type' => 'doc', 'content' => [['type' => 'block', 'attrs' => ['type' => 'strip', 'data' => []], 'content' => array_map(fn (mixed $image) => ['type' => 'block', 'attrs' => ['type' => 'figure', 'data' => ['image' => $image]]], $images)]]];
     }
 
     /* The field errors a write was refused with. */
@@ -238,7 +238,7 @@ class MediaTest extends DatabaseTestCase
         foreach ([$small, $large] as $media) {
             $entry = $this->create(['cover' => $media, 'content' => $this->figures($media)]);
             $read = Mainstay::findById(Pictured::class, $entry->id, locale: 'en');
-            $copies = ['card' => $read->cover, 'wide' => $read->cover, 'thumb' => $read->content->blocks()[0]->figures[0]->image];
+            $copies = ['card' => $read->cover, 'wide' => $read->cover, 'thumb' => $read->content->blocks()[0]->inner()[0]->image];
 
             foreach ($copies as $size => $image) {
                 foreach (['webp', 'avif'] as $format) {
@@ -347,8 +347,16 @@ class MediaTest extends DatabaseTestCase
         $this->assertSame($cover->id, $en->cover->id);
         $this->assertSame('A "quoted" <cover>', $en->cover->alt);
         $this->assertSame('Een omslag', $nl->cover->alt);
-        $this->assertSame('A figure', $en->content->blocks()[0]->figures[0]->image->alt);
-        $this->assertSame('Een figuur', $nl->content->blocks()[0]->figures[0]->image->alt);
+        $this->assertSame('A figure', $en->content->blocks()[0]->inner()[0]->image->alt);
+        $this->assertSame('Een figuur', $nl->content->blocks()[0]->inner()[0]->image->alt);
+
+        /* A block's image, drawn for the Content tab's editor, is marked with
+           where it is, to be picked and edited on the page; an entry's own
+           is Details'. */
+        $figure = $en->content->blocks()[0]->inner()[0];
+        $this->assertStringNotContainsString('data-mainstay-image', (string) $figure->image->picture('thumb'));
+        $this->assertStringStartsWith('<picture data-mainstay-image="image" data-mainstay-item="'.$figure->id.'">', (string) Mainstay::marked(fn () => $figure->image->picture('thumb')));
+        $this->assertStringNotContainsString('data-mainstay-image', (string) Mainstay::marked(fn () => $en->cover->picture('card')));
 
         $webp = Storage::disk('public')->url("media/{$cover->hash}-40x20-50-50.webp");
         $avif = Storage::disk('public')->url("media/{$cover->hash}-40x20-50-50.avif");
@@ -383,7 +391,7 @@ class MediaTest extends DatabaseTestCase
 
             foreach ($entries as $entry) {
                 $this->assertFalse($entry->cover->missing);
-                $this->assertFalse($entry->content->blocks()[0]->figures[1]->image->missing);
+                $this->assertFalse($entry->content->blocks()[0]->inner()[1]->image->missing);
             }
 
             return count(array_filter(DB::getQueryLog(), fn (array $query) => str_contains($query['query'], 'mainstay_media')));
@@ -407,7 +415,7 @@ class MediaTest extends DatabaseTestCase
         $this->assertSame(['cover' => ['The cover field is required.']], $this->refusal(fn () => $this->create(['title' => 'No cover'])));
 
         $live = $this->upload($this->png(20, 20, 5));
-        $at = 'content.content.0.attrs.data.figures.1.data.image';
+        $at = 'content.content.0.content.1.attrs.data.image';
         $errors = $this->refusal(fn () => $this->create(['cover' => $live, 'content' => $this->figures($live, 998)]));
         $this->assertSame([$at], array_keys($errors));
         $this->assertStringContainsString('names image 998', $errors[$at][0]);
@@ -449,7 +457,7 @@ class MediaTest extends DatabaseTestCase
         $this->assertNull($read->cover->url('card'));
         $this->assertNull($read->cover->width('card'));
         $this->assertSame('', (string) $read->cover->picture('card'));
-        $this->assertTrue($read->content->blocks()[0]->figures[0]->image->missing);
+        $this->assertTrue($read->content->blocks()[0]->inner()[0]->image->missing);
         $this->assertNull(Mainstay::media()->find($cover->id));
 
         /* A save of another field, and of the content as it was read: the
@@ -458,7 +466,7 @@ class MediaTest extends DatabaseTestCase
         Mainstay::update(Pictured::class, $id, ['cover' => $read->cover, 'content' => $read->content], locale: 'en', overrideAccess: true);
 
         $this->assertSame($cover->id, (int) DB::table('pictured')->find($id)->cover);
-        $this->assertSame($figure->id, json_decode(DB::table('pictured_locales')->where('parent_id', $id)->value('content'), true)['content'][0]['attrs']['data']['figures'][0]['data']['image']);
+        $this->assertSame($figure->id, json_decode(DB::table('pictured_locales')->where('parent_id', $id)->value('content'), true)['content'][0]['content'][0]['attrs']['data']['image']);
         $this->artisan('mainstay:schema:check')->assertSuccessful();
 
         /* Moved to another field it is a new choice, and refused. */
