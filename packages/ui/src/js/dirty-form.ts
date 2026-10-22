@@ -14,7 +14,8 @@ import { fresh } from './dom'
  | Publish once there are none, in CSS, from that one attribute.
  |
  | A control a script writes -- an editor, a reorder, a pick -- dispatches
- | `input` after it, so it is heard here as typing is.
+ | `input` after it, so it is heard here as typing is. A form drawn from the
+ | browser's copy of unsaved work, `data-restored`, is unsaved from the start.
  */
 
 function snapshot(form: HTMLFormElement): string {
@@ -23,7 +24,7 @@ function snapshot(form: HTMLFormElement): string {
 
 export function dirtyForms(root: ParentNode = document): void {
   for (const form of fresh<HTMLFormElement>(root, 'form[data-dirty-form]')) {
-    let saved = snapshot(form)
+    let saved = form.hasAttribute('data-restored') ? '' : snapshot(form)
 
     const check = () => {
       const dirty = snapshot(form) !== saved
@@ -51,5 +52,7 @@ export function dirtyForms(root: ParentNode = document): void {
     window.addEventListener('beforeunload', (event) => {
       if (check()) event.preventDefault()
     })
+
+    if (saved === '') check()
   }
 }
