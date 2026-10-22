@@ -15,19 +15,22 @@ export function once(name: string, attach: () => void): void {
   attach()
 }
 
-const seen = new WeakSet<Element>()
+const seen = new Map<string, WeakSet<Element>>()
 
 /*
  | The elements of this kind that have not been wired yet. Asked of the element
  | rather than recorded in the markup, so nothing about mounting twice can leak
  | into what a component renders -- and so an element that is thrown away takes
- | its entry with it.
+ | its entry with it. By selector, since one element can carry two behaviours:
+ | the entry form is both dirty-checked and copied.
  */
 export function fresh<E extends Element>(root: ParentNode, selector: string): E[] {
-  return [...root.querySelectorAll<E>(selector)].filter((element) => {
-    if (seen.has(element)) return false
+  const wired = seen.get(selector) ?? seen.set(selector, new WeakSet()).get(selector)!
 
-    seen.add(element)
+  return [...root.querySelectorAll<E>(selector)].filter((element) => {
+    if (wired.has(element)) return false
+
+    wired.add(element)
 
     return true
   })

@@ -719,7 +719,8 @@ class ContentSchema
      |
      | Only a column already of its declared type: one still to be retyped
      | holds values of the old type, which sync converts or refuses first.
-     | A null is the nullability comparison's to report, not this.
+     | A null is the nullability comparison's to report, not this, and a
+     | table with no id to page its rows by is the key comparison's.
      |
      | @param  array<string, Field>  $fields  by column
      | @return array<string, string>
@@ -729,7 +730,7 @@ class ContentSchema
         $unreadable = [];
 
         foreach ($fields as $column => $field) {
-            if (! $field->keptAsJson() || ($live[$column]['type'] ?? null) !== $declared[$column]['type']) {
+            if (! $field->keptAsJson() || ($live[$column]['type'] ?? null) !== $declared[$column]['type'] || ! isset($live['id'])) {
                 continue;
             }
 

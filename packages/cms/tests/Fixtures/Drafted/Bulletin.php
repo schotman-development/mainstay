@@ -26,10 +26,12 @@ use Mainstay\Tests\Fixtures\Linked\Story;
 
 /* Every kind of field a draft holds, the required ones with no empty value
    among them -- a document, a date, a select, a flag that has to be on --
-   a required list, a block with a required field of its own, and a slug
+   a required list, a block in its content with a required field of its
+   own, and a slug
    short enough to run out of room for a suffix. */
 #[Route(['en' => '/posts/{slug}', 'nl' => '/berichten/{slug}'])]
 #[Template('post', 'special')]
+#[Blocks([Shelf::class, Callout::class])]
 class Bulletin extends Entry
 {
     #[Text(required: true, localized: true)]
@@ -49,9 +51,6 @@ class Bulletin extends Entry
 
     #[Boolean(required: true)]
     public bool $approved;
-
-    #[Blocks(of: [Shelf::class, Callout::class])]
-    public array $blocks;
 
     #[Relation(to: [Person::class, Story::class], required: true)]
     public array $picks;

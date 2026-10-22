@@ -5,6 +5,7 @@ namespace Mainstay\Content;
 use Illuminate\Contracts\Support\Arrayable;
 use Illuminate\Contracts\Support\Htmlable;
 use JsonSerializable;
+use Mainstay\Mainstay;
 
 /*
  | A rich text field's value: a ProseMirror document, which is a node tree and
@@ -22,6 +23,11 @@ use JsonSerializable;
  | one written around the layer, and draws what it cannot trust as nothing:
  | an unknown node, or one whose shape is wrong, renders as nothing, and an
  | unknown mark leaves its text unmarked.
+ |
+ | An entry's content holds one node more, `block`, a site block at the top
+ | level, holding the blocks inside it, which the read hands in as its Block
+ | and the renderer draws through the block's view. A rich text field holds
+ | none.
  */
 final class Document implements Arrayable, Htmlable, JsonSerializable
 {
@@ -41,6 +47,9 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
         'ordered_list' => ['group' => 'block', 'content' => 'list_item', 'least' => 1, 'attrs' => ['order']],
         'list_item' => ['content' => 'block', 'least' => 1, 'first' => 'paragraph'],
         'horizontal_rule' => ['group' => 'block'],
+        /* In no group: only a content's doc holds one, at its top level, and
+           a block the blocks inside it. */
+        'block' => ['content' => 'block'],
         'hard_break' => ['group' => 'inline'],
         'text' => ['group' => 'inline'],
     ];
@@ -51,10 +60,59 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
        attribute. */
     private const MARKS = ['link' => ['href'], 'em' => [], 'strong' => [], 'code' => []];
 
-    /* h1 is the page's title, which is not the body's to write. */
-    private const LEVELS = [2, 3, 4];
+    /* Every level: a page whose view leaves the title out takes its h1 from
+       the text. */
+    private const LEVELS = [1, 2, 3, 4, 5, 6];
 
-    public function __construct(private array $tree) {}
+    /* Whether this is the content the admin's Content tab edits. */
+    private bool $editing = false;
+
+    /** @param array<string, Block> $blocks a content's site blocks, by id, the ones inside another among them */
+    public function __construct(private array $tree, private array $blocks = []) {}
+
+    /* No text: a paragraph holding nothing, as the editor opens one. */
+    public static function empty(): self
+    {
+        return new self(['type' => 'doc', 'content' => [['type' => 'paragraph']]]);
+    }
+
+    /*
+     | This content as the admin's Content tab edits it, printed for its
+     | editor rather than as the site draws it: a `<script
+     | type="application/json">` of the document and each site block's HTML
+     | by its id -- the ones inside another too, each on its own -- its
+     | @field text marked, and nothing else, which the editor reads and takes
+     | the element it sits in over with. Only the entry the tab edits is
+     | given one, so a rich text field, and another entry's content, on the
+     | same page draw as on the site.
+     */
+    public function editing(): self
+    {
+        $document = clone $this;
+        $document->editing = true;
+
+        return $document;
+    }
+
+    /*
+     | The site blocks at the content's top level, in its order: `@foreach
+     | ($entry->content?->blocks() ?? [] as $block)`. Each holds the blocks
+     | inside it, `$block->inner()`.
+     |
+     | @return list<Block>
+     */
+    public function blocks(): array
+    {
+        $blocks = [];
+
+        foreach (is_array($this->tree['content'] ?? null) ? $this->tree['content'] : [] as $node) {
+            if (is_array($node) && ($node['type'] ?? null) === 'block' && isset($this->blocks[$id = $node['attrs']['id'] ?? null])) {
+                $blocks[] = $this->blocks[$id];
+            }
+        }
+
+        return $blocks;
+    }
 
     public function toArray(): array
     {
@@ -68,6 +126,14 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
 
     public function toHtml(): string
     {
+        if ($this->editing) {
+            /* A `</script>` typed in a paragraph stays text inside it. */
+            return '<script type="application/json" data-mainstay-content>'.json_encode([
+                'doc' => $this->tree,
+                'blocks' => (object) app(Mainstay::class)->marked(fn () => array_map(fn (Block $block) => $block->toHtml(), $this->blocks)),
+            ], JSON_THROW_ON_ERROR | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE).'</script>';
+        }
+
         return ($this->tree['type'] ?? null) === 'doc' ? $this->node($this->tree) : '';
     }
 
@@ -76,14 +142,17 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
      | field", or null for a document the schema holds. The place is the path
      | from the root, `content.2.content.0`, since the one writing it until
      | the editor exists is a person with a nested array open.
+     |
+     | `$blocks` lets the doc hold site blocks at its top level, as a content
+     | does; their id, type and data are its field's to check.
      */
-    public static function problem(array $tree): ?string
+    public static function problem(array $tree, bool $blocks = false): ?string
     {
         if (($tree['type'] ?? null) !== 'doc') {
             return 'is not a document: its root is not a doc node';
         }
 
-        return self::check($tree, 'the root', null);
+        return self::check($tree, 'the root', null, $blocks);
     }
 
     /*
@@ -100,7 +169,7 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             && (preg_match('/\A(?:https?|mailto|tel):/i', $href) === 1 || preg_match('#\A[^/?\#]*:#', $href) !== 1);
     }
 
-    private static function check(mixed $node, string $at, ?string $parent): ?string
+    private static function check(mixed $node, string $at, ?string $parent, bool $blocks): ?string
     {
         if (! is_array($node) || ! is_string($type = $node['type'] ?? null)) {
             return "has a node at {$at} with no type";
@@ -110,7 +179,9 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             return "has a node at {$at} of a type it does not know: {$type}";
         }
 
-        $attrs = $node['attrs'] ?? [];
+        /* A site block's attributes are its field's to check, as a Blocks
+           item is, each where it goes wrong. */
+        $attrs = $type === 'block' ? [] : $node['attrs'] ?? [];
 
         if (! is_array($attrs)) {
             return "gives the {$type} at {$at} attrs that are not a map";
@@ -119,7 +190,7 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
         foreach ($attrs as $name => $value) {
             $problem = match (true) {
                 ! in_array($name, $spec['attrs'] ?? [], true) => "gives the {$type} at {$at} an attribute it does not take: {$name}",
-                $name === 'level' && ! in_array($value, self::LEVELS, true) => "gives the heading at {$at} a level other than 2, 3 or 4",
+                $name === 'level' && ! in_array($value, self::LEVELS, true) => "gives the heading at {$at} a level other than 1 to 6",
                 $name === 'order' && ! is_int($value) => "gives the ordered_list at {$at} an order that is not a whole number",
                 default => null,
             };
@@ -159,11 +230,19 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             $place = $at === 'the root' ? "content.{$index}" : "{$at}.content.{$index}";
             $name = is_array($child) && is_string($child['type'] ?? null) ? $child['type'] : null;
 
-            if ($name !== null && isset(self::NODES[$name]) && $name !== $spec['content'] && (self::NODES[$name]['group'] ?? null) !== $spec['content']) {
+            /* A block holds blocks alone, `block` there naming the node
+               rather than the group. */
+            $held = match (true) {
+                $name === 'block' => $blocks && in_array($type, ['doc', 'block'], true),
+                $type === 'block' => $name === null || ! isset(self::NODES[$name]),
+                default => $name === null || ! isset(self::NODES[$name]) || $name === $spec['content'] || (self::NODES[$name]['group'] ?? null) === $spec['content'],
+            };
+
+            if (! $held) {
                 return "puts the {$name} at {$place} in a {$type}, which cannot hold one";
             }
 
-            if (($problem = self::check($child, $place, $type)) !== null) {
+            if (($problem = self::check($child, $place, $type, $blocks)) !== null) {
                 return $problem;
             }
         }
@@ -235,6 +314,7 @@ final class Document implements Arrayable, Htmlable, JsonSerializable
             'ordered_list' => is_int($order = $attrs['order'] ?? 1) ? ($order === 1 ? '<ol>' : "<ol start=\"{$order}\">").$inner().'</ol>' : '',
             'list_item' => '<li>'.$inner().'</li>',
             'horizontal_rule' => '<hr>',
+            'block' => is_string($id = $attrs['id'] ?? null) && isset($this->blocks[$id]) ? $this->blocks[$id]->toHtml() : '',
             'hard_break' => '<br>',
             'text' => $this->text($node),
             default => '',

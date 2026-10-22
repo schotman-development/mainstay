@@ -6,12 +6,14 @@ import { dropdowns } from './dropdown'
 import { entryLists } from './entry-list'
 import { entryStatus } from './entry-status'
 import { focalPoints } from './focal-point'
+import { formCopies } from './form-copy'
 import { imageFields } from './image-field'
 import { localTimes } from './local-time'
 import { mediaDrops } from './media-drop'
 import { relationFields } from './relation-field'
 import { sidebar } from './sidebar'
 import { slugs } from './slug'
+import { tabs } from './tabs'
 import { tagInputs } from './tag-input'
 
 export { rankCommands } from './rankCommands'
@@ -42,4 +44,6 @@ export function mount(root: ParentNode = document): void {
   focalPoints(root)
   mediaDrops(root)
   dirtyForms(root)
+  formCopies(root)
+  tabs(root)
 }

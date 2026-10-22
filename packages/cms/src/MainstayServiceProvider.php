@@ -2,14 +2,18 @@
 
 namespace Mainstay;
 
+use Illuminate\Auth\RequestGuard;
 use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Mainstay\Auth\Gate;
 use Mainstay\Auth\User;
 use Mainstay\Console\ReprocessCommand;
 use Mainstay\Console\SchemaCheckCommand;
@@ -43,10 +47,13 @@ class MainstayServiceProvider extends ServiceProvider
          | Mainstay's own guard, user provider and password broker, beside the
          | host's and named apart from them, unless the host has defined one by
          | the name. The broker's config written out: only Laravel's skeleton
-         | has defaults for it, and a missing throttle is none at all.
+         | has defaults for it, and a missing throttle is none at all. The
+         | visitor's guard is one nobody is signed in to, which the Content
+         | tab draws a page with.
          */
         foreach ([
             'auth.guards.mainstay' => ['driver' => 'session', 'provider' => 'mainstay'],
+            'auth.guards.'.Gate::VISITOR => ['driver' => Gate::VISITOR],
             'auth.providers.mainstay' => ['driver' => 'eloquent', 'model' => User::class],
             'auth.passwords.mainstay' => ['provider' => 'mainstay', 'table' => 'mainstay_password_reset_tokens', 'expire' => 60, 'throttle' => 60],
         ] as $key => $value) {
@@ -58,7 +65,14 @@ class MainstayServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        Auth::extend(Gate::VISITOR, fn ($app) => new RequestGuard(fn () => null, $app['request']));
+
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'mainstay');
+
+        /* A block view's text, typeable in the Content tab, and the blocks
+           inside it: see field() and inner(). */
+        Blade::directive('field', fn (string $expression) => "<?php echo app(\\Mainstay\\Mainstay::class)->field({$expression}); ?>");
+        Blade::directive('inner', fn (string $expression) => "<?php echo app(\\Mainstay\\Mainstay::class)->inner({$expression}); ?>");
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
         /*

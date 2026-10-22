@@ -16,8 +16,9 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Auth\Gate;
+use Mainstay\Content\Block;
 use Mainstay\Content\Media;
-use Mainstay\Fields\Blocks;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Image;
 use Mainstay\Mainstay;
 use Mainstay\Policies\MediaPolicy;
@@ -303,13 +304,17 @@ class Library
 
             $read[$class] = true;
 
+            if (is_subclass_of($class, Block::class)) {
+                array_push($classes, ...$this->mainstay->innerBlocks($class)->of ?? []);
+            }
+
             foreach ($this->mainstay->fields($class) as $field) {
                 if ($field instanceof Image) {
                     foreach ($field->sizes as $size) {
                         $sizes["{$size->width}x{$size->height}"] = $size;
                     }
-                } elseif ($field instanceof Blocks) {
-                    array_push($classes, ...$field->of);
+                } elseif ($field instanceof Content) {
+                    array_push($classes, ...$field->blocks());
                 }
             }
         }

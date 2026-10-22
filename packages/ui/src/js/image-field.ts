@@ -6,13 +6,15 @@ import { once } from './dom'
  | fetched into it -- its pages and its upload fetched too, since the dialog
  | sits outside the entry's form -- and a picked image sets the id and the
  | thumbnail. One picker serves every field: whichever opened it last is
- | answered. An upload from it picks what it uploaded.
+ | answered. An upload from it picks what it uploaded. The Content tab opens
+ | it for an image on the page with a `mainstay:pick` event, naming the
+ | picker and what takes the image picked.
  |
  | The thumbnails are cloned from the field's own <template>s rather than
  | built here, so the markup is stated once.
  */
 
-let opener: HTMLElement | null = null
+let opener: HTMLElement | ((id: string) => void) | null = null
 
 function set(field: HTMLElement, id: string, src: string | null): void {
   const input = field.querySelector<HTMLInputElement>('input[type="hidden"]')
@@ -70,12 +72,25 @@ export function imageFields(): void {
       } else if (remove) {
         set(remove, '', null)
       } else if (pick && opener && dialog.contains(pick)) {
-        set(opener, pick.dataset.pick ?? '', pick.dataset.src ?? null)
+        if (typeof opener === 'function') opener(pick.dataset.pick ?? '')
+        else set(opener, pick.dataset.pick ?? '', pick.dataset.src ?? null)
         dialog.close()
       } else if (page && dialog.contains(page)) {
         event.preventDefault()
         void load(body, page.href)
       }
+    })
+
+    document.addEventListener('mainstay:pick', (event) => {
+      const { picker, done } = (event as CustomEvent<{ picker?: string; done: (id: string) => void }>).detail
+      const dialog = document.getElementById('mainstay-picker')
+      const body = dialog?.querySelector<HTMLElement>('[data-picker-body]')
+
+      if (!(dialog instanceof HTMLDialogElement) || !body || !picker) return
+
+      opener = done
+      dialog.showModal()
+      void load(body, picker)
     })
 
     document.addEventListener('submit', (event) => {

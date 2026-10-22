@@ -25,7 +25,7 @@
             {{-- Above the content and inside the main column, so it lines up
                  with the screen rather than with the navigation, and so it
                  stays put while the content scrolls under it. --}}
-            <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-5 py-3">
+            <div class="flex min-h-[calc(2.125rem+1.5rem+1px)] shrink-0 flex-wrap items-center gap-3 border-b border-border px-5 py-3">
                 {{-- Where you are, deepest last. Part of the shell rather than
                      of the screen: a trail that only some routes bother to draw
                      is a trail you cannot learn to rely on. No href is what
@@ -54,7 +54,8 @@
                 @endif
             </div>
 
-            <div class="min-h-0 flex-1">{{ $slot }}</div>
+            {{-- Positioned, so a screen can lay a panel over part of itself. --}}
+            <div class="relative min-h-0 flex-1">{{ $slot }}</div>
         </main>
     </div>
 </div>

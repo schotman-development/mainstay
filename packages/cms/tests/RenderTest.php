@@ -13,13 +13,16 @@ use Illuminate\Testing\TestResponse;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Mainstay\Facades\Mainstay;
-use Mainstay\Fields\Blocks;
 use Mainstay\Mainstay as Registry;
+use Mainstay\Tests\Fixtures\Blocks\Figure;
 use Mainstay\Tests\Fixtures\Blocks\Nested\Slide as NestedSlide;
 use Mainstay\Tests\Fixtures\Blocks\Other\Slide as OtherSlide;
+use Mainstay\Tests\Fixtures\Blocks\Quote;
+use Mainstay\Tests\Fixtures\Blocks\Slide;
 use Mainstay\Tests\Fixtures\Guide;
 use Mainstay\Tests\Fixtures\Home;
 use Mainstay\Tests\Fixtures\Leaf;
+use Mainstay\Tests\Fixtures\Leaflet;
 use Mainstay\Tests\Fixtures\Lost;
 use Mainstay\Tests\Fixtures\Page;
 use Mainstay\Tests\Fixtures\Post;
@@ -27,7 +30,6 @@ use Mainstay\Tests\Fixtures\Shadowed;
 use Orchestra\Testbench\Attributes\DefineEnvironment;
 use Orchestra\Testbench\Attributes\DefineRoute;
 use PHPUnit\Framework\Attributes\Test;
-use ReflectionProperty;
 
 /*
  | The phase 4 check: an entry written through the query layer, visited at
@@ -48,7 +50,7 @@ class RenderTest extends DatabaseTestCase
     {
         parent::setUp();
 
-        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class, Guide::class);
+        $this->declare(Post::class, Page::class, Home::class, Leaf::class, Lost::class, Shadowed::class, Guide::class, Leaflet::class);
         $this->artisan('mainstay:sync')->assertSuccessful();
     }
 
@@ -440,34 +442,42 @@ class RenderTest extends DatabaseTestCase
     }
 
     #[Test]
-    public function a_block_is_drawn_by_its_view(): void
+    public function a_block_is_drawn_by_its_view_where_the_content_holds_it(): void
     {
-        $id = Mainstay::create(Guide::class, ['title' => 'Drawn', 'blocks' => [
-            ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => 'Careful']]]]]]],
-            ['type' => 'gallery', 'data' => ['caption' => 'Shots', 'slides' => [['type' => 'slide', 'data' => ['title' => 'One']]]]],
-        ]], locale: 'en', overrideAccess: true)->id;
+        $paragraph = fn (string $text) => ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]];
+        $id = Mainstay::create(Guide::class, ['title' => 'Drawn', 'slug' => 'drawn', 'content' => ['type' => 'doc', 'content' => [
+            ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [['type' => 'text', 'text' => 'Top']]],
+            ['type' => 'block', 'attrs' => ['type' => 'callout', 'data' => ['heading' => 'Note <b>', 'text' => ['type' => 'doc', 'content' => [$paragraph('Careful')]]]]],
+            $paragraph('Between'),
+            ['type' => 'block', 'attrs' => ['type' => 'gallery', 'data' => ['caption' => 'Shots']], 'content' => [['type' => 'block', 'attrs' => ['type' => 'slide', 'data' => ['title' => 'One']]]]],
+            ['type' => 'heading', 'attrs' => ['level' => 6], 'content' => [['type' => 'text', 'text' => 'Bottom']]],
+        ]]], locale: 'en', overrideAccess: true)->id;
         $guide = Mainstay::findById(Guide::class, $id, locale: 'en');
 
         $this->assertSame(
-            "<aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<figure><p>One</p><figcaption>Shots</figcaption></figure>\n",
-            Blade::render('@foreach ($blocks as $block){{ $block }}@endforeach', ['blocks' => $guide->blocks]),
+            "<h1>Top</h1><aside class=\"info\"><h2>Note &lt;b&gt;</h2><p>Careful</p></aside>\n<p>Between</p><figure><p>One</p>\n<figcaption>Shots</figcaption></figure>\n<h6>Bottom</h6>",
+            Blade::render('{{ $content }}', ['content' => $guide->content]),
         );
 
-        /* Named and not there is an error, as an entry's view is. */
-        $this->assertThrows(fn () => $guide->blocks[1]->slides[0]->toHtml(), InvalidArgumentException::class, 'View [blocks.slide] not found.');
+        /* The blocks inside one, read in their order, the gallery's view
+           printing them where it says. */
+        $this->assertSame(['One'], array_map(fn (Slide $slide) => $slide->title, $guide->content->blocks()[1]->inner()));
 
-        /* A second block of that handle, in another field, would draw with
+        /* Named and not there is an error, as an entry's view is. */
+        $this->assertThrows(fn () => (new Figure)->toHtml(), InvalidArgumentException::class, 'View [blocks.figure] not found.');
+
+        /* A second block of that handle, in another list, would draw with
            the same view. */
         $this->assertThrows(
-            fn () => (new Blocks(of: [OtherSlide::class]))->bind(new ReflectionProperty(Guide::class, 'blocks')),
+            fn () => Mainstay::fields(OtherSlide::class),
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );
 
-        /* Or inside the block itself, read before it is finished. */
+        /* Or inside the block itself, the blocks it holds read as it is. */
         $this->app->instance(Registry::class, $registry = new Registry);
         $this->assertThrows(
-            fn () => $registry->fields(NestedSlide::class),
+            fn () => $registry->innerBlocks(NestedSlide::class),
             InvalidArgumentException::class,
             'Two blocks are called "slide": Mainstay\Tests\Fixtures\Blocks\Nested\Slide and Mainstay\Tests\Fixtures\Blocks\Other\Slide',
         );
@@ -520,10 +530,36 @@ class RenderTest extends DatabaseTestCase
         $this->assertNull(Mainstay::frontPage());
         $this->assertSame('/blog/hello', Mainstay::findById(Post::class, $id, locale: 'en')->uri);
 
-        $guide = Mainstay::create(Guide::class, ['title' => 'Guide'], locale: 'en', overrideAccess: true)->id;
-        $this->assertThrows(fn () => Mainstay::setFrontPage(Guide::class, $guide, overrideAccess: true), InvalidArgumentException::class, 'has no #[Route], so it has no path to serve at /.');
+        $leaflet = Mainstay::create(Leaflet::class, ['title' => 'Leaflet'], locale: 'en', overrideAccess: true)->id;
+        $this->assertThrows(fn () => Mainstay::setFrontPage(Leaflet::class, $leaflet, overrideAccess: true), InvalidArgumentException::class, 'has no #[Route], so it has no path to serve at /.');
 
         /* Nobody signed in, nobody moves a page every visitor sees first. */
         $this->assertThrows(fn () => Mainstay::setFrontPage(Post::class, $id), AuthorizationException::class);
+    }
+
+    #[Test]
+    public function field_prints_a_blocks_text_escaped_and_for_the_editor_marked_as_its_items_field(): void
+    {
+        $quote = new Quote;
+        $quote->id = 'q1';
+        $quote->line = 'Fish & <chips>';
+        $quote->lines = null;
+        $view = "<h2>@field(\$quote, 'line')</h2><p>@field(\$quote, 'lines')</p>";
+
+        /* On the site, as {{ }} prints it; an empty one prints nothing. */
+        $this->assertSame('<h2>Fish &amp; &lt;chips&gt;</h2><p></p>', Blade::render($view, ['quote' => $quote]));
+
+        /* For the editor, marked with the item and the field, its label for
+           when it is empty, and whether its field keeps lines. */
+        $this->assertSame(
+            '<h2><span data-mainstay-field="line" data-mainstay-item="q1" data-mainstay-label="Line">Fish &amp; &lt;chips&gt;</span></h2>'
+            .'<p><span data-mainstay-field="lines" data-mainstay-item="q1" data-mainstay-label="Lines" data-mainstay-lines></span></p>',
+            app(Registry::class)->marked(fn () => Blade::render($view, ['quote' => $quote])),
+        );
+        $this->assertSame('<h2>Fish &amp; &lt;chips&gt;</h2><p></p>', Blade::render($view, ['quote' => $quote]), 'Marked only while drawn for the editor.');
+
+        /* Text alone: an image, or no field at all, is named. */
+        $this->assertThrows(fn () => app(Registry::class)->field($quote, 'picture'), InvalidArgumentException::class, Quote::class.'::$picture is an Image field');
+        $this->assertThrows(fn () => app(Registry::class)->field($quote, 'missing'), InvalidArgumentException::class, Quote::class.'::$missing is not a field');
     }
 }

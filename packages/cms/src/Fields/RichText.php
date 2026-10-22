@@ -45,10 +45,16 @@ class RichText extends Field
     public function rules(): array
     {
         return [...parent::rules(), 'array', function (string $attribute, mixed $value, Closure $fail) {
-            if (is_array($value) && ($problem = Document::problem($value)) !== null) {
+            if (is_array($value) && ($problem = $this->problem($value)) !== null) {
                 $fail("The :attribute field {$problem}.");
             }
         }];
+    }
+
+    /* What is wrong with a tree as this field's document, or null. */
+    protected function problem(array $tree): ?string
+    {
+        return Document::problem($tree);
     }
 
     /* Anything but a tree with a doc at its root was written around the

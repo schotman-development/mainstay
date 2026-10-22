@@ -21,7 +21,11 @@ picked from a media library of its own, relations as rows and tags typed -- savi
 publishing it, with the trash, the front page and each entry's history, naming who published each
 version, as screens. Phase 11 is done: accounts are invited from the admin to choose their password
 by mail, roles are a grid of the capabilities the types derive, nobody hands out what they do not
-hold, everyone has settings of their own, and an entry's author is changed in its form.
+hold, everyone has settings of their own, and an entry's author is changed in its form. Phase 12
+is done: every entry has content, text and the blocks its type names, a block holding blocks inside
+it, and a type with a page edits it on a Content tab, the page as the site draws it from the form,
+with its text and a block's text typed in place, a toolbar floating by the block, and a block's
+fields and images edited in dialogs.
 `packages/ui` is ahead of the package — Blade components, a theme, and a behaviour layer in
 `src/js` — and `packages/editor` is the rich text editor, ProseMirror without React, declaring the
 document schema the package renders.
@@ -129,12 +133,15 @@ rather than edited into the log, which is append-only by construction.
 - **There is no `Gate::before`.** The authorization entry resolves primitive capabilities there. The
   policies ask the user what it holds, and Mainstay's Gate carries no callbacks at all, since the
   host's are typed for the host's own users.
-- **A page's content is edited on the page.** The rendering entry has "Notion-style inline block
-  editing is off the table" and preview beside the form, and the blocks entry picks a form-based
-  list of blocks on the strength of it. Phase 12's page builder edits a page's content inline on the
-  site, its core one field as WordPress's `post_content`, and preview is its edit mode. Blocks stay
-  data, a node tree and not markup. So the admin builds no block list, the client-state entry's
-  blocks moved as DOM nodes included, and draws a Blocks field as its raw JSON.
+- **A page's content is edited on its page, in the admin.** The rendering entry has "Notion-style
+  inline block editing is off the table" and preview beside the form, and the blocks entry picks a
+  form-based list of blocks on the strength of it. Phase 12 gives every entry content, as WordPress's
+  `post_content`, and edits it in the admin on the page the site renders from the form, blocks in
+  place, with no preview beside it. Blocks stay data, a node tree and not markup, and are drawn by
+  Blade alone. So the admin builds no block list but a block's own items in its sidebar, the
+  client-state entry's blocks moved as DOM nodes included. The entries that keep preview "a signed URL
+  behind Mainstay's guard" get the guard without the signature: the page is drawn at an admin route,
+  and nothing outside the admin opens a draft.
 - **The log's later phase numbers are the old ones.** `decisions.md` has onboarding as phase 13 and
   per-site locales as phase 12. With accounts and the page builder phases of their own, they are 15
   and 14.
@@ -1379,16 +1386,363 @@ password from the mailed link and signs in.
 
 ## Phase 12 — The page builder
 
-A page's content edited on the page itself: the site's own page, rendered for a signed-in editor in an
-edit mode reading the draft, its content edited inline. Its core is one content field, as WordPress
-keeps what Gutenberg writes in `post_content`: a ProseMirror document whose nodes include the site's
-blocks, larger than a RichText field's, which stays a field type of its own. Preview, the page
-rendered from the draft, arrives here as the first half of it. The admin's raw blocks field stays the
-way to repair content when the front end breaks.
+An entry's content, edited in the admin on the page the site draws from it. Every entry has content,
+as every WordPress post has `post_content`: a document whose top-level nodes are its blocks,
+Mainstay's text blocks and the site's own. The edit screen is two tabs. Details is phase 10's form,
+the title first. Content is the page's `<main>` as the site's view renders it from the form as it
+stands -- the fields drawn around the content, not the layout's header, menu and footer -- with the
+content edited where the view prints it: text typed in place, a site block drawn by its own view with
+its text typed in place too and every field of it in a sidebar. Nothing previews beside it: the Content tab is the preview.
 
-It reverses three things this phase has to settle: `decisions.md`'s "Notion-style inline block editing
-is off the table", its form-based block list, and phase 9's page served to a signed-in editor as to a
-visitor, which an edit mode has to tell apart.
+It reverses two things in `decisions.md`: "Notion-style inline block editing is off the table", with
+preview beside the editing surface, and the form-based list of blocks. It keeps what the rendering
+entry wanted from them: a block is written once, in Blade, and the admin never draws it a second
+way; the page is a frame of what the site renders. The stub's third reversal goes. Editing stays in
+the admin, so a signed-in editor is still served the public page a visitor is, and nothing on a
+public path reads a draft.
+
+It is three pull requests, each merged on its own and each leaving an admin that works: 12a content
+on every entry, drawn on the site and kept in Details as raw data; 12b the Content tab, with the text
+blocks; 12c the site's blocks in it, with 12d's changes, made once 12c was tried.
+
+### 12a — Content on every entry
+
+**Every entry has content.** `Entry` declares `#[Content(localized: true)] public ?Document
+$content` after the title, so every entry type and every taxonomy's terms hold it without declaring
+it, as they hold the title. Whether a view prints it is the site's. A type redeclares it only to keep
+one content for every language, as a title can be; a redeclaration as any other field type is refused
+at registration, since the edit screen is built on it. Globals and blocks have none. It is a `json`
+column on each type's `_locales` table, which sync adds as it adds any field, and an empty content is
+null, as an empty rich text is.
+
+**The blocks a type allows.** `#[Blocks([Hero::class, FeatureGrid::class])]` on the type's class
+names the site blocks its content may hold; a type naming none holds text alone. It is the attribute a
+block's own list is declared with, now allowed on a class, where `of` is all it takes: `required`,
+`localized` and the rest are refused there. `of` becomes its first parameter, so the list is written
+without its name, where today the array would land on `required`. On a property it is allowed inside a block only, a list of
+items as FeatureGrid's Features are. On an entry type or a global it is refused, naming content as
+where an entry's blocks go. A type with no `#[Route]` has no page to edit blocks on, so `#[Blocks]` on
+one is refused as well.
+
+**The content's shape.** A document: RichText's schema with one node more, and everything at its top
+level a block. Mainstay's own blocks are the nodes RichText has -- paragraph, heading, quote, code
+block, the two lists and the rule -- while bold, italic, code and a link stay marks inside their text.
+A heading takes level 1 to 6, no longer 2 to 4, in content and in every RichText field, the schema
+being one: a page whose view leaves out the title can take its h1 from its content. The toolbar offers
+the six, a pasted `h1` stays an h1, and the site's CSS styles the levels it does not yet.
+A site block is a `block` node, `{type: 'block', attrs: {id, type: 'hero', data: {...}}}`, allowed at
+the top level only, never inside a quote or a list item. Its `id`, `type` and `data` are a Blocks
+item's, checked as phase 5 checks one: the type among the type's blocks, the id distinct, the data
+against the block's own fields, each error keyed by its place, `content.content.3.attrs.data.headline`.
+Read, its data becomes the Block, its images and relations loaded to the read's depth as a Blocks
+field's are, which the field's `references()` reports, and `$entry->content?->blocks()` lists the site
+blocks a content holds. The editor gives a block its id when it is inserted, duplicated or pasted, a
+nested item's too, and the layer keeps an id it is given, so a block drawn in the page and the block in
+the document are one; `Blocks::from()` minting an id on every read of one without stays the seeder's
+case.
+
+**Drawn on the site.** `{{ $entry->content }}` prints the blocks in order with nothing around them:
+the text as `Document` renders it now, a site block through its view, `blocks.hero` with the block as
+`$block`. A view prints it alone in an element of its own, which is what 12b's editor takes over, as
+the site's `<div class="prose">{{ $entry->body }}</div>` already does.
+
+**Drafts, revisions and the form.** Nothing new. Content is a field, so a draft holds it when it
+changed, a revision holds it whole, and the form's fingerprint leaves it out when it comes back
+unchanged.
+
+**In Details.** The form draws content after the title. A type with a page shows it as raw data: 10b's
+"Raw content" disclosure moves from the Blocks field to the Content field, pretty-printed JSON in a
+monospace textarea, refused with the parser's message when it does not parse, and every error under
+it listed above it. Until 12b, a page's, an article's and a doc's content is edited there and nowhere
+else. A type with no page draws its content as the rich text editor, since it holds text alone.
+
+**Rich text in the site's styles.** Every rich text editor in the admin -- a RichText field, and a
+page-less type's content -- draws its text as the site draws it. The site names its stylesheets and
+the class its text sits in once, in its service provider, `Mainstay::editorStyles(['/css/site.css'],
+class: 'prose')`, as a WordPress theme does with `add_editor_style`, so the paths can come from code, a
+hashed build file's among them. The editor's
+document is mounted in a frame drawn in the admin with those stylesheets, its body holding one element
+of that class, so the site's `:root` variables, its fonts and `.prose h2` apply to the text and none of
+the site's CSS reaches the admin around it. The toolbar and the link dialog stay in the admin, outside
+the frame, and the frame grows and shrinks with its text, sized from the mounted element's box and
+margins, not the document's height, which a site's `min-height: 100vh` holds at the frame's own.
+Without that call it draws in the admin's own
+typography, and without JavaScript the text shows rendered and read-only, both as now.
+
+**The site.** Page loses `body` and `blocks` for content and `#[Blocks]` naming its five; Article and
+Doc lose `body`. Their views print `{{ $entry->content }}`, a page's in one element where its text and
+its blocks were two, so `site.css` sets the measure per block -- text at the narrow column, a site
+block at its own width -- where the view's wrappers set it before -- and its text rules, `.prose ul`
+and `.prose pre` among them, apply to the content's own children, so a block's lists and code are not
+restyled. `Page::holding()` reads `content?->blocks()` where it read `blocks`. The seeder writes
+content, and the site's AppServiceProvider calls `Mainstay::editorStyles(['/css/site.css'], class:
+'prose')`. A docs page "Content" says what content is, which blocks a type allows, how a view prints it
+and how a site names its editor styles. The site's
+tests: the front page, an article and a doc draw as they did.
+
+**The check.** `ContentTest` and `RenderTest`, on every driver:
+
+- Every entry type and a term holding content without declaring it, its column made by sync; one
+  content for every language by redeclaring it; a redeclaration as another field type refused.
+- A content of text and a site block written, read back with the block's image loaded, and drawn in
+  order; a block the type does not allow, a block inside a list item, and a block's bad field each
+  refused with its place.
+- `#[Blocks]` with `required` on a class refused; a Blocks field on an entry type, on a global, and
+  `#[Blocks]` on a type with no route refused, each naming why; a Blocks field inside a block still a
+  list.
+- A draft and a revision carrying content.
+- A heading of level 1 and of level 6 kept, a level 7 refused, in content and in a RichText field.
+
+`AdminTest`: a page's raw content saved, a parse error and a block's error listed above it; a page-less
+type's content saved from the rich text editor; the editor's frame naming the stylesheets and
+class given. Vitest: the editor mounted in a frame, the toolbar acting on it, the input written from it.
+Fixtures that declare a Blocks field on an entry move it to `#[Blocks]` and content, and those with no
+route, `Guide`, `Pictured` and `Slid\Article`, gain one. The tests that bind a Blocks field on an entry
+fixture, or check one's column on its main table, point at a list inside a block fixture instead.
+
+### 12b — The Content tab
+
+**Two tabs.** The edit screen of an entry whose type has a page has Details and Content, in that order,
+Details open when the screen opens and the tab chosen kept across a reload and a save: a save and a
+reload leave it in the tab's session storage, beside the copy's key, read once by the page that comes
+next, so any other opening is on Details. `packages/ui`
+gains a tabs component: a tablist of buttons over panels, arrow keys between them, as the ARIA pattern
+has it, and without JavaScript both panels one after the other. Both panels are in the one form, so one
+Save draft and one Publish save both, and leaving with unsaved changes in either warns. A page-less
+type and a global keep the one form, without tabs.
+
+**The page, from the form.** The Content panel is a frame. Opening the tab, and opening it again after
+Details changed, posts the whole form to the canvas route with `fetch`, as an XHR, and writes the page
+it answers into the frame's document, its scroll kept, so it draws the entry as the form now holds it,
+unsaved. Being no submit, it is not held up by a control the browser finds invalid in the hidden
+Details panel, adds nothing to the history, and leaves the dirty guard's snapshot alone. Any answer but
+a page shows as a message in the tab: a 422's messages, and for an ended session or a stale token, that
+signing in again is needed, the browser's copy keeping the work. The routes are the edit screen's with `/canvas`:
+`/admin/article/5/canvas`, `/admin/article/drafts/12/canvas` and `/admin/article/new/canvas`.
+
+The route reads through the layer's `Mainstay::preview(Article::class, 5, $changes, locale: 'en')`:
+the entry with its draft over it and the changes `Form::changes()` makes of the post over both, `draft:
+12` for one not yet published, neither for a new one, and a term, which has no draft, live with the
+changes over it. It checks the changes as a draft save does -- each value its field's kind, nothing
+required -- is refused as that save would be, and writes nothing. A tag typed in Details that does not
+exist yet is left out, since only a save makes one.
+
+The page is the response the public route gives that entry, `Mainstay::template($entry)` with
+`$entry`, but for five things.
+
+- The locale is the form's.
+- Nobody is signed in while it draws. Mainstay's Gate reads as a visitor, so everything else on the
+  page -- another entry, a global, a list of articles -- is what the public is served, and only this
+  entry is the draft. The default guard is one with no user, so a host view's `@auth`, `auth()` and
+  `@can` see a guest rather than the Mainstay account the admin's `StartSession` made the default; the
+  container's resolved guard is forgotten on the way in and out, so the rest of the request keeps its
+  own.
+- The entry's own content, and the blocks in it, are drawn for the editor: `{{ $entry->content }}`
+  and 12c's `@field` read that from the content they are given, so a rich text field and another
+  entry's content on the page draw as on the site. An empty content draws for the editor as an empty
+  document.
+- Only its `<main>` shows. The header, menu and footer around it are the site's layout, which phase
+  16's parts build, not this entry, so writing the page into the frame leaves them out; a page with no
+  `<main>` shows whole.
+- No script runs in it. The frame is `sandbox="allow-same-origin"`, without `allow-scripts`, so the
+  site's own scripts, and any third party's they load, never run in the admin's origin with the
+  editor's session, in the page written there or in one it is navigated to. The editor's script runs
+  in the admin page around the frame, which the sandbox does not reach, and cancels a `click` and an
+  `auxclick` on a link in the frame, so neither a click nor a middle click opens it; the sandbox
+  already blocks a form's submit. Writing the frame's document drops every listener on it and its
+  window, so each one the admin puts there -- these, the grip's drag and the scroll that keeps the grip
+  lined up -- is attached again after every write. The written page
+  resolves its URLs against the admin's own address, so a root-relative stylesheet and its fonts load
+  from the host serving the admin, the same application's `public/`.
+
+It runs on the admin's middleware, not the site's, so a view that needs the host's `web` group draws as
+it does without it. A draft not yet published has no id and no path, and a view that reads them checks
+first, as the site's layout and `Page::isFront()` will. A draft that leaves empty a field its property
+cannot hold -- a required date -- is not drawn: the tab names the fields the page needs first, as phase
+8 promised. A view that throws shows the error's message in the tab rather than the admin's error page.
+
+ponytail: the whole page is drawn again when Details changed, rather than patched, so a page slow to
+draw is slow to come back to; patching the fields a view prints waits for a page where it shows.
+
+**The editor in the page.** For the editor, `{{ $entry->content }}` prints a `<script
+type="application/json">` holding the document and each site block's HTML by its id, and nothing else,
+encoded with `JSON_HEX_TAG | JSON_HEX_AMP` so a `</script>` typed in a paragraph stays text inside it.
+The editor takes the element that script sits in as ProseMirror's own, its `{mount}`, so the text it
+draws sits where the view put it, under the view's classes, and `.prose > * + *` spaces it as on the
+site. ProseMirror draws the text blocks with the tags `Document` renders, a fixture the PHP renders and
+Vitest draws holding the two to the same HTML, and a site block as the HTML its view drew, an island it
+does not edit. The rest of the page is not editable. A page that prints the content beside something
+else in its element, or not at all, is drawn read-only and the tab says which; the second is a page
+that does not use its content, which still shows Details' changes on it.
+
+Every change writes the document into Details' raw content textarea, the field's one input, and
+dispatches `input`, so the dirty guard and Save see it. A hand edit there is what the editor loads the
+next time the tab opens. A redraw mounts a new view on the new page with the editor's state as it was,
+so undo reaches past it.
+
+**Blocks to the editor.** Every top-level node is a block. The frame holds the page and the cursor
+and nothing of the admin's: every control is outside it. The rich text toolbar above the frame carries
+the marks, the link dialog, undo, redo, Add block -- a menu of Mainstay's text blocks and the type's
+own, inserting after the current block -- and the current block's Move up, Move down, Duplicate and
+Delete, and for a text block Turn into a paragraph, a heading, a quote, a code block or a list. The
+current block is the one holding the cursor or selected, outlined in the frame. `/` at the start of an empty paragraph opens the same
+menu there. Enter at the end of a block starts a paragraph, and Backspace in an empty one removes it. A
+site block is selected by a click and moved and deleted as any block; its fields wait for 12c, and for
+Details' raw data until then. Inserting one draws the page again, so it shows as its view draws it, and
+one its view draws as nothing -- a list of articles with none yet -- shows a placeholder naming it, to
+be selected.
+
+A block is dragged to its place too, by a grip beside the frame, outside it, lined up with the current
+block. The grip is the platform's `draggable`, as a relation row is. While it is over the frame the
+admin follows the frame's `dragover`, which it can reach, draws a line over the frame where the block
+would land, between two blocks, and on the drop moves it in one step undo takes back. During a grip drag
+the admin cancels the frame's `dragover` and `drop`, so the drop lands anywhere on the page and
+ProseMirror's own drop handling stays out of it.
+
+**A copy in the browser.** While the form is dirty, what it would post, less its CSRF token, is kept in
+the browser's local storage under the account's id, the entry's admin address and the locale, with the
+time. Opening the entry again as that account, with a copy that differs from what is drawn, offers it:
+"You have unsaved changes from 12:38", with Restore and Dismiss. Restore posts the copy to the form's
+own action with `intent=restore`, which draws the form from it unsaved, as a refused save redraws what
+was posted, so every field -- rows, chips, the content -- comes back as it was, and the form starts
+dirty. The copy carries the `_seen` fingerprints and `_draft_at` it was made with and the redraw keeps
+them, so saving it changes only what the copy changed, and a publish over another editor's later save
+is refused as from any form opened before it. A save leaves the copy's key in the tab's session
+storage. `save()` flashes a marker of its own once the draft save returns -- a draft that came to change
+nothing deleted, null, included -- or a term is written -- a publish
+refused after it included, which lands a new entry on its draft's address -- and the admin's layout
+prints it, so the page a save lands on, whatever its address, drops that copy only when the marker is
+there, and every admin page clears the key. A save refused, or one that never ran for an ended
+session, keeps the copy. Dismiss and a discarded draft drop it too, and signing out drops every copy, so the next person at that browser finds
+none. With the admin on the site's own host, the site's scripts share its origin and could read the
+copies -- as they could fetch the admin's pages with the editor's cookie already. An admin on its own
+host, through `mainstay.domain`, keeps both from them only when every locale names its host too: a
+locale with none is served on every host, the admin's included, so a site page opened there -- a
+canvas link through the browser's own menu -- runs its scripts in the admin's origin.
+
+**The check.** `DraftTest`, on every driver: `Mainstay::preview()` reading an entry, a draft not yet
+published and a term with changes over them, refusing a value of the wrong kind and someone who may not
+save, and writing nothing. `AdminTest`:
+
+- The canvas drawing a page from posted changes, its draft and its entry left as they were; another
+  entry's draft and an internal field not on it; a new entry's, with no id; a new tag left out;
+  refused to someone who may not update.
+- A host view's `@auth` seeing a guest, and the admin's own account signed in again after it; a rich
+  text field and another entry's content on the page drawn as on the site.
+- A required date left empty named, not drawn; a throwing view shown as its message.
+- The content's script printed for the editor only, the public page unchanged, and a paragraph holding
+  `</script>` kept inside it.
+- Restore drawing the form from a copy, nothing saved; saving it after another editor changed a field
+  the copy did not, that change kept.
+- The save marker flashed after a draft saved, after one that came to nothing and was deleted, and
+  after a publish refused once it was, and absent after a refused save.
+
+Vitest: the tabs; the frame posted on opening the tab only when Details changed; the editor mounted on
+the script's element, and the two read-only cases; a link's click and middle click in the frame
+cancelled; a non-page answer shown as a message; each block command, Add block and `/`, a block dragged by its grip and the move one undo step, ids given on insert,
+duplicate and paste, and undo past a redraw; the copy kept without the token, offered only to its
+account, restored dirty, and dropped only where the save marker is. The headless browser screenshots the
+Content tab of the front page, an article and a doc, and after a redraw a link's click and middle
+click leave the frame on its page -- jsdom keeps the listeners a write drops, so Vitest cannot. The site's test: a new page's canvas drawn.
+
+### 12c — The site's blocks, in place
+
+**`@field`.** A block's view prints a field's text with `@field($block, 'headline')`, or a nested
+item's with `@field($feature, 'title')`. On the site it is the escaped value, as `{{ $block->headline
+}}` prints it; for the editor, that text in a `<span>` marked with the item's id and the field's name,
+which the editor makes typeable as plain text. It takes a Text or a Textarea field, a Textarea's line
+breaks kept; any other is refused naming the field, and is edited in the sidebar. An empty one prints
+its field's label as a placeholder for the editor and nothing on the site. Typing in it writes the
+block's data in the document, as every change does.
+
+**The sidebar.** Selecting a site block opens a sidebar beside the frame with its whole form: every
+field, those typed in place too, drawn by the components Details draws them with, images picked from
+the library and relations searched. It is a form of its own outside the entry's, as the dialogs are,
+since a form inside a form joins its inputs to the outer one and a Feature's `title` would post as the
+page's. The edit screen of a type with blocks pushes the picker and link dialogs their fields need. A list field inside the block -- FeatureGrid's Features -- is a list
+of its items, each its fields, added, moved up and down and removed: the one place the admin draws a
+list of blocks, since an item has no page of its own to be edited on. Typing in place updates the
+sidebar, and the sidebar updates the text in place.
+
+The server draws and reads the sidebar, so each field's `fromForm()` stays the one conversion. Each
+edit screen posts to a block route beside its canvas -- `/admin/page/5/block`, `/admin/page/new/block`,
+`/admin/page/drafts/3/block`. Selecting a block posts it as the document holds it, and the answer is
+its sidebar. A change posts the sidebar, a list's Add, Up, Down or Remove naming what it asks, and
+the server converts it, checks it as a draft save would, and answers the block's data and its HTML
+drawn for the editor -- as the canvas draws, the Gate a visitor's -- which replaces the block in the
+frame. A change the check refuses answers why, by the field's label, with the block as converted, so
+the document holds what the sidebar shows and the save refuses it as well. An undo or a redo that
+changes a block draws it again. The route refuses a block the type does not allow, and anyone who may
+not update the type.
+
+**Errors.** A save refused for a block's field lists the error above the frame naming the block, marks
+the block until it changes, and shows the message in its sidebar at its field -- posted with the block
+while it is unchanged, since a draft's check does not ask for what a publish requires.
+
+**The site.** Hero, FeatureGrid and the lists' headings print their text with `@field`. The phase 12
+article, waiting as a draft, is written and published, and the next, on phase 13, waits as one. The docs
+page "Content" gains `@field` and the sidebar, and "The admin" a section on the Content tab. The site's
+test: the front page's canvas drawn with its hero's headline marked.
+
+**The check.** `RenderTest`: `@field` printing the escaped value on the site, the marked span for the
+editor, its placeholder, and refused for an Image field. `AdminTest`: the block form drawn with its
+values, a change converted and drawn, a nested item added, a block the type does not allow refused, a
+block's error listed and marked; a Feature's `title` changed in the sidebar and the page saved, the
+page's title as it was. Vitest: selecting a block opening the sidebar, typing in place and in the
+sidebar each updating the other, the block replaced by the HTML answered. The headless browser: the
+front page's hero edited in place.
+
+### 12d — Gutenberg's controls, and blocks inside blocks
+
+Changed once 12c was tried, before it was merged. It replaces 12c's sidebar and its list of a block's
+items.
+
+**The bars.** The tabs' bar sits right under the breadcrumb bar and is as tall, its labels centred in
+it. While Content is open, Undo, Redo and Add block sit at its end, as Gutenberg's header holds them.
+
+**The toolbar.** The block toolbar floats by the current block over the frame, as Gutenberg's does:
+above it, kept at the frame's top while the block runs on under it, and hidden while text is typed
+until the page is pointed at again. It holds the grip a block is dragged by -- no column beside the
+frame -- Move up and Move down, Turn into and the text tools for text, Replace image and Edit image for
+a block printing an image, Block settings, Duplicate and Delete.
+
+**Settings.** Block settings opens the block's settings in a dialog at the side of the screen: every
+field of the block, drawn, posted and answered as 12c's sidebar was. Selecting another block or leaving
+the tab closes it.
+
+**Blocks inside blocks.** A block holds blocks inside it as Gutenberg's Columns and Group do,
+`#[Blocks([Feature::class])]` on its class naming them as on an entry type's. They are its content in
+the document, `{type: 'block', attrs: {...}, content: [...]}`, checked, read and written as the top
+level's are, each by where it is -- `content.content.3.content.0.attrs.data.title` -- with one id
+across the whole document. The Blocks field goes: a property marked `#[Blocks]` is refused, naming
+the class attribute. A block's view prints the blocks inside it with `@inner($block)`, each through
+its own view, and `$block->inner()` reads them. For the editor `@inner` marks the place, and each
+block inside is drawn there as its own island: selected, typed into, moved, duplicated, deleted and
+dragged among the blocks beside it -- side by side, as a grid's are -- and added from the Add block
+menu, which inside a block offers only what that block holds. A new block that holds blocks starts
+with one of the first kind it holds. A block's settings list the blocks inside it, each selecting it
+on the page, and a button adding each kind it holds. Not done: text inside a block, and moving a block
+from one block into another.
+
+The block route takes the blocks around the one posted, `ancestors`, outermost first, and refuses a
+block the one around it does not hold.
+
+**Images.** An image a block prints with `picture()` is marked for the editor with its block and
+field. Replace image opens the library's picker, and the image picked goes into the block's data, in
+a step undo takes back, the block drawn again. Edit image opens the image's own form -- its focal
+point and its alt text in every language -- in a dialog, saved there for JSON, and the block is drawn
+again.
+
+**The site.** FeatureGrid holds its Features inside it, each drawn by `blocks/feature.blade.php`. The
+seeder writes them so, and the docs pages "Fields" and "Content" and the phase 12 article say so.
+
+**The check.** The PHP suites move to blocks inside blocks: rules and refusals by path, reading and
+writing, `@inner` on the site and for the editor, the block route with `ancestors`, a refused block
+inside another marked, a block's image marked, the image dialog's form and its JSON save. Vitest: the
+header and the floating toolbar, the settings dialog, a block inside another typed into and posted
+with what is around it, its list in the settings, adding, moving, dragging side by side and removing
+inside, the image picked and edited. The headless browser: the bars, the toolbar, the dialogs and the
+front page's features.
 
 ## Phase 13 — The API as a product
 
@@ -1424,6 +1778,23 @@ Settings the checklist collects are globals, so it gets no storage of its own.
 The checklist is the dashboard's first widget. Phase 10 leaves `/admin` empty; widgets, as WordPress
 draws them, arrive here as a list a host adds to in its service provider, each a Blade view.
 
+## Phase 16 — Template parts
+
+What WordPress calls template parts and what it calls options are two things here. A global stays
+settings, plain fields, as the site's `Layout` is. A part is a piece of the layout built from blocks --
+a navigation, a footer -- declared as `class Footer extends Part`, naming the blocks it allows on the
+class with `#[Blocks([...])]` as a type does. It has content built in, as an entry has, and no address:
+it is stored once per site, localized, drafted and published as a global is, and a view prints it with
+`{{ Mainstay::part(Footer::class) }}`. The admin lists parts under a heading of their own, apart from
+the globals. A part's edit screen draws it alone, in a frame with the site's stylesheets as the rich
+text editor's is, its blocks drawn by their views and edited in place as 12c does; a style that hangs on
+where the layout puts the part can look different there. 12a refuses `#[Blocks]` on a type with no
+route because it has no page; a part has no route either and takes it. A Blocks field on a global stays
+refused.
+
+The site's `Layout` gives its menu and its footer line to parts: a navigation holding a Navigation block
+the site writes, as it writes its own Image block, and a footer.
+
 ## Not in this plan
 
 Generated migrations. A content type builder UI. A derived relations table. Nested terms. Diff-based
@@ -1455,12 +1826,21 @@ it will attach to.
 - **Locales arrive in phase 3, not phase 14.** The real site is multilingual from the start, so
   the layer takes `locale` on every call and writes a row and a path per locale from its first save.
   Phase 10 brings the admin's switcher forward, and phase 14 keeps the rest a second locale needs.
-- **Preview moves to the page builder.** It sat in rendering, showing published rows until drafts
-  arrived, and then beside the admin's form. It is the page rendered from the draft for a signed-in
-  editor, which is what phase 12's edit mode stands on, so it is built once, there.
+- **Preview is the Content tab.** It sat in rendering, showing published rows until drafts arrived,
+  and then beside the admin's form. It is the page rendered from the form for a signed-in editor,
+  which is what phase 12 edits the content on, so it is built once, there, and is not a second thing.
 - **The admin is four pull requests, and accounts are a phase of their own.** Phase 10 was the
   largest phase by a distance. Cut at the milestones its own stub named, each merges on its own and
   leaves an admin that works, and the screens over phase 9's accounts follow as phase 11.
-- **A page's content is edited on the page.** The admin edits an entry's fields; the page builder,
-  phase 12, edits its content inline on the site, its core one field as WordPress's `post_content`.
-  The admin keeps a raw view of that field for when the site's editor breaks.
+- **A page's content is edited on its page, in the admin.** Phase 12's stub edited it on the public
+  site, in an edit mode that would have had a signed-in editor served something other than the
+  visitor's page. The edit screen draws the page in a frame instead, and Details keeps the content as
+  raw data for when the page breaks.
+- **Content is Entry's, one document whose top-level nodes are blocks.** A content field a type
+  declares, and a list of blocks with text as one kind of block, were the alternatives. Entry's own,
+  as the title is, gives every type one place for it and the edit screen one thing to edit. One
+  ProseMirror document lets text be typed, selected, pasted and undone across blocks as in one editor,
+  while each top-level node is a block to the toolbar's block commands.
+- **Template parts are a kind of their own, not globals with content.** Navigation and a footer are
+  arranged by an editor from blocks; settings are fields a developer lays out. Keeping them apart
+  keeps globals plain and gives parts the content an entry has.

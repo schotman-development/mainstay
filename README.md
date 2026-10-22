@@ -11,8 +11,9 @@ between the two.
 > **Status: early.** Content types are declared in PHP, `mainstay:sync` alters the database to match
 > them, content is read and written from PHP through `Mainstay::find()`, `create()`, `update()`
 > and `delete()`, and an entry is served at the path its type's `#[Route]` builds, in a Blade
-> template, in the language its host or path prefix names. Rich text, blocks, images, relations to
-> other entries and tags are fields like the rest, and a global holds a site's settings. A change
+> template, in the language its host or path prefix names. Rich text, images, relations to other
+> entries and tags are fields like the rest, every entry has content of text and the site's own
+> blocks, and a global holds a site's settings. A change
 > can wait as a draft until it is published, what it replaces is kept as a revision, and the trash
 > can be restored from or emptied. The admin has accounts of its own, a login page, and roles whose
 > capabilities decide who may write and who may publish. It lists each type's entries and edits their
@@ -20,6 +21,8 @@ between the two.
 > entries and tags -- saving a draft or publishing it, chooses the front page, and shows each entry's
 > history, naming who published each version. Accounts are invited from the admin by mail, roles are
 > drawn as a grid of the types' capabilities, and everyone has settings of their own.
+> A page's content is edited on the page as the site draws it: text typed in place, blocks added,
+> moved and placed inside each other, and a block's fields and images edited in dialogs beside it.
 > `docs/plan.md` has the order the rest arrives in.
 
 ## Repository layout

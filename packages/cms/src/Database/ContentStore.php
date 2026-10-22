@@ -1032,11 +1032,92 @@ class ContentStore
             return null;
         }
 
-        $translation = $translations->get($locale);
-        /* An entry not published yet is owned by who its draft names. */
-        $built = (object) ['id' => $row?->id, 'owner_id' => $row === null && ! $global ? $draft->owner_id : $row?->owner_id, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+        $shown = $this->hidden($type, $changes, $internal);
 
-        if (! $global) {
+        return new Draft(
+            (int) $draft->id,
+            $global ? null : $entry,
+            /* An entry not published yet is owned by who its draft names. */
+            $this->overlaid($type, $row, $translations->get($locale), $changes, $row === null && ! $global ? $draft->owner_id : $row?->owner_id, $locale, $internal, $overrideAccess, $depth),
+            array_keys($shown['fields']),
+            array_map('array_keys', $shown['locales']),
+            $this->moment->cast($draft->updated_at),
+        );
+    }
+
+    /*
+     | `Mainstay::preview(Article::class, 5, $changes)`: the entry as its page
+     | would read with `$changes` saved over its draft and published, and
+     | nothing written -- an entry's by its id, one not published yet by its
+     | draft's, `draft: 12`, a new one by neither, and a term, which has no
+     | draft, live with the changes over it. The changes are checked as a
+     | draft save checks them, each value its field's kind and nothing
+     | required, and refused as that save would be, Gate included. What comes
+     | back is the public's, as a visitor would read it once it is live: no
+     | internal field. A field left empty that its property cannot hold is
+     | absent, as a draft reads it.
+     */
+    public function preview(string $type, ?int $entry = null, array $changes = [], ?int $draft = null, ?string $locale = null, bool $overrideAccess = false, int $depth = self::DEPTH): Entry
+    {
+        $type = $this->entry($type);
+        $term = is_subclass_of($type, Taxonomy::class);
+
+        if ($draft !== null && ($entry !== null || $term)) {
+            throw new InvalidArgumentException($term ? "{$type} is a taxonomy, whose terms have no drafts: preview one by its id." : 'An entry is previewed by its id or by its draft\'s, not both.');
+        }
+
+        $held = match (true) {
+            $draft !== null => DB::table(self::DRAFTS)->where('site_id', $this->site())->where('type', $type::handle())->where('id', $draft)->first()
+                ?? throw $this->missing($type, $overrideAccess, "Draft {$draft} of {$type} is not there to preview."),
+            $entry !== null && ! $term => $this->draftFor($type, $entry),
+            default => null,
+        };
+
+        $entry = $held === null ? $entry : ($held->entry_id === null ? null : (int) $held->entry_id);
+        $locale = $this->locale($locale);
+        $this->depth($depth);
+        [$row, $translations] = $this->live($type, $entry, $overrideAccess);
+        [$internal] = $this->drafter($type, $entry, $row, $overrideAccess, $held);
+        $values = $this->validate($type, $changes, $row === null ? [] : $this->stored($type, $row, $translations->get($locale), $internal), $internal, $overrideAccess, draft: true);
+        $fields = $this->mainstay->fields($type);
+        $drafted = $held === null ? ['fields' => [], 'locales' => []] : $this->changes($held);
+        $drafted['locales'][$locale] ??= [];
+
+        if (array_key_exists('template', $changes)) {
+            $drafted['fields']['template'] = blank($changes['template']) ? null : $changes['template'];
+        }
+
+        /* What is given, and what nothing holds yet -- a new entry's field
+           the form left out, a translation's first -- as a save would write
+           it: its default, or nothing. */
+        foreach ($fields as $name => $field) {
+            $live = $field->localized ? $translations->has($locale) : $row !== null;
+
+            if (! array_key_exists($name, $changes) && ($live || array_key_exists($name, $field->localized ? $drafted['locales'][$locale] : $drafted['fields']))) {
+                continue;
+            }
+
+            if ($field->localized) {
+                $drafted['locales'][$locale][$name] = $this->kept($field, $values[$name] ?? null);
+            } else {
+                $drafted['fields'][$name] = $this->kept($field, $values[$name] ?? null);
+            }
+        }
+
+        return $this->overlaid($type, $row, $translations->get($locale), $drafted, $row === null ? ($held?->owner_id ?? Gate::user()?->getKey()) : $row->owner_id, $locale, false, $overrideAccess, $depth);
+    }
+
+    /*
+     | What is live in a locale with a draft's changes over it, as the declared
+     | class: what it points at loaded to `$depth`, a field the changes leave
+     | empty that its property cannot hold absent, and, for an entry not
+     | published yet, no id and no path.
+     */
+    private function overlaid(string $type, ?object $row, ?object $translation, array $changes, mixed $owner, string $locale, bool $internal, bool $overrideAccess, int $depth): ContentType
+    {
+        $built = (object) ['id' => $row?->id, 'owner_id' => $owner, 'published_by' => $row?->published_by, 'created_at' => $row?->created_at, 'updated_at' => $row?->updated_at];
+
+        if (! is_subclass_of($type, GlobalSet::class)) {
             $built->template = array_key_exists('template', $changes['fields']) ? $changes['fields']['template'] : $row?->template;
             $built->uri = $row === null ? null : DB::table('uris')->where('type', $type::handle())->where('entry_id', $row->id)->where('locale', $locale)->value('uri');
         }
@@ -1051,16 +1132,7 @@ class ContentStore
             }
         }
 
-        $shown = $this->hidden($type, $changes, $internal);
-
-        return new Draft(
-            (int) $draft->id,
-            $global ? null : $entry,
-            $this->hydrate($type, $built, $locale, $internal, loaded: $this->resolve([$type => [$built]], $locale, $overrideAccess, $depth), lenient: true),
-            array_keys($shown['fields']),
-            array_map('array_keys', $shown['locales']),
-            $this->moment->cast($draft->updated_at),
-        );
+        return $this->hydrate($type, $built, $locale, $internal, loaded: $this->resolve([$type => [$built]], $locale, $overrideAccess, $depth), lenient: true);
     }
 
     /* The type a stored handle names. */

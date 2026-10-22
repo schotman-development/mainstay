@@ -11,8 +11,9 @@ use Mainstay\Fields\Text;
 use Mainstay\Tests\Fixtures\Linked\Blocks\Shelf;
 
 /* Every shape a relation takes: one and a list, of one type and of several,
-   in a column and two blocks down, and terms. */
+   in a column and two blocks down in the content, and terms. */
 #[Route('/stories/{slug}')]
+#[Blocks([Shelf::class])]
 class Story extends Entry
 {
     #[Text(required: true, localized: true)]
@@ -32,9 +33,6 @@ class Story extends Entry
 
     #[Relation(to: [Person::class, Story::class])]
     public array $picks;
-
-    #[Blocks(of: [Shelf::class])]
-    public array $blocks;
 
     #[Terms(of: Genre::class)]
     public array $genres;

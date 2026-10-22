@@ -5,6 +5,7 @@ import { type MarkType, Node, type NodeType } from 'prosemirror-model'
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirror-schema-list'
 import { type Command, EditorState } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
+import prosemirror from 'prosemirror-view/style/prosemirror.css?raw'
 import { linkable, schema } from './schema'
 
 /*
@@ -16,8 +17,6 @@ import { linkable, schema } from './schema'
  | warning hears it. Until something changes, the input holds what the server
  | drew, byte for byte, and a save leaves the field out as unchanged.
  */
-
-const { nodes, marks } = schema
 
 type Tool = { run: Command; active?: (state: EditorState) => boolean }
 
@@ -58,7 +57,8 @@ type Range = { from: number; to: number }
 
 function linked(state: EditorState): (Range & { href: string }) | null {
   const { from, to, empty, $from } = state.selection
-  const mark = marks.link.isInSet(empty ? $from.marks() : ($from.nodeAfter?.marks ?? []))
+  const link = state.schema.marks.link!
+  const mark = link.isInSet(empty ? $from.marks() : ($from.nodeAfter?.marks ?? []))
   const start = $from.start()
   let run: Range | null = null
   let around = null as Range | null
@@ -84,7 +84,7 @@ function linked(state: EditorState): (Range & { href: string }) | null {
   let href = null as string | null
 
   state.doc.nodesBetween(from, to, (node) => {
-    href ??= marks.link.isInSet(node.marks)?.attrs.href ?? null
+    href ??= link.isInSet(node.marks)?.attrs.href ?? null
   })
 
   return href === null ? null : { from, to, href }
@@ -98,6 +98,7 @@ function linked(state: EditorState): (Range & { href: string }) | null {
  | address as the link's text.
  */
 function link(view: EditorView): void {
+  const type = view.state.schema.marks.link!
   const dialog = document.getElementById('mainstay-link')
   const form = dialog?.querySelector('form')
   const input = form?.elements.namedItem('href')
@@ -119,7 +120,7 @@ function link(view: EditorView): void {
     const { tr } = view.state
 
     if ((event.submitter as HTMLButtonElement | null)?.value === 'remove') {
-      view.dispatch(tr.removeMark(from, to, marks.link))
+      view.dispatch(tr.removeMark(from, to, type))
 
       return
     }
@@ -138,70 +139,57 @@ function link(view: EditorView): void {
 
     if (from === to) tr.insertText(href, from)
 
-    view.dispatch(tr.removeMark(from, end, marks.link).addMark(from, end, marks.link.create({ href })))
+    view.dispatch(tr.removeMark(from, end, type).addMark(from, end, type.create({ href })))
   }
 
   dialog.addEventListener('close', () => view.focus(), { once: true })
   dialog.showModal()
 }
 
-const list = (type: NodeType) => toggle(inside(type), wrapInList(type), liftListItem(nodes.list_item))
+/*
+ | The commands over a schema's text, a rich text field's or a page's: the
+ | toolbar's buttons by their `data-command`, the schema's nodes and marks and
+ | no more; its select's text blocks; and the keys.
+ */
+export function kit({ nodes, marks }: typeof schema) {
+  const list = (type: NodeType) => toggle(inside(type), wrapInList(type), liftListItem(nodes.list_item))
 
-/* The toolbar's buttons, by their `data-command`: the schema's nodes and
-   marks, and no more. */
-const tools: Record<string, Tool> = {
-  strong: { run: toggleMark(marks.strong), active: marked(marks.strong) },
-  em: { run: toggleMark(marks.em), active: marked(marks.em) },
-  code: { run: toggleMark(marks.code), active: marked(marks.code) },
-  link: {
-    run: (state, dispatch, view) => {
-      if (!toggleMark(marks.link)(state)) return false
-      if (dispatch && view) link(view)
+  const tools: Record<string, Tool> = {
+    strong: { run: toggleMark(marks.strong), active: marked(marks.strong) },
+    em: { run: toggleMark(marks.em), active: marked(marks.em) },
+    code: { run: toggleMark(marks.code), active: marked(marks.code) },
+    link: {
+      run: (state, dispatch, view) => {
+        if (!toggleMark(marks.link)(state)) return false
+        if (dispatch && view) link(view)
 
-      return true
+        return true
+      },
+      active: marked(marks.link),
     },
-    active: marked(marks.link),
-  },
-  bullet_list: { run: list(nodes.bullet_list), active: inside(nodes.bullet_list) },
-  ordered_list: { run: list(nodes.ordered_list), active: inside(nodes.ordered_list) },
-  blockquote: { run: toggle(inside(nodes.blockquote), wrapIn(nodes.blockquote), lift), active: inside(nodes.blockquote) },
-  code_block: {
-    run: toggle(inside(nodes.code_block), setBlockType(nodes.code_block), setBlockType(nodes.paragraph)),
-    active: inside(nodes.code_block),
-  },
-  /* A document holds blocks, so there is always somewhere for a rule. */
-  horizontal_rule: {
-    run: (state, dispatch) => {
-      dispatch?.(state.tr.replaceSelectionWith(nodes.horizontal_rule.create()).scrollIntoView())
-
-      return true
+    bullet_list: { run: list(nodes.bullet_list), active: inside(nodes.bullet_list) },
+    ordered_list: { run: list(nodes.ordered_list), active: inside(nodes.ordered_list) },
+    blockquote: { run: toggle(inside(nodes.blockquote), wrapIn(nodes.blockquote), lift), active: inside(nodes.blockquote) },
+    code_block: {
+      run: toggle(inside(nodes.code_block), setBlockType(nodes.code_block), setBlockType(nodes.paragraph)),
+      active: inside(nodes.code_block),
     },
-  },
-}
+    /* A document holds blocks, so there is always somewhere for a rule. */
+    horizontal_rule: {
+      run: (state, dispatch) => {
+        dispatch?.(state.tr.replaceSelectionWith(nodes.horizontal_rule.create()).scrollIntoView())
 
-/* The toolbar's select: what kind of text block the cursor is in. */
-const blocks: Record<string, Command> = {
-  paragraph: setBlockType(nodes.paragraph),
-  'heading-2': setBlockType(nodes.heading, { level: 2 }),
-  'heading-3': setBlockType(nodes.heading, { level: 3 }),
-  'heading-4': setBlockType(nodes.heading, { level: 4 }),
-}
+        return true
+      },
+    },
+  }
 
-const block = (state: EditorState): string => {
-  const { parent } = state.selection.$from
+  const blocks: Record<string, Command> = {
+    paragraph: setBlockType(nodes.paragraph),
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6].map((level) => [`heading-${level}`, setBlockType(nodes.heading, { level })])),
+  }
 
-  if (parent.type === nodes.paragraph) return 'paragraph'
-
-  return parent.type === nodes.heading ? `heading-${parent.attrs.level}` : ''
-}
-
-/* Nothing written: one empty paragraph, which the field stores as no
-   document rather than as a paragraph printing nothing. */
-const blank = (doc: Node): boolean => doc.childCount === 1 && doc.firstChild?.type === nodes.paragraph && doc.firstChild.content.size === 0
-
-const plugins = [
-  history(),
-  keymap({
+  const keys: Record<string, Command> = {
     'Mod-z': undo,
     'Mod-y': redo,
     'Shift-Mod-z': redo,
@@ -219,9 +207,75 @@ const plugins = [
 
       return true
     }),
-  }),
-  keymap(baseKeymap),
-]
+  }
+
+  return { tools, blocks, keys }
+}
+
+const { tools, blocks, keys } = kit(schema)
+const { nodes } = schema
+
+const block = (state: EditorState): string => {
+  const { parent } = state.selection.$from
+
+  if (parent.type === nodes.paragraph) return 'paragraph'
+
+  return parent.type === nodes.heading ? `heading-${parent.attrs.level}` : ''
+}
+
+/* Nothing written: one empty paragraph, which the field stores as no
+   document rather than as a paragraph printing nothing. */
+const blank = (doc: Node): boolean => doc.childCount === 1 && doc.firstChild?.type === nodes.paragraph && doc.firstChild.content.size === 0
+
+const plugins = [history(), keymap(keys), keymap(baseKeymap)]
+
+/*
+ | Where the site names its stylesheets, the text is edited as the site draws
+ | it: in a frame in place of the rendered body, holding those stylesheets and
+ | one element of the site's text class, which the editor mounts on. The frame
+ | is open to the admin, which drives the editor in it, and closed to scripts;
+ | none of the site's CSS reaches the admin around it. It is as tall as its
+ | text, measured from that element's box and margin, since a site's
+ | `min-height: 100vh` holds the document's own height at the frame's.
+ */
+function framed(body: HTMLElement, stylesheets: string[], className: string, title: string): { mount: HTMLElement; fit: () => void } {
+  const frame = Object.assign(document.createElement('iframe'), { title })
+
+  frame.setAttribute('sandbox', 'allow-same-origin')
+  frame.style.cssText = 'display: block; width: 100%; border: 0'
+  body.replaceChildren(frame)
+
+  /* Written rather than given as srcdoc, so it is there at once: an HTML
+     document, in no quirks mode. */
+  const page = frame.contentDocument!
+
+  page.open()
+  page.write('<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>')
+  page.close()
+
+  const style = (css: string) => Object.assign(page.createElement('style'), { textContent: css })
+  const links = stylesheets.map((href) => Object.assign(page.createElement('link'), { rel: 'stylesheet', href }))
+  const mount = Object.assign(page.createElement('div'), { className })
+
+  const fit = () => {
+    const inner = frame.contentWindow
+
+    if (!inner) return
+
+    const bottom = mount.getBoundingClientRect().bottom + inner.scrollY + (Number.parseFloat(inner.getComputedStyle(mount).marginBottom) || 0)
+
+    frame.style.height = `${Math.ceil(bottom)}px`
+  }
+
+  for (const link of links) link.addEventListener('load', fit)
+
+  page.head.append(style('body { margin: 0 }'), ...links, style(`${prosemirror}\n.ProseMirror { outline: none }`))
+  page.body.append(mount)
+  void page.fonts?.ready.then(fit)
+  window.addEventListener('resize', fit)
+
+  return { mount, fit }
+}
 
 /*
  | Mounts the editor on one field's `[data-rich-text]`, once: a second call
@@ -268,11 +322,13 @@ export function editor(element: HTMLElement): EditorView | undefined {
      again: the same bytes, so the form is clean and a save leaves it out. */
   const drawn = input.value
   const opened = doc
+  const { stylesheets } = element.dataset
+  const styled = stylesheets === undefined ? undefined : framed(body, JSON.parse(stylesheets) as string[], element.dataset.class ?? '', element.dataset.label ?? '')
 
-  body.replaceChildren()
+  if (!styled) body.replaceChildren()
 
   const view: EditorView = new EditorView(
-    { mount: body },
+    { mount: styled?.mount ?? body },
     {
       state: EditorState.create({ doc, plugins }),
       attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-label': element.dataset.label ?? '' },
@@ -285,6 +341,7 @@ export function editor(element: HTMLElement): EditorView | undefined {
         }
 
         sync(view.state)
+        styled?.fit()
       },
     },
   )
@@ -306,6 +363,7 @@ export function editor(element: HTMLElement): EditorView | undefined {
   })
 
   sync(view.state)
+  styled?.fit()
   toolbar.hidden = false
   views.set(element, view)
 

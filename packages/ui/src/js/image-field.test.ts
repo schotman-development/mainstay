@@ -121,3 +121,28 @@ test('a picker the library refuses says so, rather than drawing the refusal', as
 
   await vi.waitFor(() => expect(document.querySelector('[data-picker-body]')!.textContent).toBe('The media library is not open to you.'))
 })
+
+test('opens for an image on the page, handing what is picked to what asked', async () => {
+  document.body.innerHTML = `<div data-canvas></div><dialog id="mainstay-picker"><div data-picker-body></div></dialog>`
+
+  const dialog = document.querySelector('dialog')!
+  const picked: string[] = []
+
+  dialog.showModal = function () {
+    this.setAttribute('open', '')
+  }
+  dialog.close = function () {
+    this.removeAttribute('open')
+  }
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('<button type="button" data-pick="7" data-src="/storage/media/abc-640.webp">Seven</button>')))
+  imageFields()
+
+  document.querySelector('[data-canvas]')!.dispatchEvent(new CustomEvent('mainstay:pick', { bubbles: true, detail: { picker: '/admin/media?pick=1', done: (id: string) => picked.push(id) } }))
+  await vi.waitFor(() => expect(document.querySelector('[data-pick]')).not.toBeNull())
+  expect(dialog.open).toBe(true)
+
+  document.querySelector<HTMLElement>('[data-pick]')!.click()
+
+  expect(picked).toEqual(['7'])
+  expect(dialog.open).toBe(false)
+})

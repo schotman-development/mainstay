@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\HtmlString;
 use InvalidArgumentException;
 use Mainstay\Auth\Accounts;
 use Mainstay\Auth\Capabilities;
@@ -18,10 +19,14 @@ use Mainstay\Content\Template;
 use Mainstay\Database\ContentStore;
 use Mainstay\Database\Drafts;
 use Mainstay\Database\Revisions;
+use Mainstay\Fields\Blocks;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Internal;
 use Mainstay\Fields\Select;
 use Mainstay\Fields\Terms;
+use Mainstay\Fields\Text;
+use Mainstay\Fields\Textarea;
 use Mainstay\Media\Library;
 use ReflectionAttribute;
 use ReflectionClass;
@@ -45,11 +50,21 @@ class Mainstay
     /** @var array<string, class-string<Block>> by handle */
     private array $blocks = [];
 
+    /** @var array<class-string<Block>, Blocks|null> each block's inner blocks */
+    private array $inner = [];
+
     /** @var array<class-string, string|array<string, string>|null> */
     private array $routes = [];
 
     /** @var array{0: mixed, 1: array<string, array{origin: string, host: ?string, prefix: string}>}|null */
     private ?array $locales = null;
+
+    /** @var array{stylesheets: list<string>, class: string}|null */
+    private ?array $editorStyle = null;
+
+    /* Whether blocks are being drawn for the Content tab's editor, where
+       @field marks the text it prints. */
+    private bool $marking = false;
 
     public function version(): string
     {
@@ -140,6 +155,117 @@ class Mainstay
     public function registered(): array
     {
         return $this->types;
+    }
+
+    /*
+     | The site's stylesheets and the class its text sits in, which every rich
+     | text editor in the admin draws its text with, as a WordPress theme's
+     | add_editor_style: named in the site's service provider, so a path can
+     | come from code, a hashed build file's among them.
+     */
+    public function editorStyles(array $stylesheets, string $class = ''): void
+    {
+        if (! array_is_list($stylesheets) || array_filter($stylesheets, fn (mixed $path) => ! is_string($path) || trim($path) === '') !== []) {
+            throw new InvalidArgumentException("The editor's styles are a list of stylesheet addresses: Mainstay::editorStyles(['/css/site.css'], class: 'prose').");
+        }
+
+        $this->editorStyle = ['stylesheets' => $stylesheets, 'class' => trim($class)];
+    }
+
+    /** @return array{stylesheets: list<string>, class: string}|null what editorStyles() named, or null to draw in the admin's own typography */
+    public function editorStyle(): ?array
+    {
+        return $this->editorStyle;
+    }
+
+    /*
+     | `@field($block, 'headline')`: the field's text escaped, as `{{
+     | $block->headline }}` prints it, and for the Content tab's editor in a
+     | span marked with the block's id and the field's name, which the editor
+     | makes typeable -- showing the field's label while it is empty. A Text or
+     | a Textarea field only: any other is edited in the block's settings.
+     */
+    public function field(Block $item, string $name): HtmlString
+    {
+        $field = $this->fields($item::class)[$name] ?? null;
+
+        if (! $field instanceof Text && ! $field instanceof Textarea) {
+            throw new InvalidArgumentException(sprintf(
+                "@field prints a Text or a Textarea field, and %s::\$%s is %s. Print it as the view would, and it is edited in the block's settings.",
+                $item::class,
+                $name,
+                $field === null ? 'not a field' : (preg_match('/^[AEIOU]/', class_basename($field)) ? 'an ' : 'a ').class_basename($field).' field',
+            ));
+        }
+
+        $value = e((string) ($item->{$name} ?? ''));
+
+        if (! $this->marking) {
+            return new HtmlString($value);
+        }
+
+        return new HtmlString(sprintf(
+            '<span data-mainstay-field="%s" data-mainstay-item="%s" data-mainstay-label="%s"%s>%s</span>',
+            e($name),
+            e($item->id ?? ''),
+            e($field->label()),
+            $field instanceof Textarea ? ' data-mainstay-lines' : '',
+            $value,
+        ));
+    }
+
+    /*
+     | `@inner($block)`: the blocks inside a block, each drawn by its view, in
+     | their order. For the Content tab's editor an empty <template> in their
+     | place, where the editor puts them, each drawn on its own: the element
+     | it sits in holds the inner blocks and nothing else.
+     */
+    public function inner(Block $block): HtmlString
+    {
+        return new HtmlString($this->marking ? '<template data-mainstay-inner></template>' : implode('', array_map(fn (Block $inner) => $inner->toHtml(), $block->inner())));
+    }
+
+    /* Whether what is drawn now is for the editor: an image marks itself. */
+    public function marking(): bool
+    {
+        return $this->marking;
+    }
+
+    /*
+     | The blocks a block holds inside it, as its class names them with
+     | #[Blocks([...])], or null for one that holds none. Checked the first
+     | time it is asked for, with the block and every block it names.
+     */
+    public function innerBlocks(string $block): ?Blocks
+    {
+        $block = $this->canonical($block);
+
+        if (array_key_exists($block, $this->inner)) {
+            return $this->inner[$block];
+        }
+
+        $this->fields($block);
+
+        $attributes = (new ReflectionClass($block))->getAttributes(Blocks::class);
+        $this->listing($block, $attributes);
+
+        /* Kept before it is checked, so a block holding its own kind asks
+           for this one rather than reading it again. */
+        $this->inner[$block] = $attributes === [] ? null : $attributes[0]->newInstance();
+
+        return $this->inner[$block]?->check($this);
+    }
+
+    /* What `$draw` gives with every @field it prints marked for the editor. */
+    public function marked(callable $draw): mixed
+    {
+        [$was, $this->marking] = [$this->marking, true];
+
+        try {
+            return $draw();
+        } finally {
+            $this->marking = $was;
+        }
     }
 
     /**
@@ -359,6 +485,13 @@ class Mainstay
     public function setFrontPage(?string $type, mixed ...$arguments): void
     {
         $this->store()->setFrontPage($type, ...$arguments);
+    }
+
+    /* An entry as its page would read with unsaved changes over it, written
+       nowhere: what the admin's Content tab draws. */
+    public function preview(string $type, mixed ...$arguments): Entry
+    {
+        return $this->store()->preview($type, ...$arguments);
     }
 
     /* Drafts and revisions, beside the reads and writes of what is live:
@@ -584,12 +717,11 @@ class Mainstay
     private function reflect(string $type): array
     {
         /*
-         | A block's handle names the view that draws it, whichever field lists
-         | it, so two blocks of one handle in two fields would draw with one
+         | A block's handle names the view that draws it, whichever list names
+         | it, so two blocks of one handle in two lists would draw with one
          | view -- one of them with markup written for the other's properties.
-         | Recorded before its fields are read, so a block holding another of
-         | its own handle is caught as well; and every block a field lists is
-         | read here, since Blocks reads each one as it is bound.
+         | Recorded before its fields are read; and every block a list names is
+         | read here, since a list's check() reads each one.
          */
         if (is_subclass_of($type, Block::class)) {
             if (($read = $this->blocks[$type::handle()] ?? $type) !== $type) {
@@ -619,6 +751,10 @@ class Mainstay
                 }
 
                 $attributes = $property->getAttributes(Field::class, ReflectionAttribute::IS_INSTANCEOF);
+
+                if ($property->getAttributes(Blocks::class) !== []) {
+                    throw new InvalidArgumentException("{$type}::\${$property->getName()} is marked #[Blocks], which names the blocks a class holds: put it on the class, and a block prints the blocks it holds with @inner(\$block).");
+                }
 
                 /* A property without a field attribute is the type's own
                    business, not a field the admin should be drawing. */
@@ -679,8 +815,57 @@ class Mainstay
         }
 
         $this->terms($type, $fields);
+        $this->content($type, $reflection, $fields);
 
         return $fields;
+    }
+
+    /*
+     | An entry's blocks go in its content, the list its class names with
+     | #[Blocks([...])]; a block's names the blocks it holds inside it. That
+     | is all the attribute takes. A type with no #[Route] has no page to edit
+     | a block on, so its content holds text alone. Content is Entry's, and
+     | the edit screen is built on it, so a type redeclares it only as
+     | content.
+     */
+    private function content(string $type, ReflectionClass $reflection, array $fields): void
+    {
+        $entry = is_subclass_of($type, Entry::class);
+
+        foreach ($fields as $name => $field) {
+            if ($field instanceof Content && (! $entry || $name !== 'content')) {
+                throw new InvalidArgumentException("{$type}::\${$name} is a content field, and content is an entry's own, its \$content.");
+            }
+        }
+
+        if ($entry && ! ($fields['content'] ?? null) instanceof Content) {
+            throw new InvalidArgumentException("{$type}::\$content is redeclared as another kind of field. The edit screen is built on an entry's content, so redeclare it with #[Content], as one content for every language is.");
+        }
+
+        $attributes = $reflection->getAttributes(Blocks::class);
+        $page = $reflection->getAttributes(Route::class) !== [];
+
+        if ($attributes !== [] && ! $entry && ! is_subclass_of($type, Block::class)) {
+            throw new InvalidArgumentException("{$type} names blocks with #[Blocks], and only an entry type's content and a block hold them.");
+        }
+
+        $this->listing($type, $attributes);
+
+        if ($attributes !== [] && $entry && ! $page) {
+            throw new InvalidArgumentException("{$type} names blocks with #[Blocks] and has no #[Route]: with no page there is nowhere to edit a block on, so its content holds text alone.");
+        }
+
+        if ($entry) {
+            $fields['content']->holds($attributes === [] ? null : $attributes[0]->newInstance()->check($this), $page);
+        }
+    }
+
+    /** @param list<ReflectionAttribute> $attributes a class's #[Blocks], which names blocks and nothing more */
+    private function listing(string $type, array $attributes): void
+    {
+        if ($attributes !== [] && array_diff(array_keys($attributes[0]->getArguments()), [0, 'of']) !== []) {
+            throw new InvalidArgumentException("{$type}'s #[Blocks] names the blocks it holds and nothing more: #[Blocks([Hero::class])].");
+        }
     }
 
     /*

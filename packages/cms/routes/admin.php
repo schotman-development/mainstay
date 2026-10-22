@@ -59,6 +59,8 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
     Route::get('{type}', [EntryController::class, 'index'])->name('mainstay.entries');
     Route::post('{type}', [EntryController::class, 'store'])->name('mainstay.entries.store');
     Route::get('{type}/new', [EntryController::class, 'create'])->name('mainstay.entries.create');
+    Route::post('{type}/new/canvas', [EntryController::class, 'canvas'])->name('mainstay.canvas.create');
+    Route::post('{type}/new/block', [EntryController::class, 'block'])->name('mainstay.block.create');
     Route::get('{type}/trash', [EntryController::class, 'trashed'])->name('mainstay.entries.trash');
     Route::get('{type}/history', [EntryController::class, 'history'])->name('mainstay.globals.history');
     Route::post('{type}/revisions/{revision}', [EntryController::class, 'restoreGlobalRevision'])->whereNumber('revision')->name('mainstay.globals.revisions.restore');
@@ -66,12 +68,16 @@ Route::middleware([Authenticate::class, AuthenticateSession::class])->group(func
 
     Route::get('{type}/drafts/{draft}', [EntryController::class, 'draft'])->whereNumber('draft')->name('mainstay.drafts.edit');
     Route::post('{type}/drafts/{draft}', [EntryController::class, 'saveDraft'])->whereNumber('draft')->name('mainstay.drafts.update');
+    Route::post('{type}/drafts/{draft}/canvas', [EntryController::class, 'draftCanvas'])->whereNumber('draft')->name('mainstay.canvas.draft');
+    Route::post('{type}/drafts/{draft}/block', [EntryController::class, 'draftBlock'])->whereNumber('draft')->name('mainstay.block.draft');
     Route::post('{type}/drafts/{draft}/discard', [EntryController::class, 'discard'])->whereNumber('draft')->name('mainstay.drafts.discard');
     Route::post('{type}/drafts/{draft}/author', [EntryController::class, 'assignDraft'])->whereNumber('draft')->name('mainstay.drafts.assign');
     Route::get('{type}/relations/{field}', [EntryController::class, 'relations'])->name('mainstay.relations');
 
     Route::get('{type}/{id}', [EntryController::class, 'edit'])->whereNumber('id')->name('mainstay.entries.edit');
     Route::post('{type}/{id}', [EntryController::class, 'update'])->whereNumber('id')->name('mainstay.entries.update');
+    Route::post('{type}/{id}/canvas', [EntryController::class, 'entryCanvas'])->whereNumber('id')->name('mainstay.canvas.entry');
+    Route::post('{type}/{id}/block', [EntryController::class, 'entryBlock'])->whereNumber('id')->name('mainstay.block.entry');
     Route::post('{type}/{id}/trash', [EntryController::class, 'trash'])->whereNumber('id')->name('mainstay.entries.delete');
     Route::post('{type}/{id}/restore', [EntryController::class, 'restore'])->whereNumber('id')->name('mainstay.entries.restore');
     Route::post('{type}/{id}/destroy', [EntryController::class, 'destroy'])->whereNumber('id')->name('mainstay.entries.destroy');

@@ -9,21 +9,46 @@ use Mainstay\Fields\Field;
 use Mainstay\Mainstay;
 
 /*
- | One block in a Blocks field: a class whose properties carry the same field
- | attributes an entry's do, read and written through the field that lists it.
- | The blocks themselves are the site's to write, and so are the views that
- | draw them.
+ | One block of a content: a class whose properties carry the same field
+ | attributes an entry's do, read and written through the #[Blocks] list
+ | that names it -- an entry type's, or the block's that holds it. The blocks
+ | themselves are the site's to write, and so are the views that draw them.
  |
  | Htmlable, drawn by the view `blocks.{handle}` with the block as `$block`,
- | so a template prints a list with `@foreach ($entry->blocks as $block)
- | {{ $block }} @endforeach`. A view that is not there is an error, as an
- | entry's is.
+ | so a template prints a content's with `@foreach ($entry->content->blocks()
+ | as $block) {{ $block }} @endforeach`. A view that is not there is an
+ | error, as an entry's is. A block whose class names blocks with #[Blocks]
+ | holds them inside it, its inner blocks, which its view prints with
+ | `@inner($block)`.
  */
 abstract class Block implements Arrayable, Htmlable
 {
     /* Given by the layer when the block is first written, and kept: what
        tells a block moved from a block replaced. */
     public string $id;
+
+    /* Private, so a block's own field of this name is a slot of its own. */
+    private array $inner = [];
+
+    /** @return list<Block> the blocks inside this one, in their order */
+    public function inner(): array
+    {
+        return $this->inner;
+    }
+
+    /**
+     * The content's read hands a block its inner blocks.
+     *
+     * @internal
+     *
+     * @param  list<Block>  $blocks
+     */
+    public function holding(array $blocks): static
+    {
+        $this->inner = $blocks;
+
+        return $this;
+    }
 
     /* What a stored block's `type` says, and its view's name, so one block's
        alone: two blocks of one handle are refused, in whichever fields. */

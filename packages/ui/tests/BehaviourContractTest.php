@@ -39,6 +39,7 @@ class BehaviourContractTest extends TestCase
             'dropdown.ts' => ['<x-mainstay::dropdown><x-slot:label>New</x-slot:label><x-mainstay::dropdown-item>Page</x-mainstay::dropdown-item></x-mainstay::dropdown>', ['data-dropdown', '<summary', '<details']],
             'tag-input.ts' => ['<x-mainstay::tag-input name="tags" :tags="[\'editor\']" />', ['data-tag-input', 'data-tag-field', 'data-placeholder', 'data-tag-template', 'data-tag-label', 'data-tag-remove', 'data-tag ']],
             'command-center.ts' => ['<x-mainstay::command-center :commands="[]" />', ['data-command-center', 'data-command-field', 'data-command-list', 'data-command-empty', 'data-command-option', 'data-command-shortcut', 'data-command-label', 'data-command-group', 'data-commands']],
+            'tabs.ts' => ['<x-mainstay::tabs name="entry" label="Edit" :tabs="[\'details\' => \'Details\', \'content\' => \'Content\']" /><x-mainstay::tab-panel id="details" />', ['data-tabs="entry"', 'role="tab"', 'aria-controls="details"', 'id="details-tab"', 'role="tabpanel"', 'aria-labelledby="details-tab"']],
             'sidebar.ts' => ['<x-mainstay::sidebar :sections="[[\'items\' => [[\'href\' => \'/a\', \'label\' => \'A\', \'items\' => [[\'href\' => \'/a/b\', \'label\' => \'B\']]]]]]" current="/a" />', ['data-sidebar-toggle', 'aria-controls=', 'data-open=', 'data-inside=']],
         ];
     }

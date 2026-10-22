@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Mainstay\Auth\Capabilities;
+use Mainstay\Content\Block;
 use Mainstay\Content\Entry;
 use Mainstay\Content\GlobalSet;
+use Mainstay\Fields\Content;
 use Mainstay\Fields\Field;
 use Mainstay\Fields\Relation;
 use Mainstay\Fields\Terms;
@@ -33,6 +35,15 @@ use Throwable;
  */
 final class Form
 {
+    /*
+     | Flashed once a save has written what the form posted -- a draft, one
+     | that came to change nothing included, or a term -- whatever happens
+     | after: the page it lands on, whatever its address, tells the browser
+     | its copy of the form is saved and can go. A save refused, or one that
+     | never ran, flashes nothing, and the copy stays.
+     */
+    public const SAVED = 'saved';
+
     /*
      | The fields a form draws for the signed-in user: every one, but an
      | internal field only for whoever may see it, which the layer would
@@ -252,6 +263,62 @@ final class Form
         }
 
         return $data;
+    }
+
+    /* A block's name in the admin: its handle, as words. */
+    public static function label(string $block): string
+    {
+        return Str::ucfirst(str_replace('_', ' ', $block::handle()));
+    }
+
+    /*
+     | Every block a type's content can hold, by handle: the ones it names,
+     | and the ones each holds inside it, all the way down.
+     |
+     | @return array<string, class-string<Block>>
+     */
+    public static function blocks(string $type): array
+    {
+        $mainstay = app(Mainstay::class);
+        $content = $mainstay->fields($type)['content'] ?? null;
+        $found = [];
+        $walk = function (array $blocks) use (&$walk, &$found, $mainstay): void {
+            foreach ($blocks as $block) {
+                if (! isset($found[$block::handle()])) {
+                    $found[$block::handle()] = $block;
+                    $walk($mainstay->innerBlocks($block)->of ?? []);
+                }
+            }
+        };
+
+        $walk($content instanceof Content ? $content->blocks() : []);
+
+        return $found;
+    }
+
+    /*
+     | A site block's errors, from a check that reported them under `$prefix`
+     | -- `content.content.3.attrs.` -- by where they are in the block,
+     | `data.headline`, each message naming the field by its label rather
+     | than by its path. `$block` is the block's class.
+     |
+     | @return array<string, list<string>>
+     */
+    public static function blockErrors(?string $block, array $errors, string $prefix): array
+    {
+        $found = [];
+
+        foreach ($errors as $key => $messages) {
+            if (! str_starts_with($key, $prefix)) {
+                continue;
+            }
+
+            $path = explode('.', $path = substr($key, strlen($prefix)));
+            $label = $block !== null && $path[0] === 'data' ? (app(Mainstay::class)->fields($block)[$path[1] ?? ''] ?? null)?->label() : null;
+            $found[implode('.', $path)] = array_map(fn (string $message) => $label === null ? $message : str_replace([$key, str_replace('_', ' ', Str::snake($key))], $label, $message), $messages);
+        }
+
+        return $found;
     }
 
     /* Every map in a tree with its keys sorted; a list keeps its order. */

@@ -33,12 +33,4 @@
     <x-mainstay::messages :id="'field-'.$name.'-error'" :messages="$messages" />
 </x-mainstay::field-section>
 
-@once
-    @push('dialogs')
-        <x-mainstay::dialog id="mainstay-picker" label="Choose an image" wide>
-            <div data-picker-body aria-live="polite" class="max-h-[70vh] overflow-y-auto">
-                <p class="text-sm text-muted">Loading the library…</p>
-            </div>
-        </x-mainstay::dialog>
-    @endpush
-@endonce
+<x-mainstay::picker-dialog />

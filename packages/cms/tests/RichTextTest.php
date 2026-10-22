@@ -23,20 +23,7 @@ class RichTextTest extends TestCase
 
         $this->assertNull(Document::problem($document->toArray()));
         $this->assertSame(json_encode($document->toArray()), json_encode($document), 'Encoded as JSON, it is the tree.');
-        $this->assertSame(
-            '<h2>Declared in code</h2>'
-            .'<p>A type is a <strong>class</strong>, its fields are <em>properties</em> and <code>#[Text]</code> declares one.<br>'
-            .'Read <a href="/docs/fields?tab=all&amp;sort=name#text"><strong>the field</strong> reference</a>.</p>'
-            .'<h3>Escaped &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#039;kept&#039;</h3>'
-            .'<blockquote><p>Adding a field is a commit, not a click.</p></blockquote>'
-            ."<pre><code>#[Text(required: true)]\npublic string \$title;</code></pre>"
-            .'<ul><li><p>Text</p><ul><li><p>Textarea</p></li></ul></li><li><p>Rich text</p></li></ul>'
-            .'<ol start="3"><li><p>Sync</p></li></ol>'
-            .'<hr>'
-            .'<p><a href="mailto:hello@mainstay.test">Mail us</a></p>'
-            .'<p></p>',
-            $document->toHtml(),
-        );
+        $this->assertSame(rtrim(file_get_contents(__DIR__.'/Fixtures/document.html'), "\n"), $document->toHtml(), 'As the editor draws it: schema.test.ts holds it to the same file.');
     }
 
     #[Test]
@@ -49,7 +36,7 @@ class RichTextTest extends TestCase
             ['type' => 'image', 'attrs' => ['src' => 'x.png']],
             ['type' => 'figure', 'content' => [$paragraph($text('A caption'))]],
             $paragraph($text('underlined', ['type' => 'underline']), $text(' and '), $text('scripted', ['type' => 'link', 'attrs' => ['href' => 'javascript:alert(1)']])),
-            ['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [$text('A second title')]],
+            ['type' => 'heading', 'attrs' => ['level' => 7], 'content' => [$text('Below the sixth')]],
             ['type' => 'heading', 'attrs' => ['level' => '2 onclick=alert(1)'], 'content' => [$text('Injected')]],
             ['type' => 'ordered_list', 'attrs' => ['order' => '1" onclick="x'], 'content' => []],
             ['type' => 'paragraph', 'content' => 'not a list'],
@@ -121,7 +108,8 @@ class RichTextTest extends TestCase
             'a list holding a paragraph' => [[['type' => 'bullet_list', 'content' => [$paragraph]]], 'puts the paragraph at content.0.content.0 in a bullet_list, which cannot hold one'],
             'an empty list' => [[['type' => 'bullet_list', 'content' => []]], 'leaves the bullet_list at content.0 empty'],
             'a list item starting with a list' => [[['type' => 'bullet_list', 'content' => [['type' => 'list_item', 'content' => [['type' => 'bullet_list', 'content' => [['type' => 'list_item', 'content' => [$paragraph]]]]]]]]], 'does not start the list_item at content.0.content.0 with a paragraph'],
-            'a heading of the first level' => [[['type' => 'heading', 'attrs' => ['level' => 1], 'content' => [$text]]], 'gives the heading at content.0 a level other than 2, 3 or 4'],
+            'a heading below the sixth level' => [[['type' => 'heading', 'attrs' => ['level' => 7], 'content' => [$text]]], 'gives the heading at content.0 a level other than 1 to 6'],
+            'a heading of no level' => [[['type' => 'heading', 'attrs' => ['level' => 0], 'content' => [$text]]], 'gives the heading at content.0 a level other than 1 to 6'],
             'an attribute a node does not take' => [[['type' => 'paragraph', 'attrs' => ['align' => 'left']]], 'gives the paragraph at content.0 an attribute it does not take: align'],
             'a list numbered in words' => [[['type' => 'ordered_list', 'attrs' => ['order' => 'three'], 'content' => [['type' => 'list_item', 'content' => [$paragraph]]]]], 'gives the ordered_list at content.0 an order that is not a whole number'],
             'an empty text node' => [[['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => '']]]], 'has a text node at content.0.content.0 with no text'],

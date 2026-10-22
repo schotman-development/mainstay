@@ -27,7 +27,9 @@ use Mainstay\Tests\Fixtures\Linked\Genre;
 use Mainstay\Tests\Fixtures\Linked\Masthead;
 use Mainstay\Tests\Fixtures\Linked\Person;
 use Mainstay\Tests\Fixtures\Linked\Story;
+use Mainstay\Tests\Fixtures\Policies\ClosedPolicy;
 use Mainstay\Tests\Fixtures\Policies\EditorPolicy;
+use Mainstay\Tests\Fixtures\Policies\OpenPolicy;
 use Mainstay\Tests\Fixtures\Policies\PublisherPolicy;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -71,6 +73,18 @@ class DraftTest extends DatabaseTestCase
         return ['type' => 'doc', 'content' => [['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]]]];
     }
 
+    /* A content of these site blocks: each its attrs, and the blocks inside
+       it under `inner`. */
+    private static function blocks(array ...$blocks): array
+    {
+        return ['type' => 'doc', 'content' => array_map(self::node(...), $blocks)];
+    }
+
+    private static function node(array $block): array
+    {
+        return ['type' => 'block', 'attrs' => array_diff_key($block, ['inner' => 0]), ...isset($block['inner']) ? ['content' => array_map(self::node(...), $block['inner'])] : []];
+    }
+
     /* An image row, as RelationTest writes one: the library's files are
        MediaTest's to check. */
     private function image(): int
@@ -98,7 +112,7 @@ class DraftTest extends DatabaseTestCase
 
         $entry = Mainstay::create(Bulletin::class, [
             'title' => 'Launch', 'slug' => $slug, 'body' => self::doc('Hello'), 'publishedOn' => '2026-10-07', 'kind' => 'news', 'approved' => true,
-            'blocks' => [['type' => 'shelf', 'data' => ['spines' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]]],
+            'content' => self::blocks(['type' => 'shelf', 'inner' => [['type' => 'spine', 'data' => ['story' => $story->id]]]]),
             'picks' => [['type' => 'person', 'id' => $person->id], $story],
             'cover' => $this->image(), 'genres' => [$genre], 'memo' => 'Quiet',
             ...$data,
@@ -409,7 +423,7 @@ class DraftTest extends DatabaseTestCase
     {
         $draft = Mainstay::drafts()->save(Bulletin::class, [
             'title' => 'Launch', 'slug' => 'launch', 'body' => null, 'publishedOn' => null, 'kind' => null, 'approved' => false, 'picks' => [],
-            'blocks' => [['type' => 'callout', 'data' => ['heading' => '']]],
+            'content' => self::blocks(['type' => 'callout', 'data' => ['heading' => '']]),
         ], locale: 'en', overrideAccess: true);
 
         $this->assertNull($draft->entryId);
@@ -417,20 +431,20 @@ class DraftTest extends DatabaseTestCase
         $this->assertFalse(isset($draft->entry->id), 'No id until it is published.');
         $this->assertFalse(isset($draft->entry->body) || isset($draft->entry->publishedOn) || isset($draft->entry->kind), 'What is left empty and has no empty value is absent, not invented.');
         $this->assertFalse($draft->entry->approved);
-        $this->assertEqualsCanonicalizing(['publishedOn', 'kind', 'approved', 'picks', 'blocks'], $draft->fields);
-        $this->assertEqualsCanonicalizing(['title', 'slug', 'body'], $draft->locales['en']);
+        $this->assertEqualsCanonicalizing(['publishedOn', 'kind', 'approved', 'picks'], $draft->fields);
+        $this->assertEqualsCanonicalizing(['title', 'slug', 'body', 'content'], $draft->locales['en']);
 
         $this->assertCount(0, Mainstay::find(Bulletin::class, locale: 'en'));
         $this->assertSame(0, Mainstay::paginate(Bulletin::class, locale: 'en')->total());
         $this->assertNull(Mainstay::findByUri('/posts/launch', locale: 'en'));
         $this->assertSame([0, 0], [DB::table('bulletin')->count(), DB::table('uris')->count()]);
 
-        $this->assertEqualsCanonicalizing(['body', 'publishedOn', 'kind', 'approved', 'picks', 'blocks.0.data.heading'], array_keys($this->refusal(fn () => Mainstay::drafts()->publish($draft->id, overrideAccess: true))), 'Required back at every level, a block\'s own fields too.');
+        $this->assertEqualsCanonicalizing(['body', 'publishedOn', 'kind', 'approved', 'picks', 'content.content.0.attrs.data.heading'], array_keys($this->refusal(fn () => Mainstay::drafts()->publish($draft->id, overrideAccess: true))), 'Required back at every level, a block\'s own fields too.');
         $this->assertSame([0, 1], [DB::table('bulletin')->count(), DB::table('mainstay_drafts')->count()], 'Nothing written, and the draft kept.');
 
         Mainstay::drafts()->save(Bulletin::class, [
             'body' => self::doc('Hello'), 'publishedOn' => '2026-10-07', 'kind' => 'news', 'approved' => true, 'picks' => [$this->story('Told')],
-            'blocks' => [['type' => 'callout', 'data' => ['heading' => 'Hi']]],
+            'content' => self::blocks(['type' => 'callout', 'data' => ['heading' => 'Hi']]),
         ], draft: $draft->id, locale: 'en', overrideAccess: true);
         Mainstay::drafts()->save(Bulletin::class, ['title' => 'Lancering', 'slug' => 'lancering', 'body' => self::doc('Hallo')], draft: $draft->id, locale: 'nl', overrideAccess: true);
 
@@ -450,7 +464,7 @@ class DraftTest extends DatabaseTestCase
         $this->assertSame(2, DB::table('mainstay_drafts')->whereNull('entry_id')->count());
 
         /* Only presence gives way: what keeps a value readable does not. */
-        $this->assertArrayHasKey('blocks.0.type', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['blocks' => [['data' => []]]], locale: 'en', overrideAccess: true)));
+        $this->assertArrayHasKey('content.content.0.attrs.type', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['content' => self::blocks(['data' => []])], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('picks.0.id', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['picks' => [['type' => 'person']]], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('kind', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['kind' => 'gossip'], locale: 'en', overrideAccess: true)));
         $this->assertArrayHasKey('picks.0', $this->refusal(fn () => Mainstay::drafts()->save(Bulletin::class, ['picks' => [['type' => 'story', 'id' => 999]]], locale: 'en', overrideAccess: true)), 'What it names has to be there.');
@@ -626,7 +640,9 @@ class DraftTest extends DatabaseTestCase
         Mainstay::update(Genre::class, $genre->id, ['title' => 'Crime'], locale: 'en', overrideAccess: true);
 
         $this->assertSame(1, DB::table('mainstay_revisions')->count(), 'Nothing for a write changing nothing, or for a term.');
-        $this->assertSame('news', json_decode(DB::table('mainstay_revisions')->value('snapshot'), true)['fields']['kind']);
+        $snapshot = json_decode(DB::table('mainstay_revisions')->value('snapshot'), true);
+        $this->assertSame('news', $snapshot['fields']['kind']);
+        $this->assertSame('shelf', $snapshot['locales']['en']['content']['content'][0]['attrs']['type'], 'The content whole, in the language it is written in.');
 
         config()->set('mainstay.revisions', 2);
         Mainstay::update(Bulletin::class, $entry->id, ['kind' => 'news'], locale: 'en', overrideAccess: true);
@@ -764,6 +780,51 @@ class DraftTest extends DatabaseTestCase
 
         $this->assertThrows(fn () => Mainstay::drafts()->publish($draft->id), AuthorizationException::class);
         $this->assertSame('Launch', Mainstay::findById(Bulletin::class, $entry->id, locale: 'en')->title);
+    }
+
+    #[Test]
+    public function a_preview_reads_changes_over_the_draft_and_writes_nothing(): void
+    {
+        $entry = $this->bulletin();
+        $genre = Mainstay::create(Genre::class, ['title' => 'Pulp', 'slug' => 'pulp'], locale: 'en', overrideAccess: true);
+        Mainstay::drafts()->save(Bulletin::class, ['title' => 'Drafted', 'kind' => 'note'], entry: $entry->id, locale: 'en', overrideAccess: true);
+        $fresh = Mainstay::drafts()->save(Bulletin::class, ['title' => 'Fresh', 'slug' => 'fresh'], locale: 'en', overrideAccess: true);
+        $told = $this->story('Told');
+        $stored = fn () => array_map(fn (string $table) => DB::table($table)->orderBy('id')->get()->map(fn (object $row) => (array) $row)->all(), ['bulletin', 'bulletin_locales', 'genre_locales', 'mainstay_drafts', 'uris']);
+        $before = $stored();
+
+        $read = Mainstay::preview(Bulletin::class, $entry->id, ['title' => 'Previewed', 'memo' => 'Loud'], locale: 'en', overrideAccess: true);
+        $this->assertSame([$entry->id, 'Previewed', 'note', 'launch', '/posts/launch', '<p>Hello</p>'], [$read->id, $read->title, $read->kind, $read->slug, $read->uri, $read->body->toHtml()], 'The changes over the draft over what is live.');
+        $this->assertFalse(isset($read->memo), "The public's: no internal field.");
+
+        /* One not published yet, by its draft: no id and no path, a required
+           date left empty absent, and what nothing holds that may be empty,
+           nothing. */
+        $read = Mainstay::preview(Bulletin::class, changes: ['title' => 'Fresher'], draft: $fresh->id, locale: 'en', overrideAccess: true);
+        $this->assertSame(['Fresher', 'fresh', null, null, null], [$read->title, $read->slug, $read->uri, $read->url(), $read->cover]);
+        $this->assertFalse(isset($read->id));
+        $this->assertFalse(isset($read->publishedOn));
+
+        /* A new one, from nothing, in the locale asked for; and a term, live
+           with the changes over it. */
+        $read = Mainstay::preview(Bulletin::class, changes: ['title' => 'Blank'], locale: 'nl', overrideAccess: true);
+        $this->assertSame(['Blank', 'nl', null], [$read->title, $read->locale, $read->content]);
+        $this->assertSame('Noir', Mainstay::preview(Genre::class, $genre->id, ['title' => 'Noir'], locale: 'en', overrideAccess: true)->title);
+
+        /* Refused as the draft save would be: a value of the wrong kind, and
+           a caller who may read and not save. */
+        $this->assertThrows(fn () => Mainstay::preview(Bulletin::class, $entry->id, ['kind' => 'gossip'], locale: 'en', overrideAccess: true), ValidationException::class, 'kind');
+        $this->assertThrows(fn () => Mainstay::preview(Genre::class, $genre->id, draft: 1, overrideAccess: true), InvalidArgumentException::class, 'no drafts');
+        Gate::policy(Bulletin::class, OpenPolicy::class);
+        $this->assertThrows(fn () => Mainstay::preview(Bulletin::class, $entry->id, ['title' => 'Mine'], locale: 'en'), AuthorizationException::class);
+
+        /* And a relation to what the caller may not read, which is not there
+           for them to point at. */
+        Gate::policy(Bulletin::class, EditorPolicy::class);
+        Gate::policy(Story::class, ClosedPolicy::class);
+        $this->assertThrows(fn () => Mainstay::preview(Bulletin::class, $entry->id, ['picks' => [['type' => 'story', 'id' => $told->id]]], locale: 'en'), ValidationException::class, 'not there to point at');
+
+        $this->assertSame($before, $stored(), 'Nothing written.');
     }
 
     #[Test]

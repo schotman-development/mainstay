@@ -8,6 +8,7 @@
        front page, a path that names no field. One inside a field --
        blocks.1.data.title -- is that field's to show. */
     $loose = collect($errors->getMessages())->reject(fn ($messages, $key) => isset($fields[\Illuminate\Support\Str::before($key, '.')]) || $key === 'template')->flatten()->all();
+    $restored = (bool) session('restored');
 @endphp
 
 {{--
@@ -64,35 +65,72 @@
         @endif
     </x-slot:actions>
 
-    <form id="entry-form" method="post" action="{{ $action }}" data-dirty-form class="flex h-full min-h-0">
+    {{-- Drawn from the browser's copy of unsaved work, it posts what the
+         copy was made with: the fingerprints and the draft's time. --}}
+    <form id="entry-form" method="post" action="{{ $action }}" data-dirty-form data-copy="{{ $copy }}" @if ($restored) data-restored @endif class="flex h-full min-h-0">
         @csrf
-        <input type="hidden" name="_draft_at" value="{{ $draft?->updatedAt->toIso8601String() }}">
-        @foreach ($seen as $name => $print)
+        <input type="hidden" name="_draft_at" value="{{ $restored ? old('_draft_at') : $draft?->updatedAt->toIso8601String() }}">
+        @foreach ($restored ? (array) old('_seen', []) : $seen as $name => $print)
             <input type="hidden" name="_seen[{{ $name }}]" value="{{ $print }}">
         @endforeach
 
-        <div class="min-h-0 min-w-0 flex-1 overflow-y-auto">
-            <div class="mx-auto max-w-3xl space-y-6 px-6 py-8">
+        <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+            {{-- Over the tabs, and taking no room there while it says nothing. --}}
+            <div class="mx-auto w-full max-w-3xl shrink-0 space-y-2 px-6 {{ $canvas ? 'has-[>:not([hidden])]:py-3' : 'pt-8' }}">
+                <div data-copy-offer hidden role="status" class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-control border border-border bg-surface px-3 py-2 text-sm">
+                    <span class="mr-auto">You have unsaved changes from <time data-copy-time></time>.</span>
+                    <x-mainstay::button type="button" data-copy-restore>Restore</x-mainstay::button>
+                    <x-mainstay::button type="button" variant="secondary" data-copy-dismiss>Dismiss</x-mainstay::button>
+                </div>
+
                 <x-mainstay::notices :messages="$loose" />
 
                 @if ($missing)
                     <p class="rounded-control border border-border bg-surface px-3 py-2 text-sm">There is no {{ strtoupper($locale) }} version yet. Saving adds one; the fields every language shares are filled in already.</p>
                 @endif
-
-                <x-mainstay::field-group :label="$global ? $label : \Mainstay\Navigation::label($class, plural: false)">
-                    @foreach ($fields as $name => $field)
-                        <x-dynamic-component
-                            :component="$field->component()"
-                            :field="$field"
-                            :name="$name"
-                            :value="old($name, $values[$name])"
-                            :messages="[...$errors->get($name), ...\Illuminate\Support\Arr::flatten($errors->get($name.'.*'))]"
-                            :hint="$shared && ! $field->localized ? 'The same in every language.' : null"
-                            :data-slug-from="$name === $slug ? 'title' : null"
-                        />
-                    @endforeach
-                </x-mainstay::field-group>
             </div>
+
+            {{-- A type with a page edits it on Content, the page the site
+                 draws from the form; Details is every field, the content's
+                 raw data among them, and opens first -- and again after a
+                 save a field refused. Content's own controls, for the whole
+                 document, sit at the end of the tabs' bar while it is open. --}}
+            @if ($canvas)
+                <div class="relative shrink-0">
+                    <x-mainstay::tabs name="entry" label="Edit" :tabs="['details' => 'Details', 'content' => 'Content']" :data-tabs-open="$errors->isNotEmpty() ? 'details' : null" />
+                    <div id="canvas-header" role="toolbar" aria-label="Content" hidden class="absolute inset-y-0 right-4 flex items-center gap-0.5">
+                        @php($tool = 'rounded-control px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent')
+                        <button type="button" data-command="undo" class="{{ $tool }}">Undo</button>
+                        <button type="button" data-command="redo" class="{{ $tool }}">Redo</button>
+                        <span aria-hidden="true" class="mx-1 h-5 w-px bg-border"></span>
+                        <button type="button" data-command="add" aria-haspopup="true" aria-expanded="false" aria-controls="canvas-menu" class="{{ $tool }}">Add block</button>
+                    </div>
+                </div>
+            @endif
+
+            <x-mainstay::tab-panel id="details" class="min-h-0 flex-1 overflow-y-auto">
+                <div class="mx-auto max-w-3xl space-y-6 px-6 pt-6 pb-8">
+                    <x-mainstay::field-group :label="$global ? $label : \Mainstay\Navigation::label($class, plural: false)">
+                        @foreach ($fields as $name => $field)
+                            <x-dynamic-component
+                                :component="$field->component()"
+                                :field="$field"
+                                :name="$name"
+                                :value="old($name, $values[$name])"
+                                :messages="[...$errors->get($name), ...\Illuminate\Support\Arr::flatten($errors->get($name.'.*'))]"
+                                :hint="$shared && ! $field->localized ? 'The same in every language.' : null"
+                                :data-slug-from="$name === $slug ? 'title' : null"
+                            />
+                        @endforeach
+                    </x-mainstay::field-group>
+                </div>
+            </x-mainstay::tab-panel>
+
+            @if ($canvas)
+                <x-mainstay::tab-panel id="content" class="flex min-h-0 flex-1 flex-col">
+                    <x-mainstay::canvas :url="$canvas" :block="$block" sidebar="mainstay-block" header="canvas-header" :blocks="$blocks" :top="$top" :invalid="$invalid" :pictures="$pictures" />
+                </x-mainstay::tab-panel>
+            @endif
         </div>
 
         <aside aria-label="Publishing" class="min-h-0 w-72 shrink-0 overflow-y-auto border-l border-border bg-surface">
@@ -154,6 +192,11 @@
         </aside>
     </form>
 
+    {{-- Outside the entry's form: see block-sidebar. --}}
+    @if ($canvas)
+        <x-mainstay::block-sidebar id="mainstay-block" />
+    @endif
+
     @if ($deletes)
         <form id="trash-form" method="post" action="{{ $localized(route('mainstay.entries.delete', [$handle, $id])) }}">@csrf</form>
     @endif
@@ -168,7 +211,7 @@
 
     @if ($state['discard'])
         <x-mainstay::dialog id="discard" label="Discard this draft?">
-            <form method="post" action="{{ $localized(route('mainstay.drafts.discard', [$handle, $draft->id])) }}" class="space-y-4">
+            <form method="post" action="{{ $localized(route('mainstay.drafts.discard', [$handle, $draft->id])) }}" data-discard class="space-y-4">
                 @csrf
                 <input type="hidden" name="_draft_at" value="{{ $draft->updatedAt->toIso8601String() }}">
                 <p>{{ $live || $global ? 'The changes waiting to be published go, and what is live stays as it is.' : 'This has never been published, so nothing of it is left once its draft goes.' }}</p>
