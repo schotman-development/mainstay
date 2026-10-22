@@ -351,8 +351,10 @@ const said = (span: HTMLElement): string => {
    outline -- inside a block inside another, which the blocks beside it
    would cover, and as on any block where it is a list item, which
    ProseMirror's own marks as one -- a refused block's mark, the placeholder of a block that
-   draws nothing, @field text, showing its field's label while it is empty,
-   and a block's image, which is clicked to be replaced or edited. */
+   draws nothing, a block's HTML spaced as on the site rather than with the
+   line breaks ProseMirror keeps in typed text, @field text, keeping them,
+   and showing its field's label while it is empty, and a block's image,
+   which is clicked to be replaced or edited. */
 const css = `${prosemirror}
 .ProseMirror { outline: none }
 .mainstay-current { outline: 1px dashed rgb(37 99 235 / 0.6); outline-offset: 4px }
@@ -362,9 +364,9 @@ const css = `${prosemirror}
 [data-mainstay-holds] > li.ProseMirror-selectednode { outline: 2px solid rgb(37 99 235) }
 [data-mainstay-holds] > li.ProseMirror-selectednode::after { content: none }
 [data-mainstay-placeholder] { padding: 1rem; border: 1px dashed #94a3b8; border-radius: 4px; color: #475569; font: 14px/1.4 system-ui, sans-serif; text-align: center }
-[data-mainstay-field] { outline: none; cursor: text }
+[contenteditable=false] { white-space: normal }
+[data-mainstay-field] { outline: none; cursor: text; white-space: pre-wrap }
 [data-mainstay-field]:empty::before { content: attr(data-mainstay-label); opacity: 0.5 }
-[data-mainstay-lines] { white-space: pre-wrap }
 [data-mainstay-image] { cursor: pointer }`
 
 const commands: Record<string, Command> = {

@@ -626,6 +626,16 @@ const answered = async () => {
   await settle()
 }
 
+test('spaces a site block as the site does, the line breaks of its HTML collapsed, and keeps the spaces of @field text', async () => {
+  await opened(doc(hero(), callout('c1')), { h1: drawn().replace('<h1>', '\n  <h1>'), c1: '<aside class="callout">\n  <p>Mind the gap</p>\n</aside>' })
+
+  const space = (element: Element) => inner().defaultView!.getComputedStyle(element).whiteSpace
+
+  expect(space(inner().querySelector('.hero')!)).toBe('normal')
+  expect(space(inner().querySelector('.callout')!)).toBe('normal')
+  expect(space(field('headline'))).toBe('pre-wrap')
+})
+
 test("draws a selected site block's settings as the server draws them, in the dialog its toolbar opens", async () => {
   const wire = vi.fn()
 
